@@ -75,9 +75,15 @@ export default async function VehicleDetailPage({
             <polyline points="15 18 9 12 15 6" />
           </svg>
         </Link>
-        <h1 className="truncate text-base font-semibold tracking-tight">
+        <h1 className="truncate flex-1 text-base font-semibold tracking-tight">
           {vehicle.name}
         </h1>
+        <Link
+          href={`/vehicles/${vehicle.id}/quickview`}
+          className="text-sm font-medium text-neutral-600 underline-offset-4 active:text-neutral-900 hover:underline dark:text-neutral-400 dark:active:text-neutral-100"
+        >
+          Quick view
+        </Link>
       </header>
 
       <VehicleDetailClient

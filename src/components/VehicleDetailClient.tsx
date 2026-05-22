@@ -608,21 +608,6 @@ export function VehicleDetailClient({
           </div>
         </CollapsibleSection>
 
-        <CollapsibleSection
-          title="Photos"
-          meta={
-            vehiclePhotos.length === 0
-              ? "None"
-              : `${vehiclePhotos.length}`
-          }
-        >
-          <PhotoGallery
-            vehicleId={vehicle.id}
-            issueId={null}
-            initialPhotos={vehiclePhotos}
-          />
-        </CollapsibleSection>
-
         <CollapsibleSection title="Last job" meta={lastJob || "Not set"}>
           <textarea
             value={lastJob}
@@ -675,6 +660,21 @@ export function VehicleDetailClient({
               </div>
             )}
           </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Photos"
+          meta={
+            vehiclePhotos.length === 0
+              ? "None"
+              : `${vehiclePhotos.length}`
+          }
+        >
+          <PhotoGallery
+            vehicleId={vehicle.id}
+            issueId={null}
+            initialPhotos={vehiclePhotos}
+          />
         </CollapsibleSection>
 
         <Link
