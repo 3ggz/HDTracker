@@ -43,3 +43,6 @@ next-env.d.ts
 
 # scratch / commit message scratchpads
 .commit-msg.tmp
+
+# Claude Code local runtime state
+.claude/

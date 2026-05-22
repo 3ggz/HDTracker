@@ -1,32 +1,77 @@
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
-import { SignOutButton } from "@/components/SignOutButton";
+import { AppHeader } from "@/components/AppHeader";
+import { AddVehicleFab } from "@/components/AddVehicleFab";
 
 export default async function Home() {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  // Middleware guarantees a signed-in user at this point, but TS doesn't know.
-  if (!user) return null;
+  const { data: vehicles, error } = await supabase
+    .from("vehicles")
+    .select("id, name, location_label, last_worked_job, updated_at")
+    .order("updated_at", { ascending: false });
 
   return (
-    <main className="flex min-h-dvh flex-col bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-50">
-      <header className="flex items-center justify-between border-b border-neutral-200 px-5 py-4 dark:border-neutral-800">
-        <h1 className="text-lg font-semibold tracking-tight">HDTracker</h1>
-        <SignOutButton />
-      </header>
-
-      <section className="mx-auto w-full max-w-md flex-1 px-5 py-10">
-        <p className="text-sm text-neutral-500 dark:text-neutral-400">
-          Signed in as
-        </p>
-        <p className="mt-1 text-base font-medium">{user.email}</p>
-
-        <div className="mt-10 rounded-2xl border border-dashed border-neutral-300 bg-white p-6 text-sm text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400">
-          Vehicles, inventory, and tools will live here. Coming next.
-        </div>
+    <>
+      <AppHeader />
+      <section className="mx-auto w-full max-w-md flex-1 px-4 pb-28 pt-4">
+        {error ? (
+          <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-300">
+            Couldn&apos;t load vehicles: {error.message}
+          </p>
+        ) : !vehicles || vehicles.length === 0 ? (
+          <EmptyState />
+        ) : (
+          <ul className="space-y-3">
+            {vehicles.map((v) => (
+              <li key={v.id}>
+                <Link
+                  href={`/vehicles/${v.id}`}
+                  className="block rounded-2xl border border-neutral-200 bg-white px-4 py-4 transition active:scale-[0.99] dark:border-neutral-800 dark:bg-neutral-900"
+                >
+                  <p className="text-base font-medium">{v.name}</p>
+                  {v.location_label && (
+                    <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
+                      {v.location_label}
+                    </p>
+                  )}
+                  {v.last_worked_job && (
+                    <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
+                      Last job: {v.last_worked_job}
+                    </p>
+                  )}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
-    </main>
+      <AddVehicleFab />
+    </>
+  );
+}
+
+function EmptyState() {
+  return (
+    <div className="mt-16 flex flex-col items-center text-center">
+      <div className="flex h-16 w-16 items-center justify-center rounded-full bg-neutral-100 dark:bg-neutral-900">
+        <svg
+          className="h-8 w-8 text-neutral-400"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M3 17h2.5a1.5 1.5 0 0 0 3 0h7a1.5 1.5 0 0 0 3 0H21V8l-3-3H6L3 8v9Z" />
+          <circle cx="7.5" cy="17" r="1.5" />
+          <circle cx="17" cy="17" r="1.5" />
+        </svg>
+      </div>
+      <h2 className="mt-4 text-lg font-medium">No vehicles yet</h2>
+      <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
+        Tap the + button to add your first one.
+      </p>
+    </div>
   );
 }

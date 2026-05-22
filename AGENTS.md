@@ -6,6 +6,12 @@ This file gives any AI assistant the context needed to work effectively on HDTra
 
 Internal-only inventory tracker for our service vehicles. Used primarily on mobile by traveling low-voltage electrical technicians; must also work on a desktop browser. Single company, single team — no multi-tenancy.
 
+## Current state (read this before changing auth or RLS)
+
+**Auth is intentionally disabled** while we build the core inventory features. Mark doesn't yet have DNS access for `@HDSecurity.Systems` so magic-link emails aren't reaching the company mailbox. The `/signin` page, `/auth/callback` handler, email-domain check, and SQL trigger are all still in the codebase — the proxy in `src/proxy.ts` just no longer redirects unauthed users. RLS on `public.vehicles` is permissive (`using (true)`) so the anon role can read/write.
+
+To re-enable auth: restore the redirect in `src/lib/supabase/middleware.ts`, restore the `user` check in `src/app/page.tsx`, write a migration tightening the RLS policies to `auth.uid() is not null`, and remove the `Dev · auth off` badge (or gate it on an env var).
+
 ## Two principles that override everything else
 
 1. **Mobile-first.** Every screen is designed for a phone held one-handed in a parking lot. Desktop is a fallback, not the primary surface.
