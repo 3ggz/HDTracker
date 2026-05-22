@@ -1189,7 +1189,9 @@ function RemoveItemModal({
 }) {
   const [amount, setAmount] = useState("");
   const [customQuantity, setCustomQuantity] = useState(target.quantity_text);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const libraryInputRef = useRef<HTMLInputElement>(null);
+  const filesInputRef = useRef<HTMLInputElement>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
@@ -1227,7 +1229,9 @@ function RemoveItemModal({
       oldStoragePath: target.photo_storage_path ?? null,
     });
 
-    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (cameraInputRef.current) cameraInputRef.current.value = "";
+    if (libraryInputRef.current) libraryInputRef.current.value = "";
+    if (filesInputRef.current) filesInputRef.current.value = "";
     setUploadingPhoto(false);
 
     if (!result.ok) {
@@ -1397,25 +1401,93 @@ function RemoveItemModal({
                 </p>
               )}
               <input
-                ref={fileInputRef}
+                ref={cameraInputRef}
                 type="file"
                 accept="image/*"
                 capture="environment"
                 onChange={onPhotoFileSelected}
                 className="hidden"
               />
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploadingPhoto}
-                className={`${buttonClass} mt-2 w-full border border-neutral-300 bg-white text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50`}
-              >
-                {uploadingPhoto
-                  ? "Uploading..."
-                  : target.photo_storage_path
-                    ? "Replace photo"
-                    : "Add photo"}
-              </button>
+              <input
+                ref={libraryInputRef}
+                type="file"
+                accept="image/*"
+                onChange={onPhotoFileSelected}
+                className="hidden"
+              />
+              <input
+                ref={filesInputRef}
+                type="file"
+                accept="*/*"
+                onChange={onPhotoFileSelected}
+                className="hidden"
+              />
+              {uploadingPhoto ? (
+                <button
+                  type="button"
+                  disabled
+                  className={`${buttonClass} mt-2 w-full border border-neutral-300 bg-white text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50`}
+                >
+                  Uploading...
+                </button>
+              ) : (
+                <div className="mt-2 grid grid-cols-3 gap-2">
+                  <PhotoSourceButton
+                    onClick={() => cameraInputRef.current?.click()}
+                    label="Take photo"
+                    icon={
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="h-5 w-5"
+                      >
+                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                        <circle cx="12" cy="13" r="4" />
+                      </svg>
+                    }
+                  />
+                  <PhotoSourceButton
+                    onClick={() => libraryInputRef.current?.click()}
+                    label="Library"
+                    icon={
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="h-5 w-5"
+                      >
+                        <rect x="3" y="3" width="18" height="18" rx="2" />
+                        <circle cx="8.5" cy="8.5" r="1.5" />
+                        <polyline points="21 15 16 10 5 21" />
+                      </svg>
+                    }
+                  />
+                  <PhotoSourceButton
+                    onClick={() => filesInputRef.current?.click()}
+                    label="Files"
+                    icon={
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="h-5 w-5"
+                      >
+                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                      </svg>
+                    }
+                  />
+                </div>
+              )}
             </>
           ) : (
             <p className="text-xs text-neutral-500 dark:text-neutral-400">
@@ -1531,6 +1603,27 @@ function normalizeDraftsForCategory(
       .filter((draft) => draft.category === category)
       .map(({ id, name, quantity_text }) => ({ id, name, quantity_text })),
   ).map((draft) => ({ ...draft, category }));
+}
+
+function PhotoSourceButton({
+  onClick,
+  label,
+  icon,
+}: {
+  onClick: () => void;
+  label: string;
+  icon: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex flex-col items-center justify-center gap-1 rounded-lg border border-neutral-300 bg-white px-2 py-3 text-xs font-medium text-neutral-700 transition active:scale-[0.98] dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+    >
+      {icon}
+      {label}
+    </button>
+  );
 }
 
 function formatPhotoUploadDate(iso: string): string {
