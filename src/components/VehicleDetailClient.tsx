@@ -65,6 +65,9 @@ type PendingAction = "save" | "gps" | "add-issue" | "delete" | string;
 const inputClass =
   "block min-h-12 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-base text-neutral-900 outline-none transition focus:border-neutral-900 focus:ring-2 focus:ring-neutral-900/10 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50 dark:focus:border-neutral-100 dark:focus:ring-neutral-100/10";
 
+const quantityInputClass =
+  "block min-h-12 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-900 outline-none transition focus:border-neutral-900 focus:ring-2 focus:ring-neutral-900/10 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50 dark:focus:border-neutral-100 dark:focus:ring-neutral-100/10";
+
 const buttonClass =
   "flex min-h-11 items-center justify-center rounded-lg px-3 text-sm font-medium transition active:scale-[0.98] disabled:opacity-60";
 
@@ -775,7 +778,7 @@ function VehicleItemEditor({
                   placeholder={quantityPlaceholder}
                   list={quantityListId}
                   autoComplete="off"
-                  className={inputClass}
+                  className={quantityInputClass}
                 />
               </label>
               <button
