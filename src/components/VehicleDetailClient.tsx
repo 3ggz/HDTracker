@@ -1278,7 +1278,7 @@ function RemoveItemModal({
     <div
       role="dialog"
       aria-modal="true"
-      aria-labelledby="remove-item-title"
+      aria-labelledby="edit-quantity-title"
       onClick={onCancel}
       className="fixed inset-0 z-30 flex items-end bg-black/50 px-4 pb-4 pt-20"
     >
@@ -1286,8 +1286,8 @@ function RemoveItemModal({
         onClick={(e) => e.stopPropagation()}
         className="mx-auto w-full max-w-md max-h-[85vh] overflow-y-auto rounded-2xl bg-white p-5 shadow-xl dark:bg-neutral-900"
       >
-        <h2 id="remove-item-title" className="text-lg font-semibold">
-          Remove {displayName}?
+        <h2 id="edit-quantity-title" className="text-lg font-semibold">
+          Edit Quantity
         </h2>
         {displayQuantity && (
           <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
@@ -1469,7 +1469,7 @@ function RemoveItemModal({
             onClick={onRemoveAll}
             className="text-sm font-medium text-red-600 underline-offset-4 active:underline dark:text-red-400"
           >
-            Remove all
+            Remove {displayName}
           </button>
           <button
             type="button"
