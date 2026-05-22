@@ -56,6 +56,7 @@ type VehicleDetail = {
   location_lat: number | null;
   location_lng: number | null;
   last_worked_job: string | null;
+  notes: string | null;
 };
 
 type VehicleItemCategory = "hardware" | "tool";
@@ -131,6 +132,7 @@ export function VehicleDetailClient({
   );
   const [licensePlate, setLicensePlate] = useState(vehicle.license_plate ?? "");
   const [lastJob, setLastJob] = useState(vehicle.last_worked_job ?? "");
+  const [notes, setNotes] = useState(vehicle.notes ?? "");
   const [manualLocation, setManualLocation] = useState(
     vehicle.location_label ?? "",
   );
@@ -346,6 +348,11 @@ export function VehicleDetailClient({
     markDirty();
   }
 
+  function onNotesChange(value: string) {
+    setNotes(value);
+    markDirty();
+  }
+
   function onMetaFieldChange(setter: (value: string) => void, value: string) {
     setter(value);
     markDirty();
@@ -410,6 +417,7 @@ export function VehicleDetailClient({
     const nextModel = trimToNullable(model);
     const nextLicensePlate = trimToNullable(licensePlate);
     const nextLastJob = trimToNullable(lastJob);
+    const nextNotes = trimToNullable(notes);
     const nextLocationLabel = trimToNullable(manualLocation);
 
     const normalizedHardware = normalizeDraftsForCategory(
@@ -429,6 +437,7 @@ export function VehicleDetailClient({
         year: nextYear,
         license_plate: nextLicensePlate,
         last_worked_job: nextLastJob,
+        notes: nextNotes,
         location_label: nextLocationLabel,
         location_lat: locationLat,
         location_lng: locationLng,
@@ -503,6 +512,7 @@ export function VehicleDetailClient({
       year: nextYear,
       license_plate: nextLicensePlate,
       last_worked_job: nextLastJob,
+      notes: nextNotes,
       location_label: nextLocationLabel,
       location_lat: locationLat,
       location_lng: locationLng,
@@ -535,6 +545,7 @@ export function VehicleDetailClient({
     );
     setLicensePlate(saved.vehicle.license_plate ?? "");
     setLastJob(saved.vehicle.last_worked_job ?? "");
+    setNotes(saved.vehicle.notes ?? "");
     setManualLocation(saved.vehicle.location_label ?? "");
     setLocationLat(saved.vehicle.location_lat);
     setLocationLng(saved.vehicle.location_lng);
@@ -699,6 +710,42 @@ export function VehicleDetailClient({
           />
         </CollapsibleSection>
 
+        <CollapsibleSection
+          title="Location"
+          meta={manualLocation || "Not set"}
+        >
+          <div className="space-y-3">
+            <button
+              type="button"
+              onClick={onUseGpsLocation}
+              disabled={pending === "gps"}
+              className={`${buttonClass} w-full bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900`}
+            >
+              {pending === "gps" ? "Getting location..." : "Use current location"}
+            </button>
+            <label className="block">
+              <span className="mb-2 block text-sm font-medium">
+                Manual location
+              </span>
+              <textarea
+                value={manualLocation}
+                onChange={(e) => onManualLocationChange(e.target.value)}
+                rows={2}
+                className={inputClass}
+              />
+            </label>
+          </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection title="Last job" meta={lastJob || "Not set"}>
+          <textarea
+            value={lastJob}
+            onChange={(e) => onLastJobChange(e.target.value)}
+            rows={2}
+            className={inputClass}
+          />
+        </CollapsibleSection>
+
         <CollapsibleSection title="Vehicle details" meta={name || vehicle.name}>
           <div className="space-y-3">
             <MetaField label="Name" required>
@@ -744,42 +791,6 @@ export function VehicleDetailClient({
           </div>
         </CollapsibleSection>
 
-        <CollapsibleSection
-          title="Location"
-          meta={manualLocation || "Not set"}
-        >
-          <div className="space-y-3">
-            <button
-              type="button"
-              onClick={onUseGpsLocation}
-              disabled={pending === "gps"}
-              className={`${buttonClass} w-full bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900`}
-            >
-              {pending === "gps" ? "Getting location..." : "Use current location"}
-            </button>
-            <label className="block">
-              <span className="mb-2 block text-sm font-medium">
-                Manual location
-              </span>
-              <textarea
-                value={manualLocation}
-                onChange={(e) => onManualLocationChange(e.target.value)}
-                rows={2}
-                className={inputClass}
-              />
-            </label>
-          </div>
-        </CollapsibleSection>
-
-        <CollapsibleSection title="Last job" meta={lastJob || "Not set"}>
-          <textarea
-            value={lastJob}
-            onChange={(e) => onLastJobChange(e.target.value)}
-            rows={2}
-            className={inputClass}
-          />
-        </CollapsibleSection>
-
         <CollapsibleSection title="Issues" meta={`${openIssues.length} open`}>
           <div className="space-y-4">
             <form onSubmit={onAddIssue} className="space-y-3">
@@ -823,6 +834,15 @@ export function VehicleDetailClient({
               </div>
             )}
           </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection title="Notes" meta={notes.trim() || "Not set"}>
+          <textarea
+            value={notes}
+            onChange={(e) => onNotesChange(e.target.value)}
+            rows={4}
+            className={inputClass}
+          />
         </CollapsibleSection>
 
         <CollapsibleSection
@@ -1314,7 +1334,7 @@ function RemoveItemModal({
 
         <div className="mt-4">
           <p className="mb-2 text-sm font-medium">Or set the stock level</p>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2">
             {DEFAULT_QUANTITY_OPTIONS.map((level) => {
               const isCurrent =
                 target.quantity_text.trim().toLowerCase() ===

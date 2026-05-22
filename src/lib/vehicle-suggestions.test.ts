@@ -31,6 +31,7 @@ describe("buildVehicleItemSuggestions", () => {
     expect(result.quantities).toEqual([
       "1 roll",
       "Has some",
+      "Low stock",
       "None",
       "Well stocked",
     ]);

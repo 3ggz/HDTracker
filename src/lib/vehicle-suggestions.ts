@@ -22,6 +22,7 @@ export type VehicleItemSuggestions = {
 
 export const DEFAULT_QUANTITY_OPTIONS: readonly string[] = [
   "None",
+  "Low stock",
   "Has some",
   "Well stocked",
 ];
