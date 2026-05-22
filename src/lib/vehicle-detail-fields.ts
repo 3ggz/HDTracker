@@ -12,6 +12,37 @@ export function parseYearInput(raw: string): number | null {
   return parsed;
 }
 
+// Pulls a leading number out of a flexible quantity_text so we can
+// support "remove N of these" actions. Examples:
+//   "50"            -> { number: 50, suffix: "" }
+//   "50 zip ties"   -> { number: 50, suffix: " zip ties" }
+//   "1 box"         -> { number: 1, suffix: " box" }
+//   "Has some"      -> null
+//   "Well stocked"  -> null
+export function parseQuantityPrefix(
+  quantityText: string,
+): { number: number; suffix: string } | null {
+  const trimmed = quantityText.trim();
+  const match = trimmed.match(/^(\d+(?:\.\d+)?)(.*)$/);
+  if (!match) return null;
+  const number = Number.parseFloat(match[1]);
+  if (!Number.isFinite(number)) return null;
+  return { number, suffix: match[2] };
+}
+
+export function subtractFromQuantity(
+  quantityText: string,
+  amount: number,
+): { kind: "updated"; quantity_text: string } | { kind: "remove-all" } | null {
+  const parsed = parseQuantityPrefix(quantityText);
+  if (!parsed) return null;
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const next = parsed.number - amount;
+  if (next <= 0) return { kind: "remove-all" };
+  const formatted = Number.isInteger(next) ? String(next) : String(next);
+  return { kind: "updated", quantity_text: `${formatted}${parsed.suffix}` };
+}
+
 export function formatGpsLocationLabel(
   latitude: number,
   longitude: number,

@@ -7,7 +7,9 @@ import {
   formatGpsLocationLabel,
   isValidCoordinatePair,
   normalizeVehicleItemDrafts,
+  parseQuantityPrefix,
   parseYearInput,
+  subtractFromQuantity,
   trimToNullable,
   type VehicleItemDraft,
 } from "@/lib/vehicle-detail-fields";
@@ -105,6 +107,9 @@ export function VehicleDetailClient({
   );
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<ItemEditorDraft | null>(
+    null,
+  );
 
   const hardwareDrafts = itemDrafts.filter(
     (draft) => draft.category === "hardware",
@@ -149,6 +154,34 @@ export function VehicleDetailClient({
       current.filter((draft) => draft.localId !== localId),
     );
     markDirty();
+  }
+
+  function askRemoveItem(localId: string) {
+    const draft = itemDrafts.find((d) => d.localId === localId);
+    if (!draft) return;
+    setRemoveTarget(draft);
+  }
+
+  function onConfirmRemoveAll() {
+    if (!removeTarget) return;
+    removeItem(removeTarget.localId);
+    setRemoveTarget(null);
+  }
+
+  function onConfirmRemoveSome(amount: number) {
+    if (!removeTarget) return;
+    const result = subtractFromQuantity(removeTarget.quantity_text, amount);
+    if (!result) return;
+    if (result.kind === "remove-all") {
+      removeItem(removeTarget.localId);
+    } else {
+      updateItemDraft(
+        removeTarget.localId,
+        "quantity_text",
+        result.quantity_text,
+      );
+    }
+    setRemoveTarget(null);
   }
 
   function onLastJobChange(value: string) {
@@ -415,6 +448,14 @@ export function VehicleDetailClient({
   return (
     <section className="mx-auto w-full max-w-md flex-1 px-4 pb-24 pt-4">
       <SuggestionDatalists suggestions={suggestions} />
+      {removeTarget && (
+        <RemoveItemModal
+          target={removeTarget}
+          onCancel={() => setRemoveTarget(null)}
+          onRemoveAll={onConfirmRemoveAll}
+          onRemoveSome={onConfirmRemoveSome}
+        />
+      )}
       <div className="space-y-3">
         {error && (
           <p
@@ -445,7 +486,7 @@ export function VehicleDetailClient({
             nameListId={HARDWARE_NAMES_LIST_ID}
             quantityListId={QUANTITIES_LIST_ID}
             onAdd={addItem}
-            onRemove={removeItem}
+            onAskRemove={askRemoveItem}
             onUpdate={updateItemDraft}
           />
         </CollapsibleSection>
@@ -464,7 +505,7 @@ export function VehicleDetailClient({
             nameListId={TOOL_NAMES_LIST_ID}
             quantityListId={QUANTITIES_LIST_ID}
             onAdd={addItem}
-            onRemove={removeItem}
+            onAskRemove={askRemoveItem}
             onUpdate={updateItemDraft}
           />
         </CollapsibleSection>
@@ -630,7 +671,7 @@ function VehicleItemEditor({
   nameListId,
   quantityListId,
   onAdd,
-  onRemove,
+  onAskRemove,
   onUpdate,
 }: {
   category: VehicleItemCategory;
@@ -641,7 +682,7 @@ function VehicleItemEditor({
   nameListId: string;
   quantityListId: string;
   onAdd: (category: VehicleItemCategory) => void;
-  onRemove: (localId: string) => void;
+  onAskRemove: (localId: string) => void;
   onUpdate: (
     localId: string,
     field: "name" | "quantity_text",
@@ -649,53 +690,58 @@ function VehicleItemEditor({
   ) => void;
 }) {
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       {drafts.length === 0 ? (
         <p className="rounded-lg border border-dashed border-neutral-300 px-4 py-5 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
           Nothing listed yet.
         </p>
       ) : (
-        <ul className="space-y-3">
+        <ul className="space-y-2">
           {drafts.map((draft) => (
-            <li
-              key={draft.localId}
-              className="rounded-lg border border-neutral-200 p-3 dark:border-neutral-800"
-            >
-              <div className="grid grid-cols-[1fr_7rem] gap-2">
-                <label className="block">
-                  <span className="sr-only">Name</span>
-                  <input
-                    value={draft.name}
-                    onChange={(e) =>
-                      onUpdate(draft.localId, "name", e.target.value)
-                    }
-                    placeholder={namePlaceholder}
-                    list={nameListId}
-                    autoComplete="off"
-                    autoCapitalize="words"
-                    className={inputClass}
-                  />
-                </label>
-                <label className="block">
-                  <span className="sr-only">Quantity</span>
-                  <input
-                    value={draft.quantity_text}
-                    onChange={(e) =>
-                      onUpdate(draft.localId, "quantity_text", e.target.value)
-                    }
-                    placeholder={quantityPlaceholder}
-                    list={quantityListId}
-                    autoComplete="off"
-                    className={inputClass}
-                  />
-                </label>
-              </div>
+            <li key={draft.localId} className="flex items-center gap-2">
+              <label className="block flex-1 min-w-0">
+                <span className="sr-only">Name</span>
+                <input
+                  value={draft.name}
+                  onChange={(e) =>
+                    onUpdate(draft.localId, "name", e.target.value)
+                  }
+                  placeholder={namePlaceholder}
+                  list={nameListId}
+                  autoComplete="off"
+                  autoCapitalize="words"
+                  className={inputClass}
+                />
+              </label>
+              <label className="block w-24 flex-shrink-0">
+                <span className="sr-only">Quantity</span>
+                <input
+                  value={draft.quantity_text}
+                  onChange={(e) =>
+                    onUpdate(draft.localId, "quantity_text", e.target.value)
+                  }
+                  placeholder={quantityPlaceholder}
+                  list={quantityListId}
+                  autoComplete="off"
+                  className={inputClass}
+                />
+              </label>
               <button
                 type="button"
-                onClick={() => onRemove(draft.localId)}
-                className="mt-2 min-h-10 rounded-lg px-2 text-sm font-medium text-red-600 active:bg-red-50 dark:text-red-400 dark:active:bg-red-950/40"
+                onClick={() => onAskRemove(draft.localId)}
+                aria-label={`Remove ${draft.name || "item"}`}
+                className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-lg text-neutral-500 transition active:scale-95 active:bg-red-50 active:text-red-600 dark:text-neutral-400 dark:active:bg-red-950/40 dark:active:text-red-400"
               >
-                Remove
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  className="h-5 w-5"
+                >
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
               </button>
             </li>
           ))}
@@ -836,6 +882,100 @@ function IssueList({
         );
       })}
     </ul>
+  );
+}
+
+function RemoveItemModal({
+  target,
+  onCancel,
+  onRemoveAll,
+  onRemoveSome,
+}: {
+  target: ItemEditorDraft;
+  onCancel: () => void;
+  onRemoveAll: () => void;
+  onRemoveSome: (amount: number) => void;
+}) {
+  const [amount, setAmount] = useState("");
+  const numericPrefix = parseQuantityPrefix(target.quantity_text);
+  const parsedAmount = Number.parseFloat(amount);
+  const canSubtract =
+    numericPrefix !== null &&
+    Number.isFinite(parsedAmount) &&
+    parsedAmount > 0;
+  const displayName = target.name.trim() || "this item";
+  const displayQuantity = target.quantity_text.trim();
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="remove-item-title"
+      onClick={onCancel}
+      className="fixed inset-0 z-30 flex items-end bg-black/50 px-4 pb-4 pt-20"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="mx-auto w-full max-w-md rounded-2xl bg-white p-5 shadow-xl dark:bg-neutral-900"
+      >
+        <h2 id="remove-item-title" className="text-lg font-semibold">
+          Remove {displayName}?
+        </h2>
+        {displayQuantity && (
+          <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
+            Currently: {displayQuantity}
+          </p>
+        )}
+
+        {numericPrefix && (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (canSubtract) onRemoveSome(parsedAmount);
+            }}
+            className="mt-4 space-y-2"
+          >
+            <label className="block">
+              <span className="mb-1 block text-sm font-medium">
+                How many to remove?
+              </span>
+              <input
+                type="number"
+                inputMode="numeric"
+                min="1"
+                max={numericPrefix.number}
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                autoFocus
+                className={inputClass}
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={!canSubtract}
+              className={`${buttonClass} w-full bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900`}
+            >
+              Remove {canSubtract ? parsedAmount : "some"}
+            </button>
+          </form>
+        )}
+
+        <button
+          type="button"
+          onClick={onRemoveAll}
+          className={`${buttonClass} mt-3 w-full bg-red-600 text-white dark:bg-red-600`}
+        >
+          Remove all
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className={`${buttonClass} mt-2 w-full text-neutral-600 dark:text-neutral-400`}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }
 
