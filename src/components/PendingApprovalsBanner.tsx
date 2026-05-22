@@ -22,6 +22,7 @@ export function PendingApprovalsBanner({
       setCount(nextCount ?? 0);
     }
 
+    // Realtime is the instant path.
     const channel = supabase.channel("admin-approvals-banner");
     channel.on(
       "postgres_changes" as never,
@@ -32,7 +33,15 @@ export function PendingApprovalsBanner({
     );
     channel.subscribe();
 
+    // Safety-net poll — if Realtime isn't delivering for any reason
+    // (publication, RLS, flaky WebSocket), the banner still catches up
+    // within a few seconds.
+    const interval = setInterval(() => {
+      void refreshCount();
+    }, 12000);
+
     return () => {
+      clearInterval(interval);
       void supabase.removeChannel(channel);
     };
   }, []);

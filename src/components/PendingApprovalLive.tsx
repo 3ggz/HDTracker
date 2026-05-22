@@ -4,9 +4,21 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
-// Subscribes to this user's user_approvals row so the moment an admin
-// flips their approved_at, the pending-approval page re-renders and
-// the server redirects them to "/".
+// Drives auto-redirect off the pending-approval screen when the admin
+// flips the user's approved_at. Uses two strategies in parallel:
+//
+//   1. Realtime subscription on the user's user_approvals row — fires
+//      instantly when the row changes.
+//   2. Polling every 6 seconds — safety net in case Realtime isn't
+//      delivering (e.g. the table somehow isn't in the
+//      `supabase_realtime` publication, the user's RLS gated the
+//      event, a flaky WebSocket).
+//
+// Both call `router.refresh()`, which is idempotent: the server
+// component re-fetches the row and the `if (approved_at) redirect("/")`
+// branch fires once approval lands.
+const POLL_MS = 6000;
+
 export function PendingApprovalLive({ userId }: { userId: string }) {
   const router = useRouter();
 
@@ -29,7 +41,12 @@ export function PendingApprovalLive({ userId }: { userId: string }) {
 
     channel.subscribe();
 
+    const interval = setInterval(() => {
+      router.refresh();
+    }, POLL_MS);
+
     return () => {
+      clearInterval(interval);
       void supabase.removeChannel(channel);
     };
   }, [userId, router]);

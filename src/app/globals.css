@@ -24,3 +24,37 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* BackTip animations.
+   `hdt-swipe-hint` loops a small dot from a "page edge" line to the
+   right, suggesting "swipe from the left edge to go back".
+   `hdt-tip-in` is the one-shot entry transition for the whole toast. */
+@keyframes hdt-swipe-hint {
+  0% {
+    transform: translate(0, -50%);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  65% {
+    transform: translate(160%, -50%);
+    opacity: 1;
+  }
+  85%,
+  100% {
+    transform: translate(160%, -50%);
+    opacity: 0;
+  }
+}
+
+@keyframes hdt-tip-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
