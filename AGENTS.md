@@ -29,13 +29,13 @@ When you face a design trade-off, these two principles win.
 - **Location is one tap.** "Use my current location" via browser Geolocation API is the primary path. Manual entry is the fallback, not the default.
 - **Issues are free-form and resolvable.** A vehicle's issues list is plain text items the tech can add and mark resolved — no rigid maintenance schema.
 
-## Suggested tech stack
+## Tech stack (as scaffolded)
 
-- Next.js 14+ (App Router) + TypeScript (strict mode)
-- Tailwind CSS, mobile-first breakpoints
-- Supabase: Postgres + auth + realtime
-- PWA support (next-pwa or hand-rolled service worker)
-- Vercel for hosting
+- **Next.js 16** (App Router, Turbopack) + **React 19** + **TypeScript** (strict mode)
+- **Tailwind CSS 4** (PostCSS plugin form), mobile-first breakpoints
+- **Supabase** for Postgres + magic-link auth + realtime (project owned by Mark)
+- **PWA** support (next-pwa or hand-rolled service worker) — to be added
+- **Vercel** for hosting once we have a domain
 
 If you change the stack, document the reasoning in [OVERVIEW.md](./OVERVIEW.md) under "Phasing" or a new "Architecture decisions" section.
 
@@ -44,7 +44,7 @@ If you change the stack, document the reasoning in [OVERVIEW.md](./OVERVIEW.md) 
 - TypeScript `strict: true`.
 - No code comments unless explaining a non-obvious *why*. Well-named functions don't need narration.
 - Components in PascalCase (`VehicleCard.tsx`). Utilities in kebab-case (`parse-quantity.ts`).
-- `app/` for routes and server actions. `lib/` for pure logic. `components/` for reusable UI. `supabase/migrations/` for schema.
+- `src/app/` for routes and server actions. `src/lib/` for pure logic and clients (e.g. `src/lib/supabase/`). `src/components/` for reusable UI. `supabase/migrations/` for schema.
 - One feature per PR. Don't bundle drive-by refactors.
 
 ## Testing
@@ -56,7 +56,6 @@ If you change the stack, document the reasoning in [OVERVIEW.md](./OVERVIEW.md) 
 ## Ask before assuming
 
 - **Schema changes** — propose a migration, don't apply silently.
-- **Auth model** — don't pick a login flow without confirming (shared login? per-tech? PIN? magic link?).
 - **Paid infrastructure** — flag before pushing us onto a paid Supabase / Vercel tier.
 - **New dependencies** — keep the dep list lean; justify each one.
 
@@ -70,3 +69,11 @@ If you change the stack, document the reasoning in [OVERVIEW.md](./OVERVIEW.md) 
 ## When in doubt
 
 Re-read the two principles. If your proposed solution makes the app harder to use on a phone, it's wrong even if it's technically elegant.
+
+---
+
+<!-- BEGIN:nextjs-agent-rules -->
+## This is NOT the Next.js you know
+
+This version (Next.js 16) has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
+<!-- END:nextjs-agent-rules -->

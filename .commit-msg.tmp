@@ -1,0 +1,22 @@
+Scaffold Next.js 16 app (TS + Tailwind 4 + App Router + src/)
+
+Initial code scaffolding via create-next-app, integrated with the
+existing project docs:
+
+- Next.js 16.2.6, React 19, TypeScript strict, Tailwind 4
+- App Router, src/ layout, ESLint configured
+- Preserves our README.md, AGENTS.md, OVERVIEW.md (dropped the generic
+  ones the scaffolder generated)
+- Added .env.example for Supabase keys; gitignore allows it through
+- AGENTS.md updated to reflect actual scaffolded stack and absorbs
+  the Next.js framework warning block from the scaffolder
+- README.md Quick Start filled in with install/dev commands
+
+Next up: Supabase client wiring (browser + server + middleware) and
+the magic-link sign-in flow with @HDSecurity.Systems domain check.
+
+Note: npm audit reports a moderate postcss vuln nested inside
+Next.js itself; the suggested "fix" would downgrade Next.js to v9.
+Ignoring; will resolve when Next.js bumps their bundled postcss.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>

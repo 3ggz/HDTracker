@@ -10,27 +10,40 @@ HDTracker is our internal tool to fix this: a fast, easy way for technicians to 
 
 ## Status
 
-Just getting started. Documents-first; code to follow.
+Scaffold landed (Next.js 16 + TypeScript + Tailwind 4). Auth and database wiring in progress.
 
 - [OVERVIEW.md](./OVERVIEW.md) — full scope, features, users, phasing
 - [AGENTS.md](./AGENTS.md) — context for AI assistants picking up work here
 
-## Proposed Tech Stack
+## Tech Stack
 
-- **Frontend:** Next.js (App Router) + TypeScript + Tailwind CSS
-- **Backend / DB:** Supabase (Postgres + auth + realtime), TBD
+- **Frontend:** Next.js 16 (App Router) + React 19 + TypeScript + Tailwind CSS 4
+- **Backend / DB:** Supabase (Postgres + magic-link auth + realtime)
 - **Delivery:** PWA, installable on iOS / Android home screens
-- **Hosting:** Vercel
-
-Tech choices are starting recommendations, not commitments. See [OVERVIEW.md](./OVERVIEW.md) for the reasoning and [AGENTS.md](./AGENTS.md) for what to ask before changing them.
+- **Hosting:** Vercel (once we have a domain)
 
 ## Who Uses This
 
-Internal only. Our company, our techs. No multi-tenancy, no customer-facing surfaces, no public signup.
+Internal only. Access is restricted to `@HDSecurity.Systems` email addresses — no public signup, no multi-tenancy, no customer-facing surfaces.
 
 ## Quick Start
 
-To be filled in once the project is scaffolded.
+Prerequisites: Node 20+ and npm.
+
+```bash
+# 1. Install dependencies
+npm install
+
+# 2. Set up local environment
+cp .env.example .env.local
+# then edit .env.local and paste in your Supabase project URL + anon key
+# (find them in the Supabase dashboard under Project Settings > API)
+
+# 3. Run the dev server
+npm run dev
+```
+
+The app will be at http://localhost:3000. Sign-in flow and database wiring land in subsequent commits — see [OVERVIEW.md](./OVERVIEW.md) for current status.
 
 ## Repository
 
