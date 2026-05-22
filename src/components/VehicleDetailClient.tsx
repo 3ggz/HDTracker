@@ -1287,7 +1287,7 @@ function RemoveItemModal({
         className="mx-auto w-full max-w-md max-h-[85vh] overflow-y-auto rounded-2xl bg-white p-5 shadow-xl dark:bg-neutral-900"
       >
         <h2 id="edit-quantity-title" className="text-lg font-semibold">
-          Edit Quantity
+          {displayName}
         </h2>
         {displayQuantity && (
           <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
@@ -1469,7 +1469,7 @@ function RemoveItemModal({
             onClick={onRemoveAll}
             className="text-sm font-medium text-red-600 underline-offset-4 active:underline dark:text-red-400"
           >
-            Remove {displayName}
+            Delete
           </button>
           <button
             type="button"

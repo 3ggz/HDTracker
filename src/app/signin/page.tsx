@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { ALLOWED_EMAIL_DOMAIN, isAllowedEmail } from "@/lib/email";
@@ -19,6 +19,28 @@ export default function SignInPage() {
   const [isNewUser, setIsNewUser] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [rememberMe, setRememberMe] = useState(true);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("hdtracker_remember_me");
+      if (saved !== null) setRememberMe(saved === "true");
+    } catch {
+      // localStorage can be unavailable (private mode, etc) — ignore.
+    }
+  }, []);
+
+  function onRememberMeChange(checked: boolean) {
+    setRememberMe(checked);
+    try {
+      localStorage.setItem(
+        "hdtracker_remember_me",
+        checked ? "true" : "false",
+      );
+    } catch {
+      // ignore
+    }
+  }
 
   async function onContinue(e: React.FormEvent) {
     e.preventDefault();
@@ -173,6 +195,16 @@ export default function SignInPage() {
               {error}
             </p>
           )}
+
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-neutral-600 dark:text-neutral-400">
+            <input
+              type="checkbox"
+              checked={rememberMe}
+              onChange={(e) => onRememberMeChange(e.target.checked)}
+              className="h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-2 focus:ring-neutral-900/10 dark:border-neutral-600 dark:bg-neutral-800"
+            />
+            Remember me
+          </label>
 
           <button
             type="submit"

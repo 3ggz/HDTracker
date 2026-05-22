@@ -107,6 +107,12 @@ export default async function VehicleQuickViewPage({
             {vehicle.name}
           </h1>
         </div>
+        <Link
+          href="/"
+          className="text-sm font-medium text-neutral-600 underline-offset-4 active:text-neutral-900 hover:underline dark:text-neutral-400 dark:active:text-neutral-100"
+        >
+          Vehicles
+        </Link>
       </header>
 
       <section className="mx-auto w-full max-w-md flex-1 space-y-6 px-4 py-6">
