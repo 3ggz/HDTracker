@@ -21,6 +21,7 @@ export type VehicleActivity = {
   subject_label: string | null;
   details: Record<string, unknown> | null;
   user_id: string | null;
+  user_email: string | null;
   created_at: string;
 };
 
@@ -154,13 +155,26 @@ export function formatRelativeTime(
   });
 }
 
-// Until auth + a profiles table land, every recorded action has
-// user_id = null and renders as "Anonymous". When auth comes back,
-// swap this to take a profile lookup (id -> first_name + last_name)
-// and return the real name.
+// Derives a display name from the actor's email local-part. We split
+// on common separators (".", "_", "-") and title-case each segment so
+// "mark@..." renders as "Mark" and "mark.hacz@..." as "Mark Hacz".
+// Pre-auth history rows (user_email is null) render as "Anonymous".
 export function activityActorName(activity: VehicleActivity): string {
-  if (activity.user_id) return "Signed-in user";
-  return "Anonymous";
+  const email = activity.user_email?.trim();
+  if (!email) return "Anonymous";
+
+  const local = email.split("@")[0]?.trim();
+  if (!local) return "Anonymous";
+
+  const parts = local
+    .split(/[._-]+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  if (parts.length === 0) return "Anonymous";
+
+  return parts
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
 }
 
 export function dayBucketLabel(

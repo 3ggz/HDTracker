@@ -20,6 +20,7 @@ function activity(
     subject_label: partial.subject_label ?? null,
     details: partial.details ?? null,
     user_id: partial.user_id ?? null,
+    user_email: partial.user_email ?? null,
     created_at: partial.created_at ?? "2026-05-22T10:00:00.000Z",
   };
 }
@@ -166,7 +167,7 @@ describe("describeVehicleActivity", () => {
 });
 
 describe("activityActorName", () => {
-  it("falls back to Anonymous when no user is recorded", () => {
+  it("falls back to Anonymous when no email is recorded", () => {
     expect(
       activityActorName(
         activity({ action: "added", subject_type: "vehicle" }),
@@ -174,7 +175,7 @@ describe("activityActorName", () => {
     ).toBe("Anonymous");
   });
 
-  it("returns a placeholder when a user_id exists but no profile is wired", () => {
+  it("ignores a user_id when user_email is missing (pre-migration row)", () => {
     expect(
       activityActorName(
         activity({
@@ -183,7 +184,49 @@ describe("activityActorName", () => {
           user_id: "00000000-0000-0000-0000-000000000abc",
         }),
       ),
-    ).toBe("Signed-in user");
+    ).toBe("Anonymous");
+  });
+
+  it("returns the local-part capitalized for a single-word email", () => {
+    expect(
+      activityActorName(
+        activity({
+          action: "added",
+          subject_type: "vehicle",
+          user_email: "mark@hdsecurity.systems",
+        }),
+      ),
+    ).toBe("Mark");
+  });
+
+  it("splits dotted, underscored, and hyphenated local-parts into words", () => {
+    expect(
+      activityActorName(
+        activity({
+          action: "added",
+          subject_type: "vehicle",
+          user_email: "mark.hacz@hdsecurity.systems",
+        }),
+      ),
+    ).toBe("Mark Hacz");
+    expect(
+      activityActorName(
+        activity({
+          action: "added",
+          subject_type: "vehicle",
+          user_email: "JOHN_DOE@hdsecurity.systems",
+        }),
+      ),
+    ).toBe("John Doe");
+    expect(
+      activityActorName(
+        activity({
+          action: "added",
+          subject_type: "vehicle",
+          user_email: "first-last@hdsecurity.systems",
+        }),
+      ),
+    ).toBe("First Last");
   });
 });
 
