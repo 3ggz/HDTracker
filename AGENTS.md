@@ -15,6 +15,8 @@ When you face a design trade-off, these two principles win.
 
 ## Key product decisions to respect
 
+- **Access is restricted to `@HDSecurity.Systems` emails.** Reject any other domain at sign-in. The check is case-insensitive; the display form is `HDSecurity.Systems`.
+- **First-time onboarding is a name modal.** On a user's first sign-in, prompt for first + last name. **Pre-fill** the first-name field with the email's local-part (text before `@`), capitalized — e.g. `mark@HDSecurity.Systems` → `Mark`. User can correct it. Don't show this modal again after the profile is saved.
 - **Vehicles are the top-level entity.** Inventory, tools, location, issues, and last-job all hang off a Vehicle.
 - **Quantity is flexible, not strict.** Some items (zip ties, beanies, velcro) don't have meaningful integer counts. The data model supports:
   - numeric counts (`50`)

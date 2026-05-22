@@ -24,6 +24,16 @@ No customer-facing users. No external integrations. One company, one team.
 
 ## Feature Scope
 
+### Access & Onboarding
+
+- **Email domain whitelist.** Only `@HDSecurity.Systems` email addresses can access the app. Any other address is rejected at sign-in. The check is case-insensitive but the display form is `HDSecurity.Systems`.
+- **First-time onboarding.** When an allowed email signs in for the first time:
+  - Show a modal asking for **first name** and **last name**.
+  - Pre-fill the first name with the local-part of the email (the text before the `@`). Example: `mark@HDSecurity.Systems` → first name autofills as `Mark` (capitalize the first letter).
+  - User can accept or correct, then enter their last name.
+  - Profile is saved; modal does not appear again for that user.
+- **Auth mechanism (sub-question still open):** magic link vs OAuth (Google Workspace, if the company runs on Google) vs email + password. Magic link is the lowest-friction default for a phone-first internal tool, but if the company already has Google Workspace, "Sign in with Google" + domain check is even smoother.
+
 ### Vehicles
 
 - Add a vehicle (name + optional details such as make/model/plate).
@@ -79,7 +89,7 @@ No customer-facing users. No external integrations. One company, one team.
 
 Things to decide before or during implementation:
 
-1. **Auth model.** Shared company login? Per-technician accounts? PIN code per van? Magic link?
+1. **Auth mechanism.** Domain restriction and onboarding flow are decided (see Access & Onboarding). Still open: magic link vs Google Workspace SSO vs email + password.
 2. **Variants.** Should toggle bolt sizes (1/8, 3/16, 1/4) be three separate items, or one item with size sub-quantities? Same question for resistor values.
 3. **History / change log.** Do we want a per-vehicle activity log (who added/removed what, when)?
 4. **Photos.** Useful to attach a photo when noting a vehicle issue (a dent, a leak)? Probably yes — mobile makes it easy.
