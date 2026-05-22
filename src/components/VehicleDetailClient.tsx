@@ -13,7 +13,10 @@ import {
   trimToNullable,
   type VehicleItemDraft,
 } from "@/lib/vehicle-detail-fields";
-import type { VehicleItemSuggestions } from "@/lib/vehicle-suggestions";
+import {
+  DEFAULT_QUANTITY_OPTIONS,
+  type VehicleItemSuggestions,
+} from "@/lib/vehicle-suggestions";
 
 const HARDWARE_NAMES_LIST_ID = "vehicle-hardware-names";
 const TOOL_NAMES_LIST_ID = "vehicle-tool-names";
@@ -181,6 +184,12 @@ export function VehicleDetailClient({
         result.quantity_text,
       );
     }
+    setRemoveTarget(null);
+  }
+
+  function onConfirmSetLevel(level: string) {
+    if (!removeTarget) return;
+    updateItemDraft(removeTarget.localId, "quantity_text", level);
     setRemoveTarget(null);
   }
 
@@ -454,6 +463,7 @@ export function VehicleDetailClient({
           onCancel={() => setRemoveTarget(null)}
           onRemoveAll={onConfirmRemoveAll}
           onRemoveSome={onConfirmRemoveSome}
+          onSetLevel={onConfirmSetLevel}
         />
       )}
       <div className="space-y-3">
@@ -890,11 +900,13 @@ function RemoveItemModal({
   onCancel,
   onRemoveAll,
   onRemoveSome,
+  onSetLevel,
 }: {
   target: ItemEditorDraft;
   onCancel: () => void;
   onRemoveAll: () => void;
   onRemoveSome: (amount: number) => void;
+  onSetLevel: (level: string) => void;
 }) {
   const [amount, setAmount] = useState("");
   const numericPrefix = parseQuantityPrefix(target.quantity_text);
@@ -959,6 +971,37 @@ function RemoveItemModal({
             </button>
           </form>
         )}
+
+        <div className="mt-4">
+          <p className="mb-2 text-sm font-medium">Or set the stock level</p>
+          <div className="grid grid-cols-3 gap-2">
+            {DEFAULT_QUANTITY_OPTIONS.map((level) => {
+              const isCurrent =
+                target.quantity_text.trim().toLowerCase() ===
+                level.toLowerCase();
+              return (
+                <button
+                  key={level}
+                  type="button"
+                  onClick={() => onSetLevel(level)}
+                  aria-pressed={isCurrent}
+                  className={`${buttonClass} flex-col gap-0.5 border border-neutral-300 px-2 leading-tight dark:border-neutral-700 ${
+                    isCurrent
+                      ? "bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400"
+                      : "bg-white text-neutral-900 dark:bg-neutral-900 dark:text-neutral-50"
+                  }`}
+                >
+                  <span>{level}</span>
+                  {isCurrent && (
+                    <span className="text-[10px] uppercase tracking-wide opacity-60">
+                      Current
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
 
         <button
           type="button"
