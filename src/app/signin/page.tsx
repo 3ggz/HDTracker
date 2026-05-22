@@ -94,7 +94,12 @@ export default function SignInPage() {
     <main className="relative flex min-h-dvh flex-col items-center justify-center bg-neutral-50 px-6 py-12 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-50">
       <div className="w-full max-w-sm">
         <header className="mb-10 text-center">
-          <h1 className="text-3xl font-semibold tracking-tight">HDTracker</h1>
+          <h1 className="text-3xl font-semibold tracking-tight">
+            HDTracker
+            <span className="ml-1.5 align-baseline text-sm font-normal italic text-neutral-400 dark:text-neutral-500">
+              Beta
+            </span>
+          </h1>
           <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-400">
             Vehicle inventory tracking
           </p>
