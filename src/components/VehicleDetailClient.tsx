@@ -5,6 +5,24 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import {
+  DndContext,
+  PointerSensor,
+  TouchSensor,
+  KeyboardSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
   formatGpsLocationLabel,
   isValidCoordinatePair,
   normalizeVehicleItemDrafts,
@@ -180,6 +198,16 @@ export function VehicleDetailClient({
     setItemDrafts((current) =>
       current.filter((draft) => draft.localId !== localId),
     );
+    markDirty();
+  }
+
+  function reorderItem(activeLocalId: string, overLocalId: string) {
+    setItemDrafts((current) => {
+      const activeIdx = current.findIndex((d) => d.localId === activeLocalId);
+      const overIdx = current.findIndex((d) => d.localId === overLocalId);
+      if (activeIdx === -1 || overIdx === -1) return current;
+      return arrayMove(current, activeIdx, overIdx);
+    });
     markDirty();
   }
 
@@ -546,6 +574,7 @@ export function VehicleDetailClient({
             onAdd={addItem}
             onAskRemove={askRemoveItem}
             onUpdate={updateItemDraft}
+            onReorder={reorderItem}
           />
         </CollapsibleSection>
 
@@ -565,6 +594,7 @@ export function VehicleDetailClient({
             onAdd={addItem}
             onAskRemove={askRemoveItem}
             onUpdate={updateItemDraft}
+            onReorder={reorderItem}
           />
         </CollapsibleSection>
 
@@ -765,6 +795,7 @@ function VehicleItemEditor({
   onAdd,
   onAskRemove,
   onUpdate,
+  onReorder,
 }: {
   category: VehicleItemCategory;
   addLabel: string;
@@ -780,7 +811,24 @@ function VehicleItemEditor({
     field: "name" | "quantity_text",
     value: string,
   ) => void;
+  onReorder: (activeLocalId: string, overLocalId: string) => void;
 }) {
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 200, tolerance: 5 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
+
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    onReorder(String(active.id), String(over.id));
+  }
+
   return (
     <div className="space-y-2">
       {drafts.length === 0 ? (
@@ -788,53 +836,31 @@ function VehicleItemEditor({
           Nothing listed yet.
         </p>
       ) : (
-        <ul className="space-y-2">
-          {drafts.map((draft) => (
-            <li key={draft.localId} className="flex items-start gap-2">
-              <div className="flex-1 min-w-0">
-                <Combobox
-                  value={draft.name}
-                  onChange={(value) =>
-                    onUpdate(draft.localId, "name", value)
-                  }
-                  suggestions={nameSuggestions}
-                  placeholder={namePlaceholder}
-                  autoCapitalize="words"
-                  ariaLabel="Name"
-                  className={inputClass}
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext
+            items={drafts.map((d) => d.localId)}
+            strategy={verticalListSortingStrategy}
+          >
+            <ul className="space-y-2">
+              {drafts.map((draft) => (
+                <SortableEditorItem
+                  key={draft.localId}
+                  draft={draft}
+                  namePlaceholder={namePlaceholder}
+                  quantityPlaceholder={quantityPlaceholder}
+                  nameSuggestions={nameSuggestions}
+                  quantitySuggestions={quantitySuggestions}
+                  onAskRemove={onAskRemove}
+                  onUpdate={onUpdate}
                 />
-              </div>
-              <div className="w-24 flex-shrink-0">
-                <Combobox
-                  value={draft.quantity_text}
-                  onChange={(value) =>
-                    onUpdate(draft.localId, "quantity_text", value)
-                  }
-                  suggestions={quantitySuggestions}
-                  placeholder={quantityPlaceholder}
-                  ariaLabel="Quantity"
-                  className={quantityInputClass}
-                />
-              </div>
-              <button
-                type="button"
-                onClick={() => onAskRemove(draft.localId)}
-                aria-label={`Edit ${draft.name || "item"}`}
-                className="flex h-12 w-11 flex-shrink-0 items-center justify-center rounded-lg text-neutral-500 transition active:scale-95 active:bg-neutral-100 dark:text-neutral-400 dark:active:bg-neutral-800"
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                  className="h-5 w-5"
-                >
-                  <circle cx="6" cy="12" r="1.6" />
-                  <circle cx="12" cy="12" r="1.6" />
-                  <circle cx="18" cy="12" r="1.6" />
-                </svg>
-              </button>
-            </li>
-          ))}
-        </ul>
+              ))}
+            </ul>
+          </SortableContext>
+        </DndContext>
       )}
 
       <button
@@ -845,6 +871,98 @@ function VehicleItemEditor({
         {addLabel}
       </button>
     </div>
+  );
+}
+
+function SortableEditorItem({
+  draft,
+  namePlaceholder,
+  quantityPlaceholder,
+  nameSuggestions,
+  quantitySuggestions,
+  onAskRemove,
+  onUpdate,
+}: {
+  draft: ItemEditorDraft;
+  namePlaceholder: string;
+  quantityPlaceholder: string;
+  nameSuggestions: readonly string[];
+  quantitySuggestions: readonly string[];
+  onAskRemove: (localId: string) => void;
+  onUpdate: (
+    localId: string,
+    field: "name" | "quantity_text",
+    value: string,
+  ) => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: draft.localId });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.6 : 1,
+    zIndex: isDragging ? 10 : "auto",
+  };
+
+  return (
+    <li ref={setNodeRef} style={style} className="flex items-start gap-2">
+      <button
+        type="button"
+        aria-label={`Drag to reorder ${draft.name || "item"}`}
+        className="flex h-12 w-8 flex-shrink-0 cursor-grab touch-none items-center justify-center rounded-lg text-neutral-400 transition active:cursor-grabbing active:bg-neutral-100 dark:text-neutral-500 dark:active:bg-neutral-800"
+        {...attributes}
+        {...listeners}
+      >
+        <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+          <circle cx="9" cy="6" r="1.6" />
+          <circle cx="15" cy="6" r="1.6" />
+          <circle cx="9" cy="12" r="1.6" />
+          <circle cx="15" cy="12" r="1.6" />
+          <circle cx="9" cy="18" r="1.6" />
+          <circle cx="15" cy="18" r="1.6" />
+        </svg>
+      </button>
+      <div className="flex-1 min-w-0">
+        <Combobox
+          value={draft.name}
+          onChange={(value) => onUpdate(draft.localId, "name", value)}
+          suggestions={nameSuggestions}
+          placeholder={namePlaceholder}
+          autoCapitalize="words"
+          ariaLabel="Name"
+          className={inputClass}
+        />
+      </div>
+      <div className="w-24 flex-shrink-0">
+        <Combobox
+          value={draft.quantity_text}
+          onChange={(value) => onUpdate(draft.localId, "quantity_text", value)}
+          suggestions={quantitySuggestions}
+          placeholder={quantityPlaceholder}
+          ariaLabel="Quantity"
+          className={quantityInputClass}
+        />
+      </div>
+      <button
+        type="button"
+        onClick={() => onAskRemove(draft.localId)}
+        aria-label={`Edit ${draft.name || "item"}`}
+        className="flex h-12 w-11 flex-shrink-0 items-center justify-center rounded-lg text-neutral-500 transition active:scale-95 active:bg-neutral-100 dark:text-neutral-400 dark:active:bg-neutral-800"
+      >
+        <svg viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+          <circle cx="6" cy="12" r="1.6" />
+          <circle cx="12" cy="12" r="1.6" />
+          <circle cx="18" cy="12" r="1.6" />
+        </svg>
+      </button>
+    </li>
   );
 }
 
