@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { DevModeBadge } from "./DevModeBadge";
+import { SignOutButton } from "./SignOutButton";
 
 export function AppHeader() {
   return (
@@ -12,7 +12,7 @@ export function AppHeader() {
         >
           Quick view
         </Link>
-        <DevModeBadge />
+        <SignOutButton />
       </div>
     </header>
   );

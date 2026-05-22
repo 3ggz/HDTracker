@@ -8,9 +8,16 @@ Internal-only inventory tracker for our service vehicles. Used primarily on mobi
 
 ## Current state (read this before changing auth or RLS)
 
-**Auth is intentionally disabled** while we build the core inventory features. Mark doesn't yet have DNS access for `@HDSecurity.Systems` so magic-link emails aren't reaching the company mailbox. The `/signin` page, `/auth/callback` handler, email-domain check, and SQL trigger are all still in the codebase — the proxy in `src/proxy.ts` just no longer redirects unauthed users. RLS on `public.vehicles` is permissive (`using (true)`) so the anon role can read/write.
+**Auth is back on** — email + password, no confirmation email (Supabase project should have "Confirm email" disabled in Authentication → Providers → Email). The sign-in flow at `/signin` is two-stage:
 
-To re-enable auth: restore the redirect in `src/lib/supabase/middleware.ts`, restore the `user` check in `src/app/page.tsx`, write a migration tightening the RLS policies to `auth.uid() is not null`, and remove the `Dev · auth off` badge (or gate it on an env var).
+1. Email field only. Submitting checks `public.known_emails` to decide whether this address has been registered before.
+2. Password field appears below the (now disabled) email field. New addresses see a hint "Enter a password to create one" and the submit button reads "Create account"; existing addresses see no hint and the button reads "Sign in".
+
+`public.known_emails` is maintained by triggers on `auth.users` (see migration 0008). The trigger from migration 0001 still enforces the `@hdsecurity.systems` domain server-side; migration 0008 dropped the temporary `mark.hacz@gmail.com` dev allowlist that 0002 had added.
+
+**RLS stays permissive** (`using (true)`) on every `public.*` table. Mark has explicitly said to leave it alone for now — the auth gate at the proxy is good enough until we're ready to tighten. Don't restructure RLS without an ask.
+
+To tighten later: rewrite each table's policies to require `auth.uid() is not null` (or stricter), and migrate `vehicle_activity.user_id` joins to a real profiles table when one lands.
 
 ## Two principles that override everything else
 

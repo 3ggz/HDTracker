@@ -1,11 +1,8 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-// Auth gate intentionally disabled — Mark doesn't have DNS access for
-// @HDSecurity.Systems yet, so magic-link emails aren't reaching him.
-// We're building the inventory features against an anonymous session
-// for now. To re-enable: restore the user check + /signin redirect
-// below (see git history for the original version).
+const PUBLIC_PATH_PREFIXES = ["/signin", "/auth"];
+
 export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
 
@@ -30,9 +27,21 @@ export async function updateSession(request: NextRequest) {
     },
   );
 
-  // Refresh the session cookie if one happens to exist (won't blow up
-  // if it doesn't). We don't redirect anywhere.
-  await supabase.auth.getUser();
+  // Do not put logic between createServerClient and getUser — a session
+  // refresh failure here is hard to trace if other code runs first.
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const isPublicPath = PUBLIC_PATH_PREFIXES.some((prefix) =>
+    request.nextUrl.pathname.startsWith(prefix),
+  );
+
+  if (!user && !isPublicPath) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/signin";
+    return NextResponse.redirect(url);
+  }
 
   return supabaseResponse;
 }

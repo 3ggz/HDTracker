@@ -1,46 +1,92 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { ALLOWED_EMAIL_DOMAIN, isAllowedEmail } from "@/lib/email";
 
-type Status =
-  | { kind: "idle" }
-  | { kind: "sending" }
-  | { kind: "sent"; email: string }
-  | { kind: "error"; message: string };
+type Stage = "email" | "password";
+
+const inputClass =
+  "block h-14 w-full rounded-xl border border-neutral-300 bg-white px-4 text-base text-neutral-900 outline-none transition focus:border-neutral-900 focus:ring-2 focus:ring-neutral-900/10 disabled:cursor-not-allowed disabled:bg-neutral-100 disabled:text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50 dark:focus:border-neutral-100 dark:focus:ring-neutral-100/10 dark:disabled:bg-neutral-950 dark:disabled:text-neutral-500";
 
 export default function SignInPage() {
+  const router = useRouter();
+  const [stage, setStage] = useState<Stage>("email");
   const [email, setEmail] = useState("");
-  const [status, setStatus] = useState<Status>({ kind: "idle" });
+  const [password, setPassword] = useState("");
+  const [isNewUser, setIsNewUser] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  async function onSubmit(e: React.FormEvent) {
+  async function onContinue(e: React.FormEvent) {
     e.preventDefault();
+    setError(null);
 
-    if (!isAllowedEmail(email)) {
-      setStatus({
-        kind: "error",
-        message: `Only @${ALLOWED_EMAIL_DOMAIN} email addresses are allowed.`,
-      });
+    const normalized = email.trim().toLowerCase();
+    if (!isAllowedEmail(normalized)) {
+      setError(
+        `Only @${ALLOWED_EMAIL_DOMAIN} email addresses are allowed.`,
+      );
       return;
     }
 
-    setStatus({ kind: "sending" });
-
+    setPending(true);
     const supabase = createClient();
-    const { error } = await supabase.auth.signInWithOtp({
-      email: email.trim().toLowerCase(),
-      options: {
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
-      },
-    });
+    const { data, error: lookupError } = await supabase
+      .from("known_emails")
+      .select("email")
+      .eq("email", normalized)
+      .maybeSingle();
+    setPending(false);
 
-    if (error) {
-      setStatus({ kind: "error", message: error.message });
+    if (lookupError) {
+      setError(lookupError.message);
       return;
     }
 
-    setStatus({ kind: "sent", email: email.trim().toLowerCase() });
+    setIsNewUser(!data);
+    setStage("password");
+  }
+
+  async function onSubmitPassword(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+
+    setPending(true);
+    const supabase = createClient();
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const { error: authError } = isNewUser
+      ? await supabase.auth.signUp({
+          email: normalizedEmail,
+          password,
+        })
+      : await supabase.auth.signInWithPassword({
+          email: normalizedEmail,
+          password,
+        });
+
+    if (authError) {
+      setError(authError.message);
+      setPending(false);
+      return;
+    }
+
+    router.replace("/");
+    router.refresh();
+  }
+
+  function onUseDifferentEmail() {
+    setStage("email");
+    setPassword("");
+    setIsNewUser(false);
+    setError(null);
   }
 
   return (
@@ -53,72 +99,108 @@ export default function SignInPage() {
           </p>
         </header>
 
-        {status.kind === "sent" ? (
-          <div className="rounded-2xl border border-neutral-200 bg-white p-6 text-center shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-            <h2 className="text-lg font-medium">Check your email</h2>
-            <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-400">
-              We sent a sign-in link to{" "}
-              <span className="font-medium text-neutral-900 dark:text-neutral-100">
-                {status.email}
-              </span>
-              . Tap it on this device to finish signing in.
+        <form
+          onSubmit={stage === "email" ? onContinue : onSubmitPassword}
+          className="space-y-4"
+        >
+          <div>
+            <label
+              htmlFor="email"
+              className="mb-2 block text-sm font-medium"
+            >
+              Work email
+            </label>
+            <input
+              id="email"
+              type="email"
+              inputMode="email"
+              autoComplete="email"
+              required
+              autoFocus={stage === "email"}
+              value={email}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                if (error) setError(null);
+              }}
+              disabled={stage === "password"}
+              placeholder={`you@${ALLOWED_EMAIL_DOMAIN}`}
+              className={inputClass}
+            />
+          </div>
+
+          {stage === "password" && (
+            <div className="space-y-2">
+              {isNewUser && (
+                <p className="rounded-lg bg-neutral-100 px-3 py-2 text-xs text-neutral-600 dark:bg-neutral-900 dark:text-neutral-400">
+                  No account yet for this email. Enter a password to create
+                  one.
+                </p>
+              )}
+              <label
+                htmlFor="password"
+                className="block text-sm font-medium"
+              >
+                Password
+              </label>
+              <input
+                id="password"
+                type="password"
+                autoComplete={isNewUser ? "new-password" : "current-password"}
+                required
+                autoFocus
+                minLength={8}
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (error) setError(null);
+                }}
+                className={inputClass}
+              />
+            </div>
+          )}
+
+          {error && (
+            <p
+              role="alert"
+              className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-300"
+            >
+              {error}
             </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={pending}
+            className="block h-14 w-full rounded-xl bg-neutral-900 text-base font-medium text-white transition active:scale-[0.98] disabled:opacity-60 dark:bg-neutral-100 dark:text-neutral-900"
+          >
+            {pending
+              ? stage === "email"
+                ? "Checking..."
+                : isNewUser
+                  ? "Creating..."
+                  : "Signing in..."
+              : stage === "email"
+                ? "Continue"
+                : isNewUser
+                  ? "Create account"
+                  : "Sign in"}
+          </button>
+
+          {stage === "password" && (
             <button
               type="button"
-              onClick={() => setStatus({ kind: "idle" })}
-              className="mt-6 text-sm text-neutral-600 underline-offset-4 hover:underline dark:text-neutral-400"
+              onClick={onUseDifferentEmail}
+              disabled={pending}
+              className="block w-full text-center text-sm text-neutral-600 underline-offset-4 hover:underline disabled:opacity-60 dark:text-neutral-400"
             >
               Use a different email
             </button>
-          </div>
-        ) : (
-          <form onSubmit={onSubmit} className="space-y-4">
-            <div>
-              <label
-                htmlFor="email"
-                className="mb-2 block text-sm font-medium"
-              >
-                Work email
-              </label>
-              <input
-                id="email"
-                type="email"
-                inputMode="email"
-                autoComplete="email"
-                required
-                autoFocus
-                value={email}
-                onChange={(e) => {
-                  setEmail(e.target.value);
-                  if (status.kind === "error") setStatus({ kind: "idle" });
-                }}
-                placeholder={`you@${ALLOWED_EMAIL_DOMAIN}`}
-                className="block h-14 w-full rounded-xl border border-neutral-300 bg-white px-4 text-base text-neutral-900 outline-none transition focus:border-neutral-900 focus:ring-2 focus:ring-neutral-900/10 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50 dark:focus:border-neutral-100 dark:focus:ring-neutral-100/10"
-              />
-            </div>
+          )}
 
-            {status.kind === "error" && (
-              <p
-                role="alert"
-                className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-300"
-              >
-                {status.message}
-              </p>
-            )}
-
-            <button
-              type="submit"
-              disabled={status.kind === "sending"}
-              className="block h-14 w-full rounded-xl bg-neutral-900 text-base font-medium text-white transition active:scale-[0.98] disabled:opacity-60 dark:bg-neutral-100 dark:text-neutral-900"
-            >
-              {status.kind === "sending" ? "Sending link..." : "Send magic link"}
-            </button>
-
-            <p className="pt-2 text-center text-xs text-neutral-500 dark:text-neutral-500">
-              Only @{ALLOWED_EMAIL_DOMAIN} addresses can sign in.
-            </p>
-          </form>
-        )}
+          <p className="pt-2 text-center text-xs text-neutral-500 dark:text-neutral-500">
+            Only @{ALLOWED_EMAIL_DOMAIN} addresses can sign in.
+          </p>
+        </form>
       </div>
     </main>
   );
