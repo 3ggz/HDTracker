@@ -19,3 +19,4 @@ Each migration is idempotent (uses `create or replace` / `drop trigger if exists
 | File | Purpose |
 | --- | --- |
 | `0001_enforce_email_domain.sql` | Trigger on `auth.users` that rejects any signup whose email isn't `@hdsecurity.systems`. Server-side counterpart to the client-side check in `src/lib/email.ts`. |
+| `0002_dev_email_allowlist.sql` | Temporary: adds `mark.hacz@gmail.com` to the allowlist so Mark can sign in for dev while the `@HDSecurity.Systems` mailbox isn't yet configured. To be reverted once Resend (or similar) is wired up to the company domain. |
