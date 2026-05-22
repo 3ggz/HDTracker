@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { ALLOWED_EMAIL_DOMAIN, isAllowedEmail } from "@/lib/email";
+import { getBuildVersion } from "@/lib/build-version";
 
 type Stage = "email" | "password";
 
@@ -90,7 +91,7 @@ export default function SignInPage() {
   }
 
   return (
-    <main className="flex min-h-dvh flex-col items-center justify-center bg-neutral-50 px-6 py-12 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-50">
+    <main className="relative flex min-h-dvh flex-col items-center justify-center bg-neutral-50 px-6 py-12 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-50">
       <div className="w-full max-w-sm">
         <header className="mb-10 text-center">
           <h1 className="text-3xl font-semibold tracking-tight">HDTracker</h1>
@@ -202,6 +203,10 @@ export default function SignInPage() {
           </p>
         </form>
       </div>
+
+      <p className="absolute bottom-4 left-0 right-0 text-center text-[10px] tabular-nums text-neutral-400 dark:text-neutral-500">
+        v{getBuildVersion()}
+      </p>
     </main>
   );
 }

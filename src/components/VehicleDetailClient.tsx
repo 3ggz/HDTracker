@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -129,6 +129,14 @@ export function VehicleDetailClient({
   const [removeTarget, setRemoveTarget] = useState<ItemEditorDraft | null>(
     null,
   );
+
+  // Snapshot of the last persisted state so Undo can revert all draft
+  // edits without a network round-trip. Initialised from props on
+  // mount and refreshed after every successful save.
+  const lastSavedRef = useRef({
+    vehicle: initialVehicle,
+    items: initialItems,
+  });
 
   const hardwareDrafts = itemDrafts.filter(
     (draft) => draft.category === "hardware",
@@ -361,8 +369,8 @@ export function VehicleDetailClient({
     }
 
     const savedItems = (refreshedItems ?? []) as VehicleItem[];
-    setVehicle((current) => ({
-      ...current,
+    const updatedVehicle = {
+      ...vehicle,
       name: nextName,
       make: nextMake,
       model: nextModel,
@@ -372,7 +380,12 @@ export function VehicleDetailClient({
       location_label: nextLocationLabel,
       location_lat: locationLat,
       location_lng: locationLng,
-    }));
+    };
+    setVehicle(updatedVehicle);
+    lastSavedRef.current = {
+      vehicle: updatedVehicle,
+      items: savedItems,
+    };
     setName(nextName);
     setMake(nextMake ?? "");
     setModel(nextModel ?? "");
@@ -384,6 +397,26 @@ export function VehicleDetailClient({
     setNotice("Changes saved.");
     setPending(null);
     router.refresh();
+  }
+
+  function onUndo() {
+    const saved = lastSavedRef.current;
+    setName(saved.vehicle.name);
+    setMake(saved.vehicle.make ?? "");
+    setModel(saved.vehicle.model ?? "");
+    setYearInput(
+      saved.vehicle.year != null ? String(saved.vehicle.year) : "",
+    );
+    setLicensePlate(saved.vehicle.license_plate ?? "");
+    setLastJob(saved.vehicle.last_worked_job ?? "");
+    setManualLocation(saved.vehicle.location_label ?? "");
+    setLocationLat(saved.vehicle.location_lat);
+    setLocationLng(saved.vehicle.location_lng);
+    setItemDrafts(saved.items.map(itemToDraft));
+    setSavedItemIds(new Set(saved.items.map((item) => item.id)));
+    setDirty(false);
+    setError(null);
+    setNotice("Discarded unsaved changes.");
   }
 
   async function onDeleteVehicle() {
@@ -698,12 +731,20 @@ export function VehicleDetailClient({
       </div>
 
       <div className="fixed inset-x-0 bottom-0 z-20 border-t border-neutral-200 bg-neutral-50/95 px-4 py-3 backdrop-blur dark:border-neutral-800 dark:bg-neutral-950/95">
-        <div className="mx-auto max-w-md">
+        <div className="mx-auto flex max-w-md gap-2">
+          <button
+            type="button"
+            onClick={onUndo}
+            disabled={!dirty || pending === "save"}
+            className={`${buttonClass} flex-shrink-0 border border-neutral-300 bg-white px-5 text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300`}
+          >
+            Undo
+          </button>
           <button
             type="button"
             onClick={onSaveChanges}
             disabled={!dirty || pending === "save"}
-            className={`${buttonClass} w-full bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900`}
+            className={`${buttonClass} flex-1 bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900`}
           >
             {pending === "save" ? "Saving..." : "Save changes"}
           </button>
@@ -778,18 +819,17 @@ function VehicleItemEditor({
               <button
                 type="button"
                 onClick={() => onAskRemove(draft.localId)}
-                aria-label={`Remove ${draft.name || "item"}`}
-                className="flex h-12 w-11 flex-shrink-0 items-center justify-center rounded-lg text-neutral-500 transition active:scale-95 active:bg-red-50 active:text-red-600 dark:text-neutral-400 dark:active:bg-red-950/40 dark:active:text-red-400"
+                aria-label={`Edit ${draft.name || "item"}`}
+                className="flex h-12 w-11 flex-shrink-0 items-center justify-center rounded-lg text-neutral-500 transition active:scale-95 active:bg-neutral-100 dark:text-neutral-400 dark:active:bg-neutral-800"
               >
                 <svg
                   viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
+                  fill="currentColor"
                   className="h-5 w-5"
                 >
-                  <line x1="5" y1="12" x2="19" y2="12" />
+                  <circle cx="6" cy="12" r="1.6" />
+                  <circle cx="12" cy="12" r="1.6" />
+                  <circle cx="18" cy="12" r="1.6" />
                 </svg>
               </button>
             </li>
@@ -1029,20 +1069,22 @@ function RemoveItemModal({
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={onRemoveAll}
-          className={`${buttonClass} mt-3 w-full bg-red-600 text-white dark:bg-red-600`}
-        >
-          Remove all
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          className={`${buttonClass} mt-2 w-full text-neutral-600 dark:text-neutral-400`}
-        >
-          Cancel
-        </button>
+        <div className="mt-5 flex items-center justify-between border-t border-neutral-200 pt-3 dark:border-neutral-800">
+          <button
+            type="button"
+            onClick={onRemoveAll}
+            className="text-sm font-medium text-red-600 underline-offset-4 active:underline dark:text-red-400"
+          >
+            Remove all
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-sm font-medium text-neutral-600 underline-offset-4 active:underline dark:text-neutral-400"
+          >
+            Cancel
+          </button>
+        </div>
       </div>
     </div>
   );

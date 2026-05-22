@@ -1,10 +1,16 @@
 import Link from "next/link";
 import { SignOutButton } from "./SignOutButton";
+import { getBuildVersion } from "@/lib/build-version";
 
 export function AppHeader() {
   return (
     <header className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-neutral-200 bg-neutral-50/80 px-4 py-3 backdrop-blur dark:border-neutral-800 dark:bg-neutral-950/80">
-      <h1 className="text-base font-semibold tracking-tight">HDTracker</h1>
+      <div className="leading-tight">
+        <h1 className="text-base font-semibold tracking-tight">HDTracker</h1>
+        <p className="mt-0.5 text-[10px] tabular-nums text-neutral-400 dark:text-neutral-500">
+          v{getBuildVersion()}
+        </p>
+      </div>
       <div className="flex items-center gap-3">
         <Link
           href="/quickview"
