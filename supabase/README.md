@@ -23,3 +23,4 @@ Each migration is idempotent (uses `create or replace` / `drop trigger if exists
 | `0003_vehicles_table.sql` | The top-level `vehicles` table + shared `set_updated_at()` trigger function + permissive RLS policies (anon can read/write — auth is currently disabled in the app). When auth is re-enabled, tighten these policies to require `auth.uid() is not null`. |
 | `0004_vehicle_issues.sql` | Free-form per-vehicle issues with `resolved_at`, parent vehicle freshness trigger, and temporary permissive RLS policies matching the auth-off dev state. |
 | `0005_vehicle_items.sql` | Per-vehicle hardware and tools with flexible quantity text, display order, parent vehicle freshness trigger, and temporary permissive RLS policies. |
+| `0006_vehicle_activity.sql` | Per-vehicle audit log populated by AFTER triggers on `vehicles`, `vehicle_items`, and `vehicle_issues`. Powers the `/vehicles/[id]/history` view. user_id pulled from `auth.uid()` (null while auth is off). |

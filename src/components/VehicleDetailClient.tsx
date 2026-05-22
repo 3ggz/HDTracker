@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -641,6 +642,13 @@ export function VehicleDetailClient({
             )}
           </div>
         </CollapsibleSection>
+
+        <Link
+          href={`/vehicles/${vehicle.id}/history`}
+          className="block rounded-lg border border-neutral-200 bg-white p-4 text-center text-sm font-medium text-neutral-700 transition active:scale-[0.99] dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300"
+        >
+          View history
+        </Link>
 
         <DeleteVehicleSection
           vehicleName={vehicle.name}
