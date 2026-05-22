@@ -3,6 +3,7 @@ import {
   formatGpsLocationLabel,
   isValidCoordinatePair,
   normalizeVehicleItemDrafts,
+  parseYearInput,
   trimToNullable,
 } from "./vehicle-detail-fields";
 
@@ -27,6 +28,16 @@ describe("vehicle detail field helpers", () => {
     expect(isValidCoordinatePair(90.1, 0)).toBe(false);
     expect(isValidCoordinatePair(0, -180.1)).toBe(false);
     expect(isValidCoordinatePair(Number.NaN, 0)).toBe(false);
+  });
+
+  it("parses year inputs into the realistic vehicle range", () => {
+    expect(parseYearInput("")).toBeNull();
+    expect(parseYearInput("   ")).toBeNull();
+    expect(parseYearInput("2021")).toBe(2021);
+    expect(parseYearInput(" 1999 ")).toBe(1999);
+    expect(parseYearInput("not a year")).toBeNull();
+    expect(parseYearInput("1850")).toBeNull();
+    expect(parseYearInput("3000")).toBeNull();
   });
 
   it("normalizes item drafts while keeping flexible quantities", () => {

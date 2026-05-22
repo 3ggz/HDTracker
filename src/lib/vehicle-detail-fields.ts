@@ -3,6 +3,15 @@ export function trimToNullable(value: string): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+export function parseYearInput(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isFinite(parsed)) return null;
+  if (parsed < 1900 || parsed > 2100) return null;
+  return parsed;
+}
+
 export function formatGpsLocationLabel(
   latitude: number,
   longitude: number,

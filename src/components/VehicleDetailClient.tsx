@@ -1,12 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import {
   formatGpsLocationLabel,
   isValidCoordinatePair,
   normalizeVehicleItemDrafts,
+  parseYearInput,
   trimToNullable,
   type VehicleItemDraft,
 } from "@/lib/vehicle-detail-fields";
@@ -51,7 +52,7 @@ type VehicleIssue = {
   created_at: string;
 };
 
-type PendingAction = "save" | "gps" | "add-issue" | string;
+type PendingAction = "save" | "gps" | "add-issue" | "delete" | string;
 
 const inputClass =
   "block min-h-12 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-base text-neutral-900 outline-none transition focus:border-neutral-900 focus:ring-2 focus:ring-neutral-900/10 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50 dark:focus:border-neutral-100 dark:focus:ring-neutral-100/10";
@@ -83,6 +84,13 @@ export function VehicleDetailClient({
     () => new Set(initialItems.map((item) => item.id)),
   );
   const [issues, setIssues] = useState(initialIssues);
+  const [name, setName] = useState(vehicle.name);
+  const [make, setMake] = useState(vehicle.make ?? "");
+  const [model, setModel] = useState(vehicle.model ?? "");
+  const [yearInput, setYearInput] = useState(
+    vehicle.year != null ? String(vehicle.year) : "",
+  );
+  const [licensePlate, setLicensePlate] = useState(vehicle.license_plate ?? "");
   const [lastJob, setLastJob] = useState(vehicle.last_worked_job ?? "");
   const [manualLocation, setManualLocation] = useState(
     vehicle.location_label ?? "",
@@ -96,17 +104,7 @@ export function VehicleDetailClient({
     itemsLoadError ?? issuesLoadError,
   );
   const [notice, setNotice] = useState<string | null>(null);
-
-  const detailRows = useMemo(() => {
-    const rows: { label: string; value: string | number }[] = [];
-    if (vehicle.make) rows.push({ label: "Make", value: vehicle.make });
-    if (vehicle.model) rows.push({ label: "Model", value: vehicle.model });
-    if (vehicle.year) rows.push({ label: "Year", value: vehicle.year });
-    if (vehicle.license_plate) {
-      rows.push({ label: "Plate", value: vehicle.license_plate });
-    }
-    return rows;
-  }, [vehicle]);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const hardwareDrafts = itemDrafts.filter(
     (draft) => draft.category === "hardware",
@@ -158,6 +156,11 @@ export function VehicleDetailClient({
     markDirty();
   }
 
+  function onMetaFieldChange(setter: (value: string) => void, value: string) {
+    setter(value);
+    markDirty();
+  }
+
   function onManualLocationChange(value: string) {
     setManualLocation(value);
     setLocationLat(null);
@@ -201,9 +204,23 @@ export function VehicleDetailClient({
   }
 
   async function onSaveChanges() {
-    setPending("save");
     setError(null);
     setNotice(null);
+
+    const nextName = name.trim();
+    if (!nextName) {
+      setError("Vehicle needs a name.");
+      return;
+    }
+
+    setPending("save");
+
+    const nextYear = parseYearInput(yearInput);
+    const nextMake = trimToNullable(make);
+    const nextModel = trimToNullable(model);
+    const nextLicensePlate = trimToNullable(licensePlate);
+    const nextLastJob = trimToNullable(lastJob);
+    const nextLocationLabel = trimToNullable(manualLocation);
 
     const normalizedHardware = normalizeDraftsForCategory(
       itemDrafts,
@@ -216,8 +233,13 @@ export function VehicleDetailClient({
     const { error: vehicleError } = await supabase
       .from("vehicles")
       .update({
-        last_worked_job: trimToNullable(lastJob),
-        location_label: trimToNullable(manualLocation),
+        name: nextName,
+        make: nextMake,
+        model: nextModel,
+        year: nextYear,
+        license_plate: nextLicensePlate,
+        last_worked_job: nextLastJob,
+        location_label: nextLocationLabel,
         location_lat: locationLat,
         location_lng: locationLng,
       })
@@ -283,16 +305,48 @@ export function VehicleDetailClient({
     const savedItems = (refreshedItems ?? []) as VehicleItem[];
     setVehicle((current) => ({
       ...current,
-      last_worked_job: trimToNullable(lastJob),
-      location_label: trimToNullable(manualLocation),
+      name: nextName,
+      make: nextMake,
+      model: nextModel,
+      year: nextYear,
+      license_plate: nextLicensePlate,
+      last_worked_job: nextLastJob,
+      location_label: nextLocationLabel,
       location_lat: locationLat,
       location_lng: locationLng,
     }));
+    setName(nextName);
+    setMake(nextMake ?? "");
+    setModel(nextModel ?? "");
+    setYearInput(nextYear != null ? String(nextYear) : "");
+    setLicensePlate(nextLicensePlate ?? "");
     setItemDrafts(savedItems.map(itemToDraft));
     setSavedItemIds(new Set(savedItems.map((item) => item.id)));
     setDirty(false);
     setNotice("Changes saved.");
     setPending(null);
+    router.refresh();
+  }
+
+  async function onDeleteVehicle() {
+    setPending("delete");
+    setError(null);
+    setNotice(null);
+
+    const supabase = createClient();
+    const { error: dbError } = await supabase
+      .from("vehicles")
+      .delete()
+      .eq("id", vehicle.id);
+
+    if (dbError) {
+      setError(dbError.message);
+      setPending(null);
+      setConfirmDelete(false);
+      return;
+    }
+
+    router.replace("/");
     router.refresh();
   }
 
@@ -415,30 +469,54 @@ export function VehicleDetailClient({
           />
         </CollapsibleSection>
 
-        <CollapsibleSection title="Vehicle details" meta={vehicle.name}>
-          {detailRows.length > 0 ? (
-            <dl className="overflow-hidden rounded-lg border border-neutral-200 text-sm dark:border-neutral-800">
-              {detailRows.map((row, i) => (
-                <div
-                  key={row.label}
-                  className={`flex items-center justify-between px-4 py-3 ${
-                    i > 0
-                      ? "border-t border-neutral-200 dark:border-neutral-800"
-                      : ""
-                  }`}
-                >
-                  <dt className="text-neutral-500 dark:text-neutral-400">
-                    {row.label}
-                  </dt>
-                  <dd className="font-medium">{row.value}</dd>
-                </div>
-              ))}
-            </dl>
-          ) : (
-            <p className="text-sm text-neutral-500 dark:text-neutral-400">
-              No vehicle details saved.
-            </p>
-          )}
+        <CollapsibleSection title="Vehicle details" meta={name || vehicle.name}>
+          <div className="space-y-3">
+            <MetaField label="Name" required>
+              <input
+                value={name}
+                onChange={(e) => onMetaFieldChange(setName, e.target.value)}
+                placeholder="Tampa Van"
+                className={inputClass}
+              />
+            </MetaField>
+            <MetaField label="Make">
+              <input
+                value={make}
+                onChange={(e) => onMetaFieldChange(setMake, e.target.value)}
+                placeholder="Ford"
+                className={inputClass}
+              />
+            </MetaField>
+            <MetaField label="Model">
+              <input
+                value={model}
+                onChange={(e) => onMetaFieldChange(setModel, e.target.value)}
+                placeholder="Transit"
+                className={inputClass}
+              />
+            </MetaField>
+            <MetaField label="Year">
+              <input
+                value={yearInput}
+                onChange={(e) =>
+                  onMetaFieldChange(setYearInput, e.target.value)
+                }
+                inputMode="numeric"
+                placeholder="2021"
+                className={inputClass}
+              />
+            </MetaField>
+            <MetaField label="License plate">
+              <input
+                value={licensePlate}
+                onChange={(e) =>
+                  onMetaFieldChange(setLicensePlate, e.target.value)
+                }
+                placeholder="ABC-1234"
+                className={inputClass}
+              />
+            </MetaField>
+          </div>
         </CollapsibleSection>
 
         <CollapsibleSection
@@ -520,6 +598,19 @@ export function VehicleDetailClient({
             )}
           </div>
         </CollapsibleSection>
+
+        <DeleteVehicleSection
+          vehicleName={vehicle.name}
+          confirming={confirmDelete}
+          pending={pending === "delete"}
+          onAskConfirm={() => {
+            setConfirmDelete(true);
+            setNotice(null);
+            setError(null);
+          }}
+          onCancel={() => setConfirmDelete(false)}
+          onConfirm={onDeleteVehicle}
+        />
       </div>
 
       <div className="fixed inset-x-0 bottom-0 z-20 border-t border-neutral-200 bg-neutral-50/95 px-4 py-3 backdrop-blur dark:border-neutral-800 dark:bg-neutral-950/95">
@@ -753,6 +844,83 @@ function IssueList({
         );
       })}
     </ul>
+  );
+}
+
+function MetaField({
+  label,
+  required,
+  children,
+}: {
+  label: string;
+  required?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-sm font-medium">
+        {label}
+        {required && <span className="text-red-600 dark:text-red-400"> *</span>}
+      </span>
+      {children}
+    </label>
+  );
+}
+
+function DeleteVehicleSection({
+  vehicleName,
+  confirming,
+  pending,
+  onAskConfirm,
+  onCancel,
+  onConfirm,
+}: {
+  vehicleName: string;
+  confirming: boolean;
+  pending: boolean;
+  onAskConfirm: () => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  if (!confirming) {
+    return (
+      <div className="rounded-lg border border-red-200 bg-white p-4 dark:border-red-950/60 dark:bg-neutral-900">
+        <button
+          type="button"
+          onClick={onAskConfirm}
+          className={`${buttonClass} w-full text-red-700 dark:text-red-400`}
+        >
+          Delete vehicle
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3 rounded-lg border border-red-300 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950/30">
+      <p className="text-sm text-red-800 dark:text-red-200">
+        Permanently delete <strong>{vehicleName}</strong>? All its hardware,
+        tools, and issues are removed too. This can&apos;t be undone.
+      </p>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={pending}
+          className={`${buttonClass} flex-1 border border-neutral-300 bg-white text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50`}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={pending}
+          className={`${buttonClass} flex-1 bg-red-600 text-white dark:bg-red-600`}
+        >
+          {pending ? "Deleting..." : "Yes, delete"}
+        </button>
+      </div>
+    </div>
   );
 }
 

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { parseYearInput } from "@/lib/vehicle-detail-fields";
 
 const inputClass =
   "block h-14 w-full rounded-xl border border-neutral-300 bg-white px-4 text-base text-neutral-900 outline-none transition focus:border-neutral-900 focus:ring-2 focus:ring-neutral-900/10 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50 dark:focus:border-neutral-100 dark:focus:ring-neutral-100/10";
@@ -24,9 +25,6 @@ export default function NewVehiclePage() {
       return;
     }
 
-    const yearRaw = (formData.get("year") as string | null)?.trim();
-    const yearParsed = yearRaw ? Number.parseInt(yearRaw, 10) : NaN;
-
     setPending(true);
     const supabase = createClient();
     const { data, error: dbError } = await supabase
@@ -35,7 +33,7 @@ export default function NewVehiclePage() {
         name,
         make: (formData.get("make") as string | null)?.trim() || null,
         model: (formData.get("model") as string | null)?.trim() || null,
-        year: Number.isFinite(yearParsed) ? yearParsed : null,
+        year: parseYearInput((formData.get("year") as string | null) ?? ""),
         license_plate:
           (formData.get("license_plate") as string | null)?.trim() || null,
       })
