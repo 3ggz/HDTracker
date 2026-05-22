@@ -36,7 +36,11 @@ import {
   DEFAULT_QUANTITY_OPTIONS,
   type VehicleItemSuggestions,
 } from "@/lib/vehicle-suggestions";
-import type { VehiclePhoto } from "@/lib/vehicle-photos";
+import {
+  publicPhotoUrl,
+  uploadItemPhoto,
+  type VehiclePhoto,
+} from "@/lib/vehicle-photos";
 import { PhotoGallery } from "@/components/PhotoGallery";
 import { Combobox } from "@/components/Combobox";
 
@@ -61,11 +65,15 @@ type VehicleItem = {
   name: string;
   quantity_text: string;
   display_order: number;
+  photo_storage_path: string | null;
+  photo_uploaded_at: string | null;
 };
 
 type ItemEditorDraft = VehicleItemDraft & {
   localId: string;
   category: VehicleItemCategory;
+  photo_storage_path: string | null;
+  photo_uploaded_at: string | null;
 };
 
 type VehicleIssue = {
@@ -144,9 +152,12 @@ export function VehicleDetailClient({
   }
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [removeTarget, setRemoveTarget] = useState<ItemEditorDraft | null>(
-    null,
-  );
+  const [removeTargetLocalId, setRemoveTargetLocalId] = useState<
+    string | null
+  >(null);
+  const removeTarget = removeTargetLocalId
+    ? itemDrafts.find((d) => d.localId === removeTargetLocalId) ?? null
+    : null;
 
   // Snapshot of the last persisted state so Undo can revert all draft
   // edits without a network round-trip. Initialised from props on
@@ -215,6 +226,8 @@ export function VehicleDetailClient({
         category,
         name: "",
         quantity_text: "",
+        photo_storage_path: null,
+        photo_uploaded_at: null,
       },
     ]);
     markDirty();
@@ -251,15 +264,13 @@ export function VehicleDetailClient({
   }
 
   function askRemoveItem(localId: string) {
-    const draft = itemDrafts.find((d) => d.localId === localId);
-    if (!draft) return;
-    setRemoveTarget(draft);
+    setRemoveTargetLocalId(localId);
   }
 
   function onConfirmRemoveAll() {
     if (!removeTarget) return;
     removeItem(removeTarget.localId);
-    setRemoveTarget(null);
+    setRemoveTargetLocalId(null);
   }
 
   function onConfirmRemoveSome(amount: number) {
@@ -275,13 +286,46 @@ export function VehicleDetailClient({
         result.quantity_text,
       );
     }
-    setRemoveTarget(null);
+    setRemoveTargetLocalId(null);
   }
 
   function onConfirmSetLevel(level: string) {
     if (!removeTarget) return;
     updateItemDraft(removeTarget.localId, "quantity_text", level);
-    setRemoveTarget(null);
+    setRemoveTargetLocalId(null);
+  }
+
+  function onItemPhotoUpdated(
+    itemId: string,
+    storagePath: string,
+    uploadedAt: string,
+  ) {
+    setItemDrafts((current) =>
+      current.map((draft) =>
+        draft.id === itemId
+          ? {
+              ...draft,
+              photo_storage_path: storagePath,
+              photo_uploaded_at: uploadedAt,
+            }
+          : draft,
+      ),
+    );
+    // Photo upload bypasses the Save Changes flow (writes directly to
+    // the DB), so update the last-saved snapshot too — otherwise Undo
+    // would mistakenly revert the photo.
+    lastSavedRef.current = {
+      ...lastSavedRef.current,
+      items: lastSavedRef.current.items.map((item) =>
+        item.id === itemId
+          ? {
+              ...item,
+              photo_storage_path: storagePath,
+              photo_uploaded_at: uploadedAt,
+            }
+          : item,
+      ),
+    };
   }
 
   function onLastJobChange(value: string) {
@@ -424,7 +468,9 @@ export function VehicleDetailClient({
 
     const { data: refreshedItems, error: refreshError } = await supabase
       .from("vehicle_items")
-      .select("id, category, name, quantity_text, display_order")
+      .select(
+        "id, category, name, quantity_text, display_order, photo_storage_path, photo_uploaded_at",
+      )
       .eq("vehicle_id", vehicle.id)
       .order("category", { ascending: true })
       .order("display_order", { ascending: true });
@@ -575,10 +621,12 @@ export function VehicleDetailClient({
       {removeTarget && (
         <RemoveItemModal
           target={removeTarget}
-          onCancel={() => setRemoveTarget(null)}
+          vehicleId={vehicle.id}
+          onCancel={() => setRemoveTargetLocalId(null)}
           onRemoveAll={onConfirmRemoveAll}
           onRemoveSome={onConfirmRemoveSome}
           onSetLevel={onConfirmSetLevel}
+          onPhotoUpdated={onItemPhotoUpdated}
         />
       )}
       <div className="space-y-3">
@@ -1120,19 +1168,31 @@ function IssueList({
 
 function RemoveItemModal({
   target,
+  vehicleId,
   onCancel,
   onRemoveAll,
   onRemoveSome,
   onSetLevel,
+  onPhotoUpdated,
 }: {
   target: ItemEditorDraft;
+  vehicleId: string;
   onCancel: () => void;
   onRemoveAll: () => void;
   onRemoveSome: (amount: number) => void;
   onSetLevel: (level: string) => void;
+  onPhotoUpdated: (
+    itemId: string,
+    storagePath: string,
+    uploadedAt: string,
+  ) => void;
 }) {
   const [amount, setAmount] = useState("");
   const [customQuantity, setCustomQuantity] = useState(target.quantity_text);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
   const numericPrefix = parseQuantityPrefix(target.quantity_text);
   const parsedAmount = Number.parseFloat(amount);
   const canSubtract =
@@ -1145,6 +1205,39 @@ function RemoveItemModal({
   const displayName = target.name.trim() || "this item";
   const displayQuantity = target.quantity_text.trim();
 
+  async function onPhotoFileSelected(
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!target.id) {
+      setPhotoError("Save the vehicle first.");
+      return;
+    }
+
+    setUploadingPhoto(true);
+    setPhotoError(null);
+
+    const supabase = createClient();
+    const result = await uploadItemPhoto({
+      supabase,
+      file,
+      vehicleId,
+      itemId: target.id,
+      oldStoragePath: target.photo_storage_path ?? null,
+    });
+
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    setUploadingPhoto(false);
+
+    if (!result.ok) {
+      setPhotoError(result.error);
+      return;
+    }
+
+    onPhotoUpdated(target.id, result.storage_path, result.uploaded_at);
+  }
+
   return (
     <div
       role="dialog"
@@ -1155,7 +1248,7 @@ function RemoveItemModal({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="mx-auto w-full max-w-md rounded-2xl bg-white p-5 shadow-xl dark:bg-neutral-900"
+        className="mx-auto w-full max-w-md max-h-[85vh] overflow-y-auto rounded-2xl bg-white p-5 shadow-xl dark:bg-neutral-900"
       >
         <h2 id="remove-item-title" className="text-lg font-semibold">
           Remove {displayName}?
@@ -1257,6 +1350,79 @@ function RemoveItemModal({
             </button>
           </div>
         </form>
+
+        <div className="mt-5 border-t border-neutral-200 pt-4 dark:border-neutral-800">
+          <p className="mb-2 text-sm font-medium">Photo</p>
+          {target.id ? (
+            <>
+              {target.photo_storage_path ? (
+                <div className="space-y-2">
+                  <a
+                    href={publicPhotoUrl(
+                      supabaseUrl,
+                      target.photo_storage_path,
+                    )}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-800"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={publicPhotoUrl(
+                        supabaseUrl,
+                        target.photo_storage_path,
+                      )}
+                      alt={target.name || "Item photo"}
+                      className="aspect-[4/3] w-full object-cover"
+                      loading="lazy"
+                    />
+                  </a>
+                  {target.photo_uploaded_at && (
+                    <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                      Uploaded {formatPhotoUploadDate(target.photo_uploaded_at)}
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm text-neutral-500 dark:text-neutral-400">
+                  No photo yet.
+                </p>
+              )}
+              {photoError && (
+                <p
+                  role="alert"
+                  className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/40 dark:text-red-300"
+                >
+                  {photoError}
+                </p>
+              )}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={onPhotoFileSelected}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploadingPhoto}
+                className={`${buttonClass} mt-2 w-full border border-neutral-300 bg-white text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50`}
+              >
+                {uploadingPhoto
+                  ? "Uploading..."
+                  : target.photo_storage_path
+                    ? "Replace photo"
+                    : "Add photo"}
+              </button>
+            </>
+          ) : (
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              Save this item first to add a photo.
+            </p>
+          )}
+        </div>
 
         <div className="mt-5 flex items-center justify-between border-t border-neutral-200 pt-3 dark:border-neutral-800">
           <button
@@ -1367,6 +1533,18 @@ function normalizeDraftsForCategory(
   ).map((draft) => ({ ...draft, category }));
 }
 
+function formatPhotoUploadDate(iso: string): string {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 function itemToDraft(item: VehicleItem): ItemEditorDraft {
   return {
     localId: item.id,
@@ -1374,6 +1552,8 @@ function itemToDraft(item: VehicleItem): ItemEditorDraft {
     category: item.category,
     name: item.name,
     quantity_text: item.quantity_text,
+    photo_storage_path: item.photo_storage_path ?? null,
+    photo_uploaded_at: item.photo_uploaded_at ?? null,
   };
 }
 

@@ -25,7 +25,9 @@ export default async function VehicleDetailPage({
     supabase.from("vehicles").select("*").eq("id", id).single(),
     supabase
       .from("vehicle_items")
-      .select("id, category, name, quantity_text, display_order")
+      .select(
+        "id, category, name, quantity_text, display_order, photo_storage_path, photo_uploaded_at",
+      )
       .eq("vehicle_id", id)
       .order("category", { ascending: true })
       .order("display_order", { ascending: true }),

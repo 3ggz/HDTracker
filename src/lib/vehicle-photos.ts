@@ -156,3 +156,66 @@ export async function deleteVehiclePhoto(
 export function publicPhotoUrl(supabaseUrl: string, storagePath: string): string {
   return `${supabaseUrl.replace(/\/$/, "")}/storage/v1/object/public/${PHOTO_BUCKET}/${storagePath}`;
 }
+
+type UploadItemPhotoOptions = {
+  supabase: SupabaseClient;
+  file: File;
+  vehicleId: string;
+  itemId: string;
+  oldStoragePath: string | null;
+};
+
+export type UploadItemPhotoResult =
+  | { ok: true; storage_path: string; uploaded_at: string }
+  | { ok: false; error: string };
+
+// Uploads a single photo for a vehicle_items row, updates the row's
+// photo_storage_path + photo_uploaded_at, and best-effort deletes
+// the prior photo file. Caller is responsible for refreshing local
+// state with the returned values.
+export async function uploadItemPhoto({
+  supabase,
+  file,
+  vehicleId,
+  itemId,
+  oldStoragePath,
+}: UploadItemPhotoOptions): Promise<UploadItemPhotoResult> {
+  const validation = validatePhotoFile(file);
+  if (!validation.ok) return validation;
+
+  const photoId = crypto.randomUUID();
+  const ext = guessExtension(file);
+  const storagePath = `${vehicleId}/items/${photoId}${ext}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from(PHOTO_BUCKET)
+    .upload(storagePath, file, { upsert: false, contentType: file.type });
+
+  if (uploadError) {
+    return { ok: false, error: uploadError.message };
+  }
+
+  const uploadedAt = new Date().toISOString();
+  const { error: dbError } = await supabase
+    .from("vehicle_items")
+    .update({
+      photo_storage_path: storagePath,
+      photo_uploaded_at: uploadedAt,
+    })
+    .eq("id", itemId);
+
+  if (dbError) {
+    // Roll back the orphaned storage object so we don't leak bytes.
+    await supabase.storage.from(PHOTO_BUCKET).remove([storagePath]);
+    return { ok: false, error: dbError.message };
+  }
+
+  // Best-effort delete of the prior photo. If it fails (already gone,
+  // perms issue), we still return success — the row now references
+  // the new file correctly.
+  if (oldStoragePath) {
+    await supabase.storage.from(PHOTO_BUCKET).remove([oldStoragePath]);
+  }
+
+  return { ok: true, storage_path: storagePath, uploaded_at: uploadedAt };
+}
