@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  addToQuantity,
   formatGpsLocationLabel,
   isValidCoordinatePair,
   normalizeVehicleItemDrafts,
@@ -131,6 +132,53 @@ describe("vehicle detail field helpers", () => {
       kind: "updated",
       quantity_text: "1",
     });
+  });
+
+  it("adds to a numeric quantity and pluralizes the unit when crossing 1", () => {
+    expect(addToQuantity("1 roll", 1)).toEqual({
+      kind: "updated",
+      quantity_text: "2 rolls",
+    });
+    expect(addToQuantity("1 box of widgets", 2)).toEqual({
+      kind: "updated",
+      quantity_text: "3 boxes of widgets",
+    });
+    expect(addToQuantity("1 foot", 4)).toEqual({
+      kind: "updated",
+      quantity_text: "5 feet",
+    });
+    expect(addToQuantity("1 inch", 1)).toEqual({
+      kind: "updated",
+      quantity_text: "2 inches",
+    });
+    expect(addToQuantity("1 battery", 1)).toEqual({
+      kind: "updated",
+      quantity_text: "2 batteries",
+    });
+  });
+
+  it("leaves the suffix alone when adding stays at or above 2", () => {
+    expect(addToQuantity("3 rolls", 2)).toEqual({
+      kind: "updated",
+      quantity_text: "5 rolls",
+    });
+  });
+
+  it("preserves casing when pluralizing", () => {
+    expect(addToQuantity("1 Roll", 1)).toEqual({
+      kind: "updated",
+      quantity_text: "2 Rolls",
+    });
+    expect(addToQuantity("1 BOX", 1)).toEqual({
+      kind: "updated",
+      quantity_text: "2 BOXES",
+    });
+  });
+
+  it("rejects non-numeric, zero, and negative additions", () => {
+    expect(addToQuantity("Has some", 1)).toBeNull();
+    expect(addToQuantity("5", 0)).toBeNull();
+    expect(addToQuantity("5", -2)).toBeNull();
   });
 
   it("normalizes item drafts while keeping flexible quantities", () => {

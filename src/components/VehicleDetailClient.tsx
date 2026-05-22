@@ -23,6 +23,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  addToQuantity,
   formatGpsLocationLabel,
   isValidCoordinatePair,
   normalizeVehicleItemDrafts,
@@ -286,6 +287,18 @@ export function VehicleDetailClient({
         result.quantity_text,
       );
     }
+    setRemoveTargetLocalId(null);
+  }
+
+  function onConfirmAddSome(amount: number) {
+    if (!removeTarget) return;
+    const result = addToQuantity(removeTarget.quantity_text, amount);
+    if (!result) return;
+    updateItemDraft(
+      removeTarget.localId,
+      "quantity_text",
+      result.quantity_text,
+    );
     setRemoveTargetLocalId(null);
   }
 
@@ -625,6 +638,7 @@ export function VehicleDetailClient({
           onCancel={() => setRemoveTargetLocalId(null)}
           onRemoveAll={onConfirmRemoveAll}
           onRemoveSome={onConfirmRemoveSome}
+          onAddSome={onConfirmAddSome}
           onSetLevel={onConfirmSetLevel}
           onPhotoUpdated={onItemPhotoUpdated}
         />
@@ -1172,6 +1186,7 @@ function RemoveItemModal({
   onCancel,
   onRemoveAll,
   onRemoveSome,
+  onAddSome,
   onSetLevel,
   onPhotoUpdated,
 }: {
@@ -1180,6 +1195,7 @@ function RemoveItemModal({
   onCancel: () => void;
   onRemoveAll: () => void;
   onRemoveSome: (amount: number) => void;
+  onAddSome: (amount: number) => void;
   onSetLevel: (level: string) => void;
   onPhotoUpdated: (
     itemId: string,
@@ -1189,9 +1205,7 @@ function RemoveItemModal({
 }) {
   const [amount, setAmount] = useState("");
   const [customQuantity, setCustomQuantity] = useState(target.quantity_text);
-  const cameraInputRef = useRef<HTMLInputElement>(null);
-  const libraryInputRef = useRef<HTMLInputElement>(null);
-  const filesInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
@@ -1229,9 +1243,7 @@ function RemoveItemModal({
       oldStoragePath: target.photo_storage_path ?? null,
     });
 
-    if (cameraInputRef.current) cameraInputRef.current.value = "";
-    if (libraryInputRef.current) libraryInputRef.current.value = "";
-    if (filesInputRef.current) filesInputRef.current.value = "";
+    if (fileInputRef.current) fileInputRef.current.value = "";
     setUploadingPhoto(false);
 
     if (!result.ok) {
@@ -1264,36 +1276,40 @@ function RemoveItemModal({
         )}
 
         {numericPrefix && (
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (canSubtract) onRemoveSome(parsedAmount);
-            }}
-            className="mt-4 space-y-2"
-          >
+          <div className="mt-4 space-y-2">
             <label className="block">
               <span className="mb-1 block text-sm font-medium">
-                How many to remove?
+                How many to add/remove?
               </span>
               <input
                 type="number"
                 inputMode="numeric"
                 min="1"
-                max={numericPrefix.number}
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
                 autoFocus
                 className={inputClass}
               />
             </label>
-            <button
-              type="submit"
-              disabled={!canSubtract}
-              className={`${buttonClass} w-full bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900`}
-            >
-              Remove {canSubtract ? parsedAmount : "some"}
-            </button>
-          </form>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                disabled={!canSubtract}
+                onClick={() => onAddSome(parsedAmount)}
+                className={`${buttonClass} border border-neutral-300 bg-white text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50`}
+              >
+                Add{canSubtract ? ` ${parsedAmount}` : ""}
+              </button>
+              <button
+                type="button"
+                disabled={!canSubtract}
+                onClick={() => onRemoveSome(parsedAmount)}
+                className={`${buttonClass} bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900`}
+              >
+                Remove{canSubtract ? ` ${parsedAmount}` : ""}
+              </button>
+            </div>
+          </div>
         )}
 
         <div className="mt-4">
@@ -1335,7 +1351,7 @@ function RemoveItemModal({
           className="mt-3"
         >
           <label className="mb-1 block text-sm font-medium">
-            Set quantity to
+            Or set quantity to
           </label>
           <div className="flex gap-2">
             <input
@@ -1401,93 +1417,24 @@ function RemoveItemModal({
                 </p>
               )}
               <input
-                ref={cameraInputRef}
-                type="file"
-                accept="image/*"
-                capture="environment"
-                onChange={onPhotoFileSelected}
-                className="hidden"
-              />
-              <input
-                ref={libraryInputRef}
+                ref={fileInputRef}
                 type="file"
                 accept="image/*"
                 onChange={onPhotoFileSelected}
                 className="hidden"
               />
-              <input
-                ref={filesInputRef}
-                type="file"
-                accept="*/*"
-                onChange={onPhotoFileSelected}
-                className="hidden"
-              />
-              {uploadingPhoto ? (
-                <button
-                  type="button"
-                  disabled
-                  className={`${buttonClass} mt-2 w-full border border-neutral-300 bg-white text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50`}
-                >
-                  Uploading...
-                </button>
-              ) : (
-                <div className="mt-2 grid grid-cols-3 gap-2">
-                  <PhotoSourceButton
-                    onClick={() => cameraInputRef.current?.click()}
-                    label="Take photo"
-                    icon={
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="h-5 w-5"
-                      >
-                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-                        <circle cx="12" cy="13" r="4" />
-                      </svg>
-                    }
-                  />
-                  <PhotoSourceButton
-                    onClick={() => libraryInputRef.current?.click()}
-                    label="Library"
-                    icon={
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="h-5 w-5"
-                      >
-                        <rect x="3" y="3" width="18" height="18" rx="2" />
-                        <circle cx="8.5" cy="8.5" r="1.5" />
-                        <polyline points="21 15 16 10 5 21" />
-                      </svg>
-                    }
-                  />
-                  <PhotoSourceButton
-                    onClick={() => filesInputRef.current?.click()}
-                    label="Files"
-                    icon={
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="h-5 w-5"
-                      >
-                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                      </svg>
-                    }
-                  />
-                </div>
-              )}
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploadingPhoto}
+                className={`${buttonClass} mt-2 w-full border border-neutral-300 bg-white text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50`}
+              >
+                {uploadingPhoto
+                  ? "Uploading..."
+                  : target.photo_storage_path
+                    ? "Replace photo"
+                    : "Add photo"}
+              </button>
             </>
           ) : (
             <p className="text-xs text-neutral-500 dark:text-neutral-400">
@@ -1603,27 +1550,6 @@ function normalizeDraftsForCategory(
       .filter((draft) => draft.category === category)
       .map(({ id, name, quantity_text }) => ({ id, name, quantity_text })),
   ).map((draft) => ({ ...draft, category }));
-}
-
-function PhotoSourceButton({
-  onClick,
-  label,
-  icon,
-}: {
-  onClick: () => void;
-  label: string;
-  icon: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex flex-col items-center justify-center gap-1 rounded-lg border border-neutral-300 bg-white px-2 py-3 text-xs font-medium text-neutral-700 transition active:scale-[0.98] dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
-    >
-      {icon}
-      {label}
-    </button>
-  );
 }
 
 function formatPhotoUploadDate(iso: string): string {

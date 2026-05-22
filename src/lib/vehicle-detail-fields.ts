@@ -30,6 +30,24 @@ export function parseQuantityPrefix(
   return { number, suffix: match[2] };
 }
 
+export function addToQuantity(
+  quantityText: string,
+  amount: number,
+): { kind: "updated"; quantity_text: string } | null {
+  const parsed = parseQuantityPrefix(quantityText);
+  if (!parsed) return null;
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const next = parsed.number + amount;
+  const formatted = Number.isInteger(next) ? String(next) : String(next);
+  // If we just crossed the 1→2+ boundary, pluralize the leading unit
+  // so "1 roll" + 1 reads as "2 rolls" rather than "2 roll".
+  const suffix =
+    parsed.number === 1 && next > 1
+      ? pluralizeFirstWord(parsed.suffix)
+      : parsed.suffix;
+  return { kind: "updated", quantity_text: `${formatted}${suffix}` };
+}
+
 export function subtractFromQuantity(
   quantityText: string,
   amount: number,
@@ -71,6 +89,51 @@ const PLURAL_TO_SINGULAR: Record<string, string> = {
   panels: "panel",
   units: "unit",
 };
+
+const SINGULAR_TO_PLURAL: Record<string, string> = Object.fromEntries(
+  Object.entries(PLURAL_TO_SINGULAR).map(([plural, singular]) => [
+    singular,
+    plural,
+  ]),
+);
+
+export function pluralizeFirstWord(text: string): string {
+  const match = text.match(/^(\s*)(\S+)(.*)$/);
+  if (!match) return text;
+  const [, leading, firstWord, rest] = match;
+  return `${leading}${pluralizeWord(firstWord)}${rest}`;
+}
+
+function pluralizeWord(word: string): string {
+  if (word.length === 0) return word;
+  const lower = word.toLowerCase();
+
+  const mapped = SINGULAR_TO_PLURAL[lower];
+  if (mapped) return preserveCase(mapped, word);
+
+  // "battery" -> "batteries"
+  if (
+    lower.endsWith("y") &&
+    lower.length > 1 &&
+    !"aeiou".includes(lower.charAt(lower.length - 2))
+  ) {
+    return appendCasePreserving(word.slice(0, -1), "ies");
+  }
+
+  // Hisses, fizzes, brushes, lunches -> add -es
+  if (/(s|x|z|sh|ch)$/.test(lower)) {
+    return appendCasePreserving(word, "es");
+  }
+
+  return appendCasePreserving(word, "s");
+}
+
+function appendCasePreserving(base: string, addition: string): string {
+  if (base.length > 0 && base === base.toUpperCase() && base !== base.toLowerCase()) {
+    return base + addition.toUpperCase();
+  }
+  return base + addition.toLowerCase();
+}
 
 export function depluralizeFirstWord(text: string): string {
   const match = text.match(/^(\s*)(\S+)(.*)$/);
