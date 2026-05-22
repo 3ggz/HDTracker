@@ -95,7 +95,7 @@ export default function SignInPage() {
         <header className="mb-10 text-center">
           <h1 className="text-3xl font-semibold tracking-tight">HDTracker</h1>
           <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-400">
-            Vehicle inventory for the team
+            Vehicle inventory tracking
           </p>
         </header>
 

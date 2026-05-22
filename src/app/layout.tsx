@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "HDTracker",
-  description: "Vehicle inventory tracker for the team",
+  description: "Vehicle inventory tracking",
 };
 
 export const viewport: Viewport = {
