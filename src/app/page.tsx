@@ -3,18 +3,37 @@ import { createClient } from "@/lib/supabase/server";
 import { AppHeader } from "@/components/AppHeader";
 import { AddVehicleFab } from "@/components/AddVehicleFab";
 import { LiveUpdater } from "@/components/LiveUpdater";
+import { PendingApprovalsBanner } from "@/components/PendingApprovalsBanner";
+import { isAdminEmail } from "@/lib/admin";
 
 export default async function Home() {
   const supabase = await createClient();
-  const { data: vehicles, error } = await supabase
-    .from("vehicles")
-    .select("id, name, location_label, last_worked_job, updated_at")
-    .order("updated_at", { ascending: false });
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  const isAdmin = isAdminEmail(user?.email);
+
+  const [{ data: vehicles, error }, pendingApprovals] = await Promise.all([
+    supabase
+      .from("vehicles")
+      .select("id, name, location_label, last_worked_job, updated_at")
+      .order("updated_at", { ascending: false }),
+    isAdmin
+      ? supabase
+          .from("user_approvals")
+          .select("*", { count: "exact", head: true })
+          .is("approved_at", null)
+      : Promise.resolve({ count: 0 }),
+  ]);
+
+  const pendingCount =
+    isAdmin && "count" in pendingApprovals ? (pendingApprovals.count ?? 0) : 0;
 
   return (
     <>
       <LiveUpdater channelName="home-vehicles" table="vehicles" />
       <AppHeader />
+      {isAdmin && <PendingApprovalsBanner initialCount={pendingCount} />}
       <section className="mx-auto w-full max-w-md flex-1 px-4 pb-28 pt-4">
         {error ? (
           <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-300">
