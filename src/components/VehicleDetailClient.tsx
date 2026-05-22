@@ -20,10 +20,7 @@ import {
 } from "@/lib/vehicle-suggestions";
 import type { VehiclePhoto } from "@/lib/vehicle-photos";
 import { PhotoGallery } from "@/components/PhotoGallery";
-
-const HARDWARE_NAMES_LIST_ID = "vehicle-hardware-names";
-const TOOL_NAMES_LIST_ID = "vehicle-tool-names";
-const QUANTITIES_LIST_ID = "vehicle-item-quantities";
+import { Combobox } from "@/components/Combobox";
 
 type VehicleDetail = {
   id: string;
@@ -475,7 +472,6 @@ export function VehicleDetailClient({
 
   return (
     <section className="mx-auto w-full max-w-md flex-1 px-4 pb-24 pt-4">
-      <SuggestionDatalists suggestions={suggestions} />
       {removeTarget && (
         <RemoveItemModal
           target={removeTarget}
@@ -512,8 +508,8 @@ export function VehicleDetailClient({
             drafts={hardwareDrafts}
             namePlaceholder="Item"
             quantityPlaceholder="Qty"
-            nameListId={HARDWARE_NAMES_LIST_ID}
-            quantityListId={QUANTITIES_LIST_ID}
+            nameSuggestions={suggestions.hardwareNames}
+            quantitySuggestions={suggestions.quantities}
             onAdd={addItem}
             onAskRemove={askRemoveItem}
             onUpdate={updateItemDraft}
@@ -531,8 +527,8 @@ export function VehicleDetailClient({
             drafts={toolDrafts}
             namePlaceholder="Tool"
             quantityPlaceholder="Qty"
-            nameListId={TOOL_NAMES_LIST_ID}
-            quantityListId={QUANTITIES_LIST_ID}
+            nameSuggestions={suggestions.toolNames}
+            quantitySuggestions={suggestions.quantities}
             onAdd={addItem}
             onAskRemove={askRemoveItem}
             onUpdate={updateItemDraft}
@@ -723,8 +719,8 @@ function VehicleItemEditor({
   drafts,
   namePlaceholder,
   quantityPlaceholder,
-  nameListId,
-  quantityListId,
+  nameSuggestions,
+  quantitySuggestions,
   onAdd,
   onAskRemove,
   onUpdate,
@@ -734,8 +730,8 @@ function VehicleItemEditor({
   drafts: ItemEditorDraft[];
   namePlaceholder: string;
   quantityPlaceholder: string;
-  nameListId: string;
-  quantityListId: string;
+  nameSuggestions: readonly string[];
+  quantitySuggestions: readonly string[];
   onAdd: (category: VehicleItemCategory) => void;
   onAskRemove: (localId: string) => void;
   onUpdate: (
@@ -753,39 +749,37 @@ function VehicleItemEditor({
       ) : (
         <ul className="space-y-2">
           {drafts.map((draft) => (
-            <li key={draft.localId} className="flex items-center gap-2">
-              <label className="block flex-1 min-w-0">
-                <span className="sr-only">Name</span>
-                <input
+            <li key={draft.localId} className="flex items-start gap-2">
+              <div className="flex-1 min-w-0">
+                <Combobox
                   value={draft.name}
-                  onChange={(e) =>
-                    onUpdate(draft.localId, "name", e.target.value)
+                  onChange={(value) =>
+                    onUpdate(draft.localId, "name", value)
                   }
+                  suggestions={nameSuggestions}
                   placeholder={namePlaceholder}
-                  list={nameListId}
-                  autoComplete="off"
                   autoCapitalize="words"
+                  ariaLabel="Name"
                   className={inputClass}
                 />
-              </label>
-              <label className="block w-24 flex-shrink-0">
-                <span className="sr-only">Quantity</span>
-                <input
+              </div>
+              <div className="w-24 flex-shrink-0">
+                <Combobox
                   value={draft.quantity_text}
-                  onChange={(e) =>
-                    onUpdate(draft.localId, "quantity_text", e.target.value)
+                  onChange={(value) =>
+                    onUpdate(draft.localId, "quantity_text", value)
                   }
+                  suggestions={quantitySuggestions}
                   placeholder={quantityPlaceholder}
-                  list={quantityListId}
-                  autoComplete="off"
+                  ariaLabel="Quantity"
                   className={quantityInputClass}
                 />
-              </label>
+              </div>
               <button
                 type="button"
                 onClick={() => onAskRemove(draft.localId)}
                 aria-label={`Remove ${draft.name || "item"}`}
-                className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-lg text-neutral-500 transition active:scale-95 active:bg-red-50 active:text-red-600 dark:text-neutral-400 dark:active:bg-red-950/40 dark:active:text-red-400"
+                className="flex h-12 w-11 flex-shrink-0 items-center justify-center rounded-lg text-neutral-500 transition active:scale-95 active:bg-red-50 active:text-red-600 dark:text-neutral-400 dark:active:bg-red-950/40 dark:active:text-red-400"
               >
                 <svg
                   viewBox="0 0 24 24"
@@ -811,32 +805,6 @@ function VehicleItemEditor({
         {addLabel}
       </button>
     </div>
-  );
-}
-
-function SuggestionDatalists({
-  suggestions,
-}: {
-  suggestions: VehicleItemSuggestions;
-}) {
-  return (
-    <>
-      <datalist id={HARDWARE_NAMES_LIST_ID}>
-        {suggestions.hardwareNames.map((name) => (
-          <option key={name} value={name} />
-        ))}
-      </datalist>
-      <datalist id={TOOL_NAMES_LIST_ID}>
-        {suggestions.toolNames.map((name) => (
-          <option key={name} value={name} />
-        ))}
-      </datalist>
-      <datalist id={QUANTITIES_LIST_ID}>
-        {suggestions.quantities.map((quantity) => (
-          <option key={quantity} value={quantity} />
-        ))}
-      </datalist>
-    </>
   );
 }
 
