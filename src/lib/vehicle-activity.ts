@@ -143,6 +143,15 @@ export function formatRelativeTime(
   });
 }
 
+// Until auth + a profiles table land, every recorded action has
+// user_id = null and renders as "Anonymous". When auth comes back,
+// swap this to take a profile lookup (id -> first_name + last_name)
+// and return the real name.
+export function activityActorName(activity: VehicleActivity): string {
+  if (activity.user_id) return "Signed-in user";
+  return "Anonymous";
+}
+
 export function dayBucketLabel(
   timestampIso: string,
   now: number = Date.now(),

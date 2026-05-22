@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  activityActorName,
   dayBucketLabel,
   describeVehicleActivity,
   formatRelativeTime,
@@ -130,6 +131,28 @@ describe("describeVehicleActivity", () => {
         }),
       ),
     ).toBe('Created vehicle "Tampa Van"');
+  });
+});
+
+describe("activityActorName", () => {
+  it("falls back to Anonymous when no user is recorded", () => {
+    expect(
+      activityActorName(
+        activity({ action: "added", subject_type: "vehicle" }),
+      ),
+    ).toBe("Anonymous");
+  });
+
+  it("returns a placeholder when a user_id exists but no profile is wired", () => {
+    expect(
+      activityActorName(
+        activity({
+          action: "added",
+          subject_type: "vehicle",
+          user_id: "00000000-0000-0000-0000-000000000abc",
+        }),
+      ),
+    ).toBe("Signed-in user");
   });
 });
 

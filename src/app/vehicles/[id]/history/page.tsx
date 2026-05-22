@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import {
+  activityActorName,
   describeVehicleActivity,
   formatRelativeTime,
   groupActivitiesByDay,
@@ -84,18 +85,23 @@ export default async function VehicleHistoryPage({
               {group.activities.map((activity, i) => (
                 <li
                   key={activity.id}
-                  className={`flex items-baseline gap-3 px-4 py-3 ${
+                  className={`flex items-start gap-3 px-4 py-3 ${
                     i > 0
                       ? "border-t border-neutral-200 dark:border-neutral-800"
                       : ""
                   }`}
                 >
-                  <time
-                    dateTime={activity.created_at}
-                    className="w-16 flex-shrink-0 text-xs tabular-nums text-neutral-400 dark:text-neutral-500"
-                  >
-                    {formatRelativeTime(activity.created_at)}
-                  </time>
+                  <div className="w-16 flex-shrink-0 leading-tight">
+                    <time
+                      dateTime={activity.created_at}
+                      className="block text-xs tabular-nums text-neutral-500 dark:text-neutral-400"
+                    >
+                      {formatRelativeTime(activity.created_at)}
+                    </time>
+                    <span className="mt-0.5 block text-[10px] text-neutral-400 dark:text-neutral-500">
+                      {activityActorName(activity)}
+                    </span>
+                  </div>
                   <p className="min-w-0 flex-1 text-sm text-neutral-800 dark:text-neutral-200">
                     {describeVehicleActivity(activity)}
                   </p>
