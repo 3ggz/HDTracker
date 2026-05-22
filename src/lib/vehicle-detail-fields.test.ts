@@ -70,6 +70,69 @@ describe("vehicle detail field helpers", () => {
     expect(subtractFromQuantity("50", -1)).toBeNull();
   });
 
+  it("depluralizes the unit when subtraction brings the count to 1", () => {
+    expect(subtractFromQuantity("2 rolls", 1)).toEqual({
+      kind: "updated",
+      quantity_text: "1 roll",
+    });
+    expect(subtractFromQuantity("2 rolls of velcro", 1)).toEqual({
+      kind: "updated",
+      quantity_text: "1 roll of velcro",
+    });
+    expect(subtractFromQuantity("3 boxes", 2)).toEqual({
+      kind: "updated",
+      quantity_text: "1 box",
+    });
+    expect(subtractFromQuantity("2 feet", 1)).toEqual({
+      kind: "updated",
+      quantity_text: "1 foot",
+    });
+    expect(subtractFromQuantity("2 inches", 1)).toEqual({
+      kind: "updated",
+      quantity_text: "1 inch",
+    });
+  });
+
+  it("keeps the plural when the count lands above 1", () => {
+    expect(subtractFromQuantity("5 rolls", 1)).toEqual({
+      kind: "updated",
+      quantity_text: "4 rolls",
+    });
+    expect(subtractFromQuantity("10 boxes", 3)).toEqual({
+      kind: "updated",
+      quantity_text: "7 boxes",
+    });
+  });
+
+  it("preserves casing when depluralizing", () => {
+    expect(subtractFromQuantity("2 Rolls", 1)).toEqual({
+      kind: "updated",
+      quantity_text: "1 Roll",
+    });
+    expect(subtractFromQuantity("2 ROLLS", 1)).toEqual({
+      kind: "updated",
+      quantity_text: "1 ROLL",
+    });
+  });
+
+  it("falls back to generic -es stripping for units not in the lookup", () => {
+    expect(subtractFromQuantity("2 wrenches", 1)).toEqual({
+      kind: "updated",
+      quantity_text: "1 wrench",
+    });
+    expect(subtractFromQuantity("2 batteries", 1)).toEqual({
+      kind: "updated",
+      quantity_text: "1 battery",
+    });
+  });
+
+  it("leaves bare-number quantities alone (no suffix to depluralize)", () => {
+    expect(subtractFromQuantity("2", 1)).toEqual({
+      kind: "updated",
+      quantity_text: "1",
+    });
+  });
+
   it("normalizes item drafts while keeping flexible quantities", () => {
     expect(
       normalizeVehicleItemDrafts([

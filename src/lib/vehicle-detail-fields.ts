@@ -40,7 +40,89 @@ export function subtractFromQuantity(
   const next = parsed.number - amount;
   if (next <= 0) return { kind: "remove-all" };
   const formatted = Number.isInteger(next) ? String(next) : String(next);
-  return { kind: "updated", quantity_text: `${formatted}${parsed.suffix}` };
+  // When we land on exactly 1, try to make the trailing unit singular
+  // so "2 rolls of velcro" - 1 reads as "1 roll of velcro" rather than
+  // the grammatically awkward "1 rolls of velcro".
+  const suffix = next === 1 ? depluralizeFirstWord(parsed.suffix) : parsed.suffix;
+  return { kind: "updated", quantity_text: `${formatted}${suffix}` };
+}
+
+// Common inventory plurals → singulars. Hits the irregulars (feet,
+// inches) that generic -s/-es stripping would get wrong; everything
+// else falls through to the rules-based path in depluralizeWord.
+const PLURAL_TO_SINGULAR: Record<string, string> = {
+  rolls: "roll",
+  boxes: "box",
+  packs: "pack",
+  bags: "bag",
+  spools: "spool",
+  pairs: "pair",
+  pieces: "piece",
+  bundles: "bundle",
+  feet: "foot",
+  inches: "inch",
+  yards: "yard",
+  meters: "meter",
+  containers: "container",
+  cans: "can",
+  bottles: "bottle",
+  tubes: "tube",
+  sheets: "sheet",
+  panels: "panel",
+  units: "unit",
+};
+
+export function depluralizeFirstWord(text: string): string {
+  const match = text.match(/^(\s*)(\S+)(.*)$/);
+  if (!match) return text;
+  const [, leading, firstWord, rest] = match;
+  return `${leading}${depluralizeWord(firstWord)}${rest}`;
+}
+
+function depluralizeWord(word: string): string {
+  if (word.length === 0) return word;
+  const lower = word.toLowerCase();
+
+  const mapped = PLURAL_TO_SINGULAR[lower];
+  if (mapped) return preserveCase(mapped, word);
+
+  // "batteries" -> "battery"
+  if (lower.endsWith("ies") && lower.length > 3) {
+    return preserveCase(word.slice(0, -3) + "y", word);
+  }
+
+  // "boxes" -> "box" (only when the bare -es addition was a true plural,
+  // i.e. preceded by s, x, z, sh, or ch). "houses" -> "house" (strip s
+  // only) is handled by the generic case below.
+  if (lower.endsWith("es") && lower.length > 2) {
+    const tail = lower.slice(-4, -2);
+    if (
+      tail.endsWith("s") ||
+      tail.endsWith("x") ||
+      tail.endsWith("z") ||
+      tail === "sh" ||
+      tail === "ch"
+    ) {
+      return word.slice(0, -2);
+    }
+  }
+
+  // Plain "-s" -> strip.
+  if (lower.endsWith("s") && lower.length > 1) {
+    return word.slice(0, -1);
+  }
+
+  return word;
+}
+
+function preserveCase(target: string, source: string): string {
+  if (source.length > 0 && source === source.toUpperCase()) {
+    return target.toUpperCase();
+  }
+  if (source.length > 0 && source[0] === source[0].toUpperCase()) {
+    return target.charAt(0).toUpperCase() + target.slice(1);
+  }
+  return target;
 }
 
 export function formatGpsLocationLabel(
