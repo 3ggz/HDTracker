@@ -1,6 +1,6 @@
 # Agent Notes — HDTracker
 
-This file gives any AI assistant the context needed to work effectively on HDTracker. Read [OVERVIEW.md](./OVERVIEW.md) for the full product scope before writing code.
+This file gives any AI assistant the context needed to work effectively on HDTracker. Read [OVERVIEW.md](./OVERVIEW.md) for the full product scope, and [supabase/README.md](./supabase/README.md) for the schema and migration workflow before writing code.
 
 ## What this app is
 
@@ -8,16 +8,16 @@ Internal-only inventory tracker for our service vehicles. Used primarily on mobi
 
 ## Current state (read this before changing auth or RLS)
 
-**Auth is back on** — email + password, no confirmation email (Supabase project should have "Confirm email" disabled in Authentication → Providers → Email). The sign-in flow at `/signin` is two-stage:
+**Auth is on** — email + password, no confirmation email. The Supabase project must have **Authentication → Providers → Email → Confirm email = OFF**, otherwise sign-up sends a confirmation mail that the `@hdsecurity.systems` mailbox can't receive yet. The sign-in flow at `/signin` is two-stage:
 
 1. Email field only. Submitting checks `public.known_emails` to decide whether this address has been registered before.
-2. Password field appears below the (now disabled) email field. New addresses see a hint "Enter a password to create one" and the submit button reads "Create account"; existing addresses see no hint and the button reads "Sign in".
+2. Password field appears below the (now disabled) email field. New addresses see a hint and a "Create account" button; existing addresses see a "Sign in" button with no hint.
 
-`public.known_emails` is maintained by triggers on `auth.users` (see migration 0008). The trigger from migration 0001 still enforces the `@hdsecurity.systems` domain server-side; migration 0008 dropped the temporary `mark.hacz@gmail.com` dev allowlist that 0002 had added.
+`public.known_emails` is maintained by triggers on `auth.users` (migration 0008). Migration 0001's trigger enforces the `@hdsecurity.systems` domain server-side; migration 0008 reverted the temporary `mark.hacz@gmail.com` allowlist from 0002.
 
-**RLS stays permissive** (`using (true)`) on every `public.*` table. Mark has explicitly said to leave it alone for now — the auth gate at the proxy is good enough until we're ready to tighten. Don't restructure RLS without an ask.
+**RLS stays permissive** (`using (true)`) on every `public.*` table. Mark has explicitly said to leave it alone for now — the auth gate at the proxy is good enough until he asks to tighten. Don't restructure RLS without an explicit ask.
 
-To tighten later: rewrite each table's policies to require `auth.uid() is not null` (or stricter), and migrate `vehicle_activity.user_id` joins to a real profiles table when one lands.
+To tighten later: rewrite each table's policies to require `auth.uid() is not null` (or stricter) and migrate `vehicle_activity.user_id` joins to a real profiles table when one lands.
 
 ## Two principles that override everything else
 
@@ -28,49 +28,76 @@ When you face a design trade-off, these two principles win.
 
 ## Key product decisions to respect
 
-- **Access is restricted to `@HDSecurity.Systems` emails.** Reject any other domain at sign-in. The check is case-insensitive; the display form is `HDSecurity.Systems`.
-- **First-time onboarding is a name modal.** On a user's first sign-in, prompt for first + last name. **Pre-fill** the first-name field with the email's local-part (text before `@`), capitalized — e.g. `mark@HDSecurity.Systems` → `Mark`. User can correct it. Don't show this modal again after the profile is saved.
-- **Vehicles are the top-level entity.** Inventory, tools, location, issues, and last-job all hang off a Vehicle.
-- **Quantity is flexible, not strict.** Some items (zip ties, beanies, velcro) don't have meaningful integer counts. The data model supports:
+- **Access is restricted to `@hdsecurity.systems` emails.** Enforced client-side in `src/lib/email.ts` and server-side by the trigger in migration 0001. Case-insensitive; display form is `HDSecurity.Systems`.
+- **Vehicles are the top-level entity.** Inventory, tools, location, issues, last-job, notes, and photos all hang off a Vehicle.
+- **Quantity is flexible, not strict.** The flexible `quantity_text` column holds whatever fits:
   - numeric counts (`50`)
   - unit-based descriptors (`1 roll`, `2 packs`, `1 box`)
-  - stock-level enum: `NONE`, `HAS_SOME`, `WELL_STOCKED`
+  - the four canonical stock levels: `None`, `Low stock`, `Has some`, `Well stocked`
   - free-form user descriptors that get remembered
-  - blank → default to `HAS_SOME` (or similar sensible default)
   - **Never force a user into a numeric quantity field.**
-- **The app learns.** Item names, tool names, and quantity descriptors entered by any user should be offered as autocomplete suggestions for the next user. This keeps naming consistent and gets faster over time.
-- **Location is one tap.** "Use my current location" via browser Geolocation API is the primary path. Manual entry is the fallback, not the default.
-- **Issues are free-form and resolvable.** A vehicle's issues list is plain text items the tech can add and mark resolved — no rigid maintenance schema.
+- **The app learns.** Item names, tool names, and quantity descriptors are surfaced fleet-wide as autocomplete suggestions via a custom `<Combobox>` component (native `<datalist>` is unreliable on mobile — don't switch back).
+- **Quantity math depluralizes.** `subtractFromQuantity` and `addToQuantity` (in `src/lib/vehicle-detail-fields.ts`) handle the singular/plural transition when crossing 1 — keep that working when changing them.
+- **Location is one tap.** "Use current location" via the browser Geolocation API is the primary path; manual textarea is the fallback.
+- **Issues are free-form and resolvable.** Plain text items the tech can add and mark resolved. Each issue can attach photos.
+- **Photos: three scopes.** Per-vehicle gallery, per-issue strip, and at-most-one per hardware/tool item (replace-on-upload, with timestamp). All live in the same `vehicle-photos` Storage bucket, distinguished by DB row.
+- **History via DB triggers.** AFTER triggers on `vehicles`, `vehicle_items`, `vehicle_issues`, and `vehicle_photos` populate `vehicle_activity`. The history page at `/vehicles/[id]/history` reads from there. Actor display name is derived from the email's local-part (split on `. _ -`, title-cased).
 
-## Tech stack (as scaffolded)
+## Built (don't re-architect without asking)
+
+- **Sign-in** at `/signin` — two-stage email → password, no confirmation mail.
+- **Home** `/` — vehicles list (most-recently-updated first), Add Vehicle FAB, sticky header with Quick view link + Sign out + build-version stamp.
+- **`/vehicles/new`** — add form (name required, make / model / year / plate optional).
+- **`/vehicles/[id]`** — `VehicleDetailClient` (large client component) with collapsible sections in this order: Hardware, Tools, Location, Last job, Vehicle details, Issues, Notes, Photos. Sticky bottom bar with Undo + Save Changes. View history link + Delete vehicle section at the very bottom.
+- **`/vehicles/[id]/history`** — per-day timeline of activity rows.
+- **`/quickview`** + **`/vehicles/[id]/quickview`** — read-only summaries (fleet-wide and per-vehicle).
+- **`<Combobox>`** at `src/components/Combobox.tsx` — touch-friendly autocomplete with outside-tap dismiss.
+- **Drag-to-reorder** hardware and tool items via `@dnd-kit` (long-press on touch, press-and-drag on mouse).
+- **Live updates** via Supabase Realtime — `<LiveUpdater>` component on read-only pages, direct issues subscription inside the editor.
+- **Per-item photos** — one photo per hardware/tool row with upload timestamp; replace-on-upload (new file uploaded, DB row updated, old storage file cleaned up).
+- **Edit Quantity modal** (the `•••` menu) — numeric add / remove, four stock-level quick picks, freeform "Or set quantity to" textbox, photo section, "Remove {item}" destructive footer action.
+
+## TBD (open questions / not yet built)
+
+- **First-time onboarding modal** — was scoped (pre-fill first name from email local-part, prompt for first + last) but never built. Activity log currently derives a display name from email on the fly instead. No `profiles` table yet.
+- **PWA install support** — manifest + service worker not yet added.
+- **Offline write queueing.**
+- **Cross-fleet resupply view** — one shopping list view across all vans.
+- **Variants** — toggle bolt sizes (1/8, 3/16, 1/4) as separate items vs sub-quantities. Currently separate items.
+- **Editor live updates for items/photos/metadata** — currently only issues are live in the editor (the rest conflict with local draft state).
+- **Resend SMTP for `@hdsecurity.systems`** — needs DNS access. Until then, `Confirm email` must stay OFF in Supabase or signups will hang waiting for a confirmation mail the company mailbox can't receive.
+
+## Tech stack
 
 - **Next.js 16** (App Router, Turbopack) + **React 19** + **TypeScript** (strict mode)
 - **Tailwind CSS 4** (PostCSS plugin form), mobile-first breakpoints
-- **Supabase** for Postgres + magic-link auth + realtime (project owned by Mark)
-- **PWA** support (next-pwa or hand-rolled service worker) — to be added
-- **Vercel** for hosting once we have a domain
+- **Supabase** for Postgres + email/password auth + Realtime + Storage
+- **@dnd-kit/core**, **@dnd-kit/sortable**, **@dnd-kit/utilities** for the item drag handles
+- **Vitest** for unit tests
+- **Vercel** for hosting — auto-deploys from `main`
 
-If you change the stack, document the reasoning in [OVERVIEW.md](./OVERVIEW.md) under "Phasing" or a new "Architecture decisions" section.
+If you change the stack, document the reasoning in [OVERVIEW.md](./OVERVIEW.md).
 
 ## Conventions
 
 - TypeScript `strict: true`.
 - No code comments unless explaining a non-obvious *why*. Well-named functions don't need narration.
-- Components in PascalCase (`VehicleCard.tsx`). Utilities in kebab-case (`parse-quantity.ts`).
-- `src/app/` for routes and server actions. `src/lib/` for pure logic and clients (e.g. `src/lib/supabase/`). `src/components/` for reusable UI. `supabase/migrations/` for schema.
-- One feature per PR. Don't bundle drive-by refactors.
+- Components in PascalCase (`VehicleCard.tsx`). Utilities in kebab-case (`vehicle-detail-fields.ts`).
+- `src/app/` for routes and server actions. `src/lib/` for pure logic and Supabase clients. `src/components/` for reusable UI. `supabase/migrations/` for schema.
+- One feature per commit. Don't bundle drive-by refactors.
+- Don't rename `src/lib/supabase/middleware.ts` — that filename matches Supabase's own docs naming for the session-refresh helper, even though Next.js 16 calls the file convention `proxy.ts`.
 
 ## Testing
 
-- Vitest for pure logic — quantity parsing, autocomplete ranking, location formatting.
-- Playwright for the critical paths on a mobile viewport: add vehicle, add inventory item, update location, log an issue.
-- Don't write tests for trivial UI rendering. Verify those by running the dev server.
+- **Vitest** for pure logic — quantity parsing / depluralization, autocomplete ranking, GPS validation, photo file validation, activity descriptors, relative time formatting.
+- Trivial UI rendering isn't unit-tested — verify by running the dev server.
 
 ## Ask before assuming
 
-- **Schema changes** — propose a migration, don't apply silently.
+- **Schema changes** — propose a migration, don't apply silently. Then paste the SQL contents (not the file path) in chat so Mark can run it via the Supabase SQL Editor.
 - **Paid infrastructure** — flag before pushing us onto a paid Supabase / Vercel tier.
 - **New dependencies** — keep the dep list lean; justify each one.
+- **RLS tightening** — Mark wants permissive RLS until he says otherwise.
 
 ## Out of scope (for now)
 
