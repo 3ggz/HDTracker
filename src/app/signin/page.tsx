@@ -114,7 +114,7 @@ export default function SignInPage() {
               htmlFor="email"
               className="mb-2 block text-sm font-medium"
             >
-              Work email
+              Email
             </label>
             <input
               id="email"
