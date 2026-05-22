@@ -38,8 +38,8 @@ export default async function PendingApprovalPage() {
           </h2>
           <p className="mt-2 text-sm text-amber-800 dark:text-amber-200">
             Your account has been created and is waiting for an admin to
-            approve it. As soon as Mark approves you, this screen will let
-            you through automatically — no need to refresh.
+            approve it. As soon as an admin approves the request, this
+            screen will let you through automatically — no need to refresh.
           </p>
           <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">
             Signed in as{" "}
