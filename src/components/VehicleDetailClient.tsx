@@ -18,6 +18,8 @@ import {
   DEFAULT_QUANTITY_OPTIONS,
   type VehicleItemSuggestions,
 } from "@/lib/vehicle-suggestions";
+import type { VehiclePhoto } from "@/lib/vehicle-photos";
+import { PhotoGallery } from "@/components/PhotoGallery";
 
 const HARDWARE_NAMES_LIST_ID = "vehicle-hardware-names";
 const TOOL_NAMES_LIST_ID = "vehicle-tool-names";
@@ -70,15 +72,19 @@ export function VehicleDetailClient({
   initialVehicle,
   initialItems,
   initialIssues,
+  initialPhotos,
   itemsLoadError,
   issuesLoadError,
+  photosLoadError,
   suggestions,
 }: {
   initialVehicle: VehicleDetail;
   initialItems: VehicleItem[];
   initialIssues: VehicleIssue[];
+  initialPhotos: VehiclePhoto[];
   itemsLoadError: string | null;
   issuesLoadError: string | null;
+  photosLoadError: string | null;
   suggestions: VehicleItemSuggestions;
 }) {
   const router = useRouter();
@@ -107,8 +113,17 @@ export function VehicleDetailClient({
   const [pending, setPending] = useState<PendingAction | null>(null);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(
-    itemsLoadError ?? issuesLoadError,
+    itemsLoadError ?? issuesLoadError ?? photosLoadError,
   );
+
+  const vehiclePhotos = initialPhotos.filter((p) => p.issue_id === null);
+  const photosByIssueId = new Map<string, VehiclePhoto[]>();
+  for (const photo of initialPhotos) {
+    if (!photo.issue_id) continue;
+    const list = photosByIssueId.get(photo.issue_id) ?? [];
+    list.push(photo);
+    photosByIssueId.set(photo.issue_id, list);
+  }
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<ItemEditorDraft | null>(
@@ -593,6 +608,21 @@ export function VehicleDetailClient({
           </div>
         </CollapsibleSection>
 
+        <CollapsibleSection
+          title="Photos"
+          meta={
+            vehiclePhotos.length === 0
+              ? "None"
+              : `${vehiclePhotos.length}`
+          }
+        >
+          <PhotoGallery
+            vehicleId={vehicle.id}
+            issueId={null}
+            initialPhotos={vehiclePhotos}
+          />
+        </CollapsibleSection>
+
         <CollapsibleSection title="Last job" meta={lastJob || "Not set"}>
           <textarea
             value={lastJob}
@@ -625,6 +655,8 @@ export function VehicleDetailClient({
               pending={pending}
               emptyText="No open issues"
               onToggleIssue={onToggleIssue}
+              vehicleId={vehicle.id}
+              photosByIssueId={photosByIssueId}
             />
 
             {resolvedIssues.length > 0 && (
@@ -637,6 +669,8 @@ export function VehicleDetailClient({
                   pending={pending}
                   emptyText=""
                   onToggleIssue={onToggleIssue}
+                  vehicleId={vehicle.id}
+                  photosByIssueId={photosByIssueId}
                 />
               </div>
             )}
@@ -852,11 +886,15 @@ function IssueList({
   pending,
   emptyText,
   onToggleIssue,
+  vehicleId,
+  photosByIssueId,
 }: {
   issues: VehicleIssue[];
   pending: PendingAction | null;
   emptyText: string;
   onToggleIssue: (issue: VehicleIssue) => void;
+  vehicleId: string;
+  photosByIssueId: Map<string, VehiclePhoto[]>;
 }) {
   if (issues.length === 0) {
     return emptyText ? (
@@ -870,32 +908,41 @@ function IssueList({
     <ul className="space-y-2">
       {issues.map((issue) => {
         const resolved = Boolean(issue.resolved_at);
+        const issuePhotos = photosByIssueId.get(issue.id) ?? [];
         return (
           <li
             key={issue.id}
-            className="flex gap-3 rounded-lg border border-neutral-200 p-3 dark:border-neutral-800"
+            className="space-y-3 rounded-lg border border-neutral-200 p-3 dark:border-neutral-800"
           >
-            <p
-              className={`min-w-0 flex-1 text-sm ${
-                resolved
-                  ? "text-neutral-400 line-through dark:text-neutral-500"
-                  : "text-neutral-800 dark:text-neutral-100"
-              }`}
-            >
-              {issue.body}
-            </p>
-            <button
-              type="button"
-              onClick={() => onToggleIssue(issue)}
-              disabled={pending === issue.id}
-              className="min-h-11 rounded-lg border border-neutral-300 px-3 text-xs font-medium text-neutral-700 active:scale-[0.98] disabled:opacity-60 dark:border-neutral-700 dark:text-neutral-200"
-            >
-              {pending === issue.id
-                ? "Saving"
-                : resolved
-                  ? "Reopen"
-                  : "Resolve"}
-            </button>
+            <div className="flex gap-3">
+              <p
+                className={`min-w-0 flex-1 text-sm ${
+                  resolved
+                    ? "text-neutral-400 line-through dark:text-neutral-500"
+                    : "text-neutral-800 dark:text-neutral-100"
+                }`}
+              >
+                {issue.body}
+              </p>
+              <button
+                type="button"
+                onClick={() => onToggleIssue(issue)}
+                disabled={pending === issue.id}
+                className="min-h-11 rounded-lg border border-neutral-300 px-3 text-xs font-medium text-neutral-700 active:scale-[0.98] disabled:opacity-60 dark:border-neutral-700 dark:text-neutral-200"
+              >
+                {pending === issue.id
+                  ? "Saving"
+                  : resolved
+                    ? "Reopen"
+                    : "Resolve"}
+              </button>
+            </div>
+            <PhotoGallery
+              vehicleId={vehicleId}
+              issueId={issue.id}
+              initialPhotos={issuePhotos}
+              compact
+            />
           </li>
         );
       })}

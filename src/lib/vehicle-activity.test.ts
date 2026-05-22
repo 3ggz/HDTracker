@@ -121,6 +121,37 @@ describe("describeVehicleActivity", () => {
     ).toBe("Cleared location");
   });
 
+  it("describes photo activity on the vehicle and on an issue", () => {
+    expect(
+      describeVehicleActivity(
+        activity({ action: "added", subject_type: "photo" }),
+      ),
+    ).toBe("Added a photo");
+    expect(
+      describeVehicleActivity(
+        activity({
+          action: "added",
+          subject_type: "photo",
+          details: { issue_id: "abc" },
+        }),
+      ),
+    ).toBe("Added a photo to an issue");
+    expect(
+      describeVehicleActivity(
+        activity({ action: "removed", subject_type: "photo" }),
+      ),
+    ).toBe("Removed a photo");
+    expect(
+      describeVehicleActivity(
+        activity({
+          action: "removed",
+          subject_type: "photo",
+          details: { issue_id: "abc" },
+        }),
+      ),
+    ).toBe("Removed a photo from an issue");
+  });
+
   it("describes vehicle creation", () => {
     expect(
       describeVehicleActivity(

@@ -6,6 +6,7 @@ import {
   buildVehicleItemSuggestions,
   type VehicleItemCategory,
 } from "@/lib/vehicle-suggestions";
+import type { VehiclePhoto } from "@/lib/vehicle-photos";
 
 export default async function VehicleDetailPage({
   params,
@@ -18,6 +19,7 @@ export default async function VehicleDetailPage({
     { data: vehicle, error },
     { data: items, error: itemsError },
     { data: issues, error: issuesError },
+    { data: photos, error: photosError },
     { data: allItems },
   ] = await Promise.all([
     supabase.from("vehicles").select("*").eq("id", id).single(),
@@ -32,6 +34,11 @@ export default async function VehicleDetailPage({
       .select("id, body, resolved_at, created_at")
       .eq("vehicle_id", id)
       .order("resolved_at", { ascending: true, nullsFirst: true })
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("vehicle_photos")
+      .select("*")
+      .eq("vehicle_id", id)
       .order("created_at", { ascending: false }),
     supabase
       .from("vehicle_items")
@@ -77,8 +84,10 @@ export default async function VehicleDetailPage({
         initialVehicle={vehicle}
         initialItems={items ?? []}
         initialIssues={issues ?? []}
+        initialPhotos={(photos ?? []) as VehiclePhoto[]}
         itemsLoadError={itemsError?.message ?? null}
         issuesLoadError={issuesError?.message ?? null}
+        photosLoadError={photosError?.message ?? null}
         suggestions={suggestions}
       />
     </>

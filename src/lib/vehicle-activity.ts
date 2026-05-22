@@ -10,7 +10,8 @@ export type VehicleActivitySubjectType =
   | "hardware"
   | "tool"
   | "issue"
-  | "location";
+  | "location"
+  | "photo";
 
 export type VehicleActivity = {
   id: string;
@@ -50,6 +51,11 @@ export function describeVehicleActivity(activity: VehicleActivity): string {
           return `Logged issue: ${subject}`;
         case "location":
           return `Added location`;
+        case "photo": {
+          const issueId = (activity.details as { issue_id?: string } | null)
+            ?.issue_id;
+          return issueId ? "Added a photo to an issue" : "Added a photo";
+        }
       }
       break;
 
@@ -96,6 +102,11 @@ export function describeVehicleActivity(activity: VehicleActivity): string {
         }
         case "issue":
           return `Deleted issue: ${subject}`;
+        case "photo": {
+          const issueId = (activity.details as { issue_id?: string } | null)
+            ?.issue_id;
+          return issueId ? "Removed a photo from an issue" : "Removed a photo";
+        }
         default:
           return `Removed ${subject}`;
       }
