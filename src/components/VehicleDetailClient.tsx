@@ -1019,7 +1019,7 @@ function CollapsibleSection({
   const [open, setOpen] = useState(defaultOpen);
 
   return (
-    <section className="overflow-hidden rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+    <section className="rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
       <button
         type="button"
         aria-expanded={open}
@@ -1132,12 +1132,16 @@ function RemoveItemModal({
   onSetLevel: (level: string) => void;
 }) {
   const [amount, setAmount] = useState("");
+  const [customQuantity, setCustomQuantity] = useState(target.quantity_text);
   const numericPrefix = parseQuantityPrefix(target.quantity_text);
   const parsedAmount = Number.parseFloat(amount);
   const canSubtract =
     numericPrefix !== null &&
     Number.isFinite(parsedAmount) &&
     parsedAmount > 0;
+  const trimmedCustom = customQuantity.trim();
+  const customDiffersFromCurrent =
+    trimmedCustom.length > 0 && trimmedCustom !== target.quantity_text.trim();
   const displayName = target.name.trim() || "this item";
   const displayQuantity = target.quantity_text.trim();
 
@@ -1225,6 +1229,34 @@ function RemoveItemModal({
             })}
           </div>
         </div>
+
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (customDiffersFromCurrent) onSetLevel(trimmedCustom);
+          }}
+          className="mt-3"
+        >
+          <label className="mb-1 block text-sm font-medium">
+            Set quantity to
+          </label>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={customQuantity}
+              onChange={(e) => setCustomQuantity(e.target.value)}
+              autoComplete="off"
+              className={`${inputClass} flex-1 min-w-0`}
+            />
+            <button
+              type="submit"
+              disabled={!customDiffersFromCurrent}
+              className={`${buttonClass} flex-shrink-0 bg-neutral-900 px-5 text-white dark:bg-neutral-100 dark:text-neutral-900`}
+            >
+              Set
+            </button>
+          </div>
+        </form>
 
         <div className="mt-5 flex items-center justify-between border-t border-neutral-200 pt-3 dark:border-neutral-800">
           <button
