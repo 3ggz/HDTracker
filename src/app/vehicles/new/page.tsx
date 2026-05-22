@@ -83,27 +83,16 @@ export default function NewVehiclePage() {
             type="text"
             required
             autoFocus
-            placeholder="e.g. Tampa Van"
             className={inputClass}
           />
         </Field>
 
         <Field label="Make" hint="Optional">
-          <input
-            name="make"
-            type="text"
-            placeholder="Ford"
-            className={inputClass}
-          />
+          <input name="make" type="text" className={inputClass} />
         </Field>
 
         <Field label="Model" hint="Optional">
-          <input
-            name="model"
-            type="text"
-            placeholder="Transit"
-            className={inputClass}
-          />
+          <input name="model" type="text" className={inputClass} />
         </Field>
 
         <Field label="Year" hint="Optional">
@@ -113,18 +102,12 @@ export default function NewVehiclePage() {
             inputMode="numeric"
             min={1980}
             max={2100}
-            placeholder="2021"
             className={inputClass}
           />
         </Field>
 
         <Field label="License plate" hint="Optional">
-          <input
-            name="license_plate"
-            type="text"
-            placeholder="ABC-1234"
-            className={inputClass}
-          />
+          <input name="license_plate" type="text" className={inputClass} />
         </Field>
 
         {error && (

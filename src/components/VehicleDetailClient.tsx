@@ -125,7 +125,7 @@ export function VehicleDetailClient({
         localId: createLocalId(),
         category,
         name: "",
-        quantity_text: "Has some",
+        quantity_text: "",
       },
     ]);
     markDirty();
@@ -440,8 +440,8 @@ export function VehicleDetailClient({
             category="hardware"
             addLabel="Add hardware"
             drafts={hardwareDrafts}
-            namePlaceholder="Zip ties"
-            quantityPlaceholder="1 box"
+            namePlaceholder="Item"
+            quantityPlaceholder="Qty"
             nameListId={HARDWARE_NAMES_LIST_ID}
             quantityListId={QUANTITIES_LIST_ID}
             onAdd={addItem}
@@ -459,8 +459,8 @@ export function VehicleDetailClient({
             category="tool"
             addLabel="Add tool"
             drafts={toolDrafts}
-            namePlaceholder="Hammer drill"
-            quantityPlaceholder="1"
+            namePlaceholder="Tool"
+            quantityPlaceholder="Qty"
             nameListId={TOOL_NAMES_LIST_ID}
             quantityListId={QUANTITIES_LIST_ID}
             onAdd={addItem}
@@ -475,7 +475,6 @@ export function VehicleDetailClient({
               <input
                 value={name}
                 onChange={(e) => onMetaFieldChange(setName, e.target.value)}
-                placeholder="Tampa Van"
                 className={inputClass}
               />
             </MetaField>
@@ -483,7 +482,6 @@ export function VehicleDetailClient({
               <input
                 value={make}
                 onChange={(e) => onMetaFieldChange(setMake, e.target.value)}
-                placeholder="Ford"
                 className={inputClass}
               />
             </MetaField>
@@ -491,7 +489,6 @@ export function VehicleDetailClient({
               <input
                 value={model}
                 onChange={(e) => onMetaFieldChange(setModel, e.target.value)}
-                placeholder="Transit"
                 className={inputClass}
               />
             </MetaField>
@@ -502,7 +499,6 @@ export function VehicleDetailClient({
                   onMetaFieldChange(setYearInput, e.target.value)
                 }
                 inputMode="numeric"
-                placeholder="2021"
                 className={inputClass}
               />
             </MetaField>
@@ -512,7 +508,6 @@ export function VehicleDetailClient({
                 onChange={(e) =>
                   onMetaFieldChange(setLicensePlate, e.target.value)
                 }
-                placeholder="ABC-1234"
                 className={inputClass}
               />
             </MetaField>
@@ -540,7 +535,6 @@ export function VehicleDetailClient({
                 value={manualLocation}
                 onChange={(e) => onManualLocationChange(e.target.value)}
                 rows={2}
-                placeholder="Marriott parking lot, Tampa"
                 className={inputClass}
               />
             </label>
@@ -552,7 +546,6 @@ export function VehicleDetailClient({
             value={lastJob}
             onChange={(e) => onLastJobChange(e.target.value)}
             rows={2}
-            placeholder="Hotel access control, Tampa"
             className={inputClass}
           />
         </CollapsibleSection>
@@ -564,7 +557,6 @@ export function VehicleDetailClient({
                 value={newIssue}
                 onChange={(e) => setNewIssue(e.target.value)}
                 rows={2}
-                placeholder="AC compressor making noise"
                 className={inputClass}
               />
               <button
