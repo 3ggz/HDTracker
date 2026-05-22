@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -155,6 +155,45 @@ export function VehicleDetailClient({
     vehicle: initialVehicle,
     items: initialItems,
   });
+
+  // Subscribe to remote changes on this vehicle's issues so they
+  // appear live (added, edited, resolved, reopened, removed by other
+  // techs). We refetch from the server rather than reconciling the
+  // payload because Supabase Realtime gives us per-row events but our
+  // UI needs the full sorted list. Items / metadata / photos aren't
+  // subscribed because they conflict with the local draft / optimistic
+  // state — left as a follow-up.
+  useEffect(() => {
+    const supabase = createClient();
+    const channel = supabase.channel(`vehicle-${vehicle.id}-issues`);
+
+    channel.on(
+      "postgres_changes" as never,
+      {
+        event: "*",
+        schema: "public",
+        table: "vehicle_issues",
+        filter: `vehicle_id=eq.${vehicle.id}`,
+      } as never,
+      async () => {
+        const { data } = await supabase
+          .from("vehicle_issues")
+          .select("id, body, resolved_at, created_at")
+          .eq("vehicle_id", vehicle.id)
+          .order("resolved_at", { ascending: true, nullsFirst: true })
+          .order("created_at", { ascending: false });
+        if (data) {
+          setIssues(data as VehicleIssue[]);
+        }
+      },
+    );
+
+    channel.subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [vehicle.id]);
 
   const hardwareDrafts = itemDrafts.filter(
     (draft) => draft.category === "hardware",

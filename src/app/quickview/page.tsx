@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
+import { LiveUpdater } from "@/components/LiveUpdater";
 
 type Vehicle = {
   id: string;
@@ -60,6 +61,9 @@ export default async function FleetQuickViewPage() {
 
   return (
     <>
+      <LiveUpdater channelName="qv-fleet-vehicles" table="vehicles" />
+      <LiveUpdater channelName="qv-fleet-items" table="vehicle_items" />
+      <LiveUpdater channelName="qv-fleet-issues" table="vehicle_issues" />
       <header className="sticky top-0 z-10 flex items-center gap-3 border-b border-neutral-200 bg-neutral-50/80 px-4 py-3 backdrop-blur dark:border-neutral-800 dark:bg-neutral-950/80">
         <Link
           href="/"

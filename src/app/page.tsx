@@ -2,6 +2,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { AppHeader } from "@/components/AppHeader";
 import { AddVehicleFab } from "@/components/AddVehicleFab";
+import { LiveUpdater } from "@/components/LiveUpdater";
 
 export default async function Home() {
   const supabase = await createClient();
@@ -12,6 +13,7 @@ export default async function Home() {
 
   return (
     <>
+      <LiveUpdater channelName="home-vehicles" table="vehicles" />
       <AppHeader />
       <section className="mx-auto w-full max-w-md flex-1 px-4 pb-28 pt-4">
         {error ? (

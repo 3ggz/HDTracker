@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { publicPhotoUrl, type VehiclePhoto } from "@/lib/vehicle-photos";
+import { LiveUpdater } from "@/components/LiveUpdater";
 
 type QuickViewItem = {
   id: string;
@@ -60,6 +61,26 @@ export default async function VehicleQuickViewPage({
 
   return (
     <>
+      <LiveUpdater
+        channelName={`qv-vehicle-${vehicle.id}-meta`}
+        table="vehicles"
+        filter={`id=eq.${vehicle.id}`}
+      />
+      <LiveUpdater
+        channelName={`qv-vehicle-${vehicle.id}-items`}
+        table="vehicle_items"
+        filter={`vehicle_id=eq.${vehicle.id}`}
+      />
+      <LiveUpdater
+        channelName={`qv-vehicle-${vehicle.id}-issues`}
+        table="vehicle_issues"
+        filter={`vehicle_id=eq.${vehicle.id}`}
+      />
+      <LiveUpdater
+        channelName={`qv-vehicle-${vehicle.id}-photos`}
+        table="vehicle_photos"
+        filter={`vehicle_id=eq.${vehicle.id}`}
+      />
       <header className="sticky top-0 z-10 flex items-center gap-3 border-b border-neutral-200 bg-neutral-50/80 px-4 py-3 backdrop-blur dark:border-neutral-800 dark:bg-neutral-950/80">
         <Link
           href={`/vehicles/${vehicle.id}`}
