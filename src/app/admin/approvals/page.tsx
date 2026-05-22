@@ -15,12 +15,13 @@ export default async function ApprovalsPage() {
 
   const { data: approvals, error } = await supabase
     .from("user_approvals")
-    .select("user_id, email, approved_at, created_at")
+    .select("user_id, email, approved_at, denied_at, created_at")
     .order("created_at", { ascending: false });
 
   const rows = approvals ?? [];
-  const pending = rows.filter((a) => !a.approved_at);
+  const pending = rows.filter((a) => !a.approved_at && !a.denied_at);
   const approved = rows.filter((a) => a.approved_at);
+  const denied = rows.filter((a) => a.denied_at && !a.approved_at);
 
   return (
     <>
@@ -83,6 +84,23 @@ export default async function ApprovalsPage() {
           ) : (
             <ul className="space-y-2">
               {approved.map((a) => (
+                <ApprovalRow key={a.user_id} approval={a} />
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div>
+          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+            Denied ({denied.length})
+          </h2>
+          {denied.length === 0 ? (
+            <p className="text-sm italic text-neutral-500 dark:text-neutral-400">
+              None.
+            </p>
+          ) : (
+            <ul className="space-y-2">
+              {denied.map((a) => (
                 <ApprovalRow key={a.user_id} approval={a} />
               ))}
             </ul>

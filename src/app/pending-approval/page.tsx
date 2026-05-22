@@ -12,11 +12,13 @@ export default async function PendingApprovalPage() {
 
   const { data: approval } = await supabase
     .from("user_approvals")
-    .select("approved_at")
+    .select("approved_at, denied_at")
     .eq("user_id", user.id)
     .maybeSingle();
 
   if (approval?.approved_at) redirect("/");
+
+  const isDenied = !!approval?.denied_at;
 
   return (
     <main className="relative flex min-h-dvh flex-col items-center justify-center bg-neutral-50 px-6 py-12 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-50">
@@ -32,20 +34,37 @@ export default async function PendingApprovalPage() {
           </h1>
         </header>
 
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-left dark:border-amber-900/40 dark:bg-amber-950/30">
-          <h2 className="text-lg font-semibold text-amber-900 dark:text-amber-100">
-            Awaiting Authorization
-          </h2>
-          <p className="mt-2 text-sm text-amber-800 dark:text-amber-200">
-            Your account has been created and is waiting for an admin to
-            approve it. As soon as an admin approves the request, this
-            screen will let you through automatically — no need to refresh.
-          </p>
-          <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">
-            Signed in as{" "}
-            <span className="font-mono">{user.email}</span>
-          </p>
-        </div>
+        {isDenied ? (
+          <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-left dark:border-red-900/40 dark:bg-red-950/30">
+            <h2 className="text-lg font-semibold text-red-900 dark:text-red-100">
+              Access Denied
+            </h2>
+            <p className="mt-2 text-sm text-red-800 dark:text-red-200">
+              An admin has denied access for this account. If you think this
+              is a mistake, reach out to an admin in person. This screen will
+              update automatically if your access is restored.
+            </p>
+            <p className="mt-3 text-xs text-red-700 dark:text-red-300">
+              Signed in as{" "}
+              <span className="font-mono">{user.email}</span>
+            </p>
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-left dark:border-amber-900/40 dark:bg-amber-950/30">
+            <h2 className="text-lg font-semibold text-amber-900 dark:text-amber-100">
+              Awaiting Authorization
+            </h2>
+            <p className="mt-2 text-sm text-amber-800 dark:text-amber-200">
+              Your account has been created and is waiting for an admin to
+              approve it. As soon as an admin approves the request, this
+              screen will let you through automatically — no need to refresh.
+            </p>
+            <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">
+              Signed in as{" "}
+              <span className="font-mono">{user.email}</span>
+            </p>
+          </div>
+        )}
 
         <div className="mt-6 flex justify-center">
           <SignOutButton />
