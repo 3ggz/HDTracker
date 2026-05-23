@@ -44,6 +44,7 @@ import {
 } from "@/lib/vehicle-photos";
 import { PhotoGallery } from "@/components/PhotoGallery";
 import { Combobox } from "@/components/Combobox";
+import { deleteVehicleAction } from "@/app/vehicles/[id]/actions";
 
 type VehicleDetail = {
   id: string;
@@ -561,19 +562,18 @@ export function VehicleDetailClient({
     setError(null);
     setNotice(null);
 
-    const supabase = createClient();
-    const { error: dbError } = await supabase
-      .from("vehicles")
-      .delete()
-      .eq("id", vehicle.id);
+    const result = await deleteVehicleAction(vehicle.id);
 
-    if (dbError) {
-      setError(dbError.message);
+    if (!result.ok) {
+      setError(result.error);
       setPending(null);
       setConfirmDelete(false);
       return;
     }
 
+    // revalidatePath("/") from the action invalidated the home page's
+    // cached vehicle list — replace + refresh now lands on a fresh
+    // server render with the row gone.
     router.replace("/");
     router.refresh();
   }
