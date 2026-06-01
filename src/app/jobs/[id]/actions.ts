@@ -166,7 +166,6 @@ export type ImportDoorsInput = {
     name: string;
     items: string[];
     notes: string | null;
-    includeHugsBoard: boolean;
   }[];
 };
 
@@ -211,7 +210,7 @@ export async function importDetectedDoorsAction(
       };
     }
 
-    const itemNames = d.includeHugsBoard
+    const itemNames = d.items.includes("5500 Exciter")
       ? [...d.items, "HUGS 8 board"]
       : d.items;
 
