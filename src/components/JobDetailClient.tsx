@@ -3,7 +3,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import type { Job, JobDoor, JobDoorItem } from "@/lib/jobs";
+import {
+  DndContext,
+  PointerSensor,
+  TouchSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { compareDoorNames, type Job, type JobDoor, type JobDoorItem } from "@/lib/jobs";
 import {
   deleteJobPhoto,
   deleteSiteMap,
@@ -112,9 +128,211 @@ export function JobDetailClient({
     return map;
   }, [items]);
 
+  const completionStats = useMemo(() => {
+    const total = items.length;
+    const done = items.filter((it) => it.completed_at).length;
+    return { total, done };
+  }, [items]);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 250, tolerance: 8 },
+    }),
+  );
+
+  async function persistDoorOrder(reordered: JobDoor[]) {
+    const supabase = createClient();
+    const updates = reordered.map((d, idx) =>
+      supabase.from("job_doors").update({ position: idx }).eq("id", d.id),
+    );
+    const results = await Promise.all(updates);
+    const firstError = results.find((r) => r.error);
+    if (firstError?.error) {
+      alert(`Couldn't save door order: ${firstError.error.message}`);
+    }
+  }
+
+  function onDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIndex = doors.findIndex((d) => d.id === active.id);
+    const newIndex = doors.findIndex((d) => d.id === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+    const reordered = arrayMove(doors, oldIndex, newIndex).map((d, idx) => ({
+      ...d,
+      position: idx,
+    }));
+    setDoors(reordered);
+    void persistDoorOrder(reordered);
+  }
+
+  function sortAlphabetically() {
+    const sorted = [...doors]
+      .sort((a, b) => compareDoorNames(a.name, b.name))
+      .map((d, idx) => ({ ...d, position: idx }));
+    setDoors(sorted);
+    void persistDoorOrder(sorted);
+  }
+
   return (
-    <main className="mx-auto w-full max-w-md flex-1 space-y-6 px-4 pb-32 pt-4">
-      <Section title="Job details">
+    <main className="mx-auto w-full max-w-md flex-1 space-y-3 px-4 pb-32 pt-4">
+      <JobSummaryCard
+        job={job}
+        completionStats={completionStats}
+        doorCount={doors.length}
+        photoCount={photos.length}
+      />
+
+      <CollapsibleSection
+        title={`Doors (${doors.length})`}
+        defaultOpen
+        rightHeader={
+          <div className="flex items-center gap-1">
+            {doors.length >= 2 && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  sortAlphabetically();
+                }}
+                aria-label="Sort doors A to Z"
+                className="h-8 rounded-md border border-neutral-300 px-2 text-[11px] font-medium text-neutral-700 transition active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
+              >
+                A→Z
+              </button>
+            )}
+            <AddDoorMenu
+              jobId={job.id}
+              existingCount={doors.length}
+              onAdded={(door, newItems) => {
+                setDoors((d) => [...d, door]);
+                if (newItems.length) setItems((i) => [...i, ...newItems]);
+              }}
+            />
+          </div>
+        }
+      >
+        {doorsLoadError && (
+          <ErrorBanner message={`Doors load error: ${doorsLoadError}`} />
+        )}
+        {itemsLoadError && (
+          <ErrorBanner message={`Items load error: ${itemsLoadError}`} />
+        )}
+        {doors.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-neutral-300 px-4 py-6 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+            No doors yet. Tap{" "}
+            <span className="font-medium">+ Door</span> to add one.
+          </p>
+        ) : (
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={onDragEnd}
+          >
+            <SortableContext
+              items={doors.map((d) => d.id)}
+              strategy={verticalListSortingStrategy}
+            >
+              <ul className="space-y-3">
+                {doors.map((door) => (
+                  <SortableDoorCard
+                    key={door.id}
+                    job={job}
+                    door={door}
+                    items={itemsByDoor.get(door.id) ?? []}
+                    supabaseUrl={supabaseUrl}
+                    jobPhotos={photos.filter((p) => p.door_id === door.id)}
+                    onDoorUpdate={(updated) =>
+                      setDoors((current) =>
+                        current.map((d) => (d.id === updated.id ? updated : d)),
+                      )
+                    }
+                    onDoorDelete={(id) => {
+                      setDoors((current) => current.filter((d) => d.id !== id));
+                      setItems((current) =>
+                        current.filter((it) => it.door_id !== id),
+                      );
+                      setPhotos((current) =>
+                        current.filter((p) => p.door_id !== id),
+                      );
+                    }}
+                    onItemsChange={(doorId, next) => {
+                      setItems((current) => [
+                        ...current.filter((it) => it.door_id !== doorId),
+                        ...next,
+                      ]);
+                    }}
+                    onPhotoAdded={(photo) =>
+                      setPhotos((current) => [photo, ...current])
+                    }
+                    onPhotoDeleted={(id) =>
+                      setPhotos((current) =>
+                        current.filter((p) => p.id !== id),
+                      )
+                    }
+                  />
+                ))}
+              </ul>
+            </SortableContext>
+          </DndContext>
+        )}
+      </CollapsibleSection>
+
+      <CollapsibleSection title="Site map">
+        <SiteMapBody
+          job={job}
+          onJobUpdate={(j) => setJob(j)}
+          supabaseUrl={supabaseUrl}
+          onOpenAutoDetect={() => setAutoDetectOpen(true)}
+        />
+      </CollapsibleSection>
+
+      <AutoDetectModal
+        jobId={job.id}
+        open={autoDetectOpen}
+        onClose={() => setAutoDetectOpen(false)}
+        onImported={async () => {
+          const supabase = createClient();
+          const { data: refreshedDoors } = await supabase
+            .from("job_doors")
+            .select("*")
+            .eq("job_id", job.id)
+            .order("position", { ascending: true })
+            .order("created_at", { ascending: true });
+          setDoors((refreshedDoors ?? []) as JobDoor[]);
+          const doorIds = (refreshedDoors ?? []).map((d) => d.id);
+          if (doorIds.length > 0) {
+            const { data: refreshedItems } = await supabase
+              .from("job_door_items")
+              .select("*")
+              .in("door_id", doorIds)
+              .order("position", { ascending: true })
+              .order("created_at", { ascending: true });
+            setItems((refreshedItems ?? []) as JobDoorItem[]);
+          }
+        }}
+      />
+
+      <CollapsibleSection
+        title={`Job photos (${photos.filter((p) => !p.door_id).length})`}
+      >
+        {photosLoadError && (
+          <ErrorBanner message={`Photos load error: ${photosLoadError}`} />
+        )}
+        <JobPhotoSection
+          jobId={job.id}
+          doorId={null}
+          photos={photos.filter((p) => !p.door_id)}
+          supabaseUrl={supabaseUrl}
+          onAdded={(photo) => setPhotos((current) => [photo, ...current])}
+          onDeleted={(id) =>
+            setPhotos((current) => current.filter((p) => p.id !== id))
+          }
+        />
+      </CollapsibleSection>
+
+      <CollapsibleSection title="Job details">
         <Field label="Name">
           <input
             className={inputClass}
@@ -178,146 +396,114 @@ export function JobDetailClient({
             </button>
           )}
         </div>
-      </Section>
-
-      <SiteMapSection
-        job={job}
-        onJobUpdate={(j) => setJob(j)}
-        supabaseUrl={supabaseUrl}
-        onOpenAutoDetect={() => setAutoDetectOpen(true)}
-      />
-
-      <AutoDetectModal
-        jobId={job.id}
-        open={autoDetectOpen}
-        onClose={() => setAutoDetectOpen(false)}
-        onImported={async () => {
-          const supabase = createClient();
-          const { data: refreshedDoors } = await supabase
-            .from("job_doors")
-            .select("*")
-            .eq("job_id", job.id)
-            .order("position", { ascending: true })
-            .order("created_at", { ascending: true });
-          setDoors((refreshedDoors ?? []) as JobDoor[]);
-          const doorIds = (refreshedDoors ?? []).map((d) => d.id);
-          if (doorIds.length > 0) {
-            const { data: refreshedItems } = await supabase
-              .from("job_door_items")
-              .select("*")
-              .in("door_id", doorIds)
-              .order("position", { ascending: true })
-              .order("created_at", { ascending: true });
-            setItems((refreshedItems ?? []) as JobDoorItem[]);
-          }
-        }}
-      />
-
-      <Section
-        title={`Doors (${doors.length})`}
-        action={
-          <AddDoorMenu
-            jobId={job.id}
-            existingCount={doors.length}
-            onAdded={(door, newItems) => {
-              setDoors((d) => [...d, door]);
-              if (newItems.length) setItems((i) => [...i, ...newItems]);
-            }}
-          />
-        }
-      >
-        {doorsLoadError && (
-          <ErrorBanner message={`Doors load error: ${doorsLoadError}`} />
-        )}
-        {itemsLoadError && (
-          <ErrorBanner message={`Items load error: ${itemsLoadError}`} />
-        )}
-        {doors.length === 0 ? (
-          <p className="rounded-lg border border-dashed border-neutral-300 px-4 py-6 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
-            No doors yet. Tap{" "}
-            <span className="font-medium">+ Door</span> to add one.
-          </p>
-        ) : (
-          <ul className="space-y-3">
-            {doors.map((door) => (
-              <DoorCard
-                key={door.id}
-                job={job}
-                door={door}
-                items={itemsByDoor.get(door.id) ?? []}
-                supabaseUrl={supabaseUrl}
-                jobPhotos={photos.filter((p) => p.door_id === door.id)}
-                onDoorUpdate={(updated) =>
-                  setDoors((current) =>
-                    current.map((d) => (d.id === updated.id ? updated : d)),
-                  )
-                }
-                onDoorDelete={(id) => {
-                  setDoors((current) => current.filter((d) => d.id !== id));
-                  setItems((current) =>
-                    current.filter((it) => it.door_id !== id),
-                  );
-                  setPhotos((current) =>
-                    current.filter((p) => p.door_id !== id),
-                  );
-                }}
-                onItemsChange={(doorId, next) => {
-                  setItems((current) => [
-                    ...current.filter((it) => it.door_id !== doorId),
-                    ...next,
-                  ]);
-                }}
-                onPhotoAdded={(photo) =>
-                  setPhotos((current) => [photo, ...current])
-                }
-                onPhotoDeleted={(id) =>
-                  setPhotos((current) => current.filter((p) => p.id !== id))
-                }
-              />
-            ))}
-          </ul>
-        )}
-      </Section>
-
-      <Section title={`Job photos (${photos.filter((p) => !p.door_id).length})`}>
-        {photosLoadError && (
-          <ErrorBanner message={`Photos load error: ${photosLoadError}`} />
-        )}
-        <JobPhotoSection
-          jobId={job.id}
-          doorId={null}
-          photos={photos.filter((p) => !p.door_id)}
-          supabaseUrl={supabaseUrl}
-          onAdded={(photo) => setPhotos((current) => [photo, ...current])}
-          onDeleted={(id) =>
-            setPhotos((current) => current.filter((p) => p.id !== id))
-          }
-        />
-      </Section>
+      </CollapsibleSection>
 
       <DeleteJobSection jobId={job.id} jobName={job.name} />
     </main>
   );
 }
 
-function Section({
+function JobSummaryCard({
+  job,
+  completionStats,
+  doorCount,
+  photoCount,
+}: {
+  job: Job;
+  completionStats: { done: number; total: number };
+  doorCount: number;
+  photoCount: number;
+}) {
+  const pct =
+    completionStats.total === 0
+      ? 0
+      : Math.round((completionStats.done / completionStats.total) * 100);
+  return (
+    <section className="rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+      {(job.number || job.address) && (
+        <div className="mb-3 space-y-0.5 text-sm">
+          {job.number && (
+            <p className="text-neutral-600 dark:text-neutral-400">
+              Job # <span className="font-medium text-neutral-900 dark:text-neutral-100">{job.number}</span>
+            </p>
+          )}
+          {job.address && (
+            <p className="text-neutral-600 dark:text-neutral-400">
+              {job.address}
+            </p>
+          )}
+        </div>
+      )}
+      <div className="flex items-center gap-3">
+        <div className="flex flex-1 flex-col">
+          <span className="text-[11px] font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+            Progress
+          </span>
+          <span className="text-base font-semibold">
+            {completionStats.done} / {completionStats.total} items
+          </span>
+        </div>
+        <div className="flex items-center gap-3 text-[11px] text-neutral-500 dark:text-neutral-400">
+          <span>
+            {doorCount} {doorCount === 1 ? "door" : "doors"}
+          </span>
+          <span>
+            {photoCount} {photoCount === 1 ? "photo" : "photos"}
+          </span>
+        </div>
+      </div>
+      <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
+        <div
+          className="h-full bg-emerald-500 transition-all"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </section>
+  );
+}
+
+function CollapsibleSection({
   title,
-  action,
+  defaultOpen = false,
+  rightHeader,
   children,
 }: {
   title: string;
-  action?: React.ReactNode;
+  defaultOpen?: boolean;
+  rightHeader?: React.ReactNode;
   children: React.ReactNode;
 }) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
-    <section className="rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-          {title}
-        </h2>
-        {action}
-      </div>
-      <div className="space-y-3">{children}</div>
+    <section className="overflow-hidden rounded-2xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 px-4 py-3 active:bg-neutral-100 dark:active:bg-neutral-800"
+        aria-expanded={open}
+      >
+        <span className="flex items-center gap-2">
+          <svg
+            className={
+              "h-4 w-4 text-neutral-400 transition-transform " +
+              (open ? "rotate-90" : "")
+            }
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <polyline points="9 6 15 12 9 18" />
+          </svg>
+          <span className="text-sm font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-300">
+            {title}
+          </span>
+        </span>
+        {rightHeader && <span onClick={(e) => e.stopPropagation()}>{rightHeader}</span>}
+      </button>
+      {open && <div className="space-y-3 px-4 pb-4">{children}</div>}
     </section>
   );
 }
@@ -458,6 +644,63 @@ function AddDoorMenu({
   );
 }
 
+type DoorCardProps = {
+  job: Job;
+  door: JobDoor;
+  items: JobDoorItem[];
+  supabaseUrl: string;
+  jobPhotos: JobPhoto[];
+  onDoorUpdate: (door: JobDoor) => void;
+  onDoorDelete: (id: string) => void;
+  onItemsChange: (doorId: string, next: JobDoorItem[]) => void;
+  onPhotoAdded: (photo: JobPhoto) => void;
+  onPhotoDeleted: (id: string) => void;
+};
+
+function SortableDoorCard(props: DoorCardProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: props.door.id });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.6 : 1,
+    zIndex: isDragging ? 10 : "auto",
+  };
+
+  return (
+    <li ref={setNodeRef} style={style}>
+      <DoorCard
+        {...props}
+        dragHandle={
+          <button
+            type="button"
+            aria-label={`Drag to reorder ${props.door.name}`}
+            className="flex h-10 w-8 flex-shrink-0 cursor-grab touch-none items-center justify-center rounded text-neutral-400 active:cursor-grabbing active:bg-neutral-200 dark:text-neutral-500 dark:active:bg-neutral-800"
+            {...attributes}
+            {...listeners}
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+              <circle cx="9" cy="6" r="1.6" />
+              <circle cx="15" cy="6" r="1.6" />
+              <circle cx="9" cy="12" r="1.6" />
+              <circle cx="15" cy="12" r="1.6" />
+              <circle cx="9" cy="18" r="1.6" />
+              <circle cx="15" cy="18" r="1.6" />
+            </svg>
+          </button>
+        }
+      />
+    </li>
+  );
+}
+
 function DoorCard({
   job,
   door,
@@ -469,18 +712,8 @@ function DoorCard({
   onItemsChange,
   onPhotoAdded,
   onPhotoDeleted,
-}: {
-  job: Job;
-  door: JobDoor;
-  items: JobDoorItem[];
-  supabaseUrl: string;
-  jobPhotos: JobPhoto[];
-  onDoorUpdate: (door: JobDoor) => void;
-  onDoorDelete: (id: string) => void;
-  onItemsChange: (doorId: string, next: JobDoorItem[]) => void;
-  onPhotoAdded: (photo: JobPhoto) => void;
-  onPhotoDeleted: (id: string) => void;
-}) {
+  dragHandle,
+}: DoorCardProps & { dragHandle?: React.ReactNode }) {
   const [nameDraft, setNameDraft] = useState(door.name);
   const [notesDraft, setNotesDraft] = useState(door.notes ?? "");
   const [syncedName, setSyncedName] = useState(door.name);
@@ -564,9 +797,12 @@ function DoorCard({
     ...HUGS_TEMPLATE.optionalItems,
   ].filter((n) => !usedNames.has(n));
 
+  const completedCount = items.filter((it) => it.completed_at).length;
+
   return (
-    <li className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
+    <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
       <div className="flex items-center gap-2">
+        {dragHandle}
         <input
           className={inputClass + " flex-1"}
           value={nameDraft}
@@ -581,11 +817,24 @@ function DoorCard({
           }}
           placeholder="Door name"
         />
+        {items.length > 0 && (
+          <span
+            className={
+              "rounded-full px-2 py-0.5 text-[10px] font-medium " +
+              (completedCount === items.length
+                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400"
+                : "bg-neutral-200 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400")
+            }
+            aria-label={`${completedCount} of ${items.length} items done`}
+          >
+            {completedCount}/{items.length}
+          </span>
+        )}
         <button
           type="button"
           onClick={deleteDoor}
           aria-label="Delete door"
-          className="flex h-12 w-12 items-center justify-center rounded-lg text-red-600 active:bg-red-50 dark:text-red-400 dark:active:bg-red-950/40"
+          className="flex h-10 w-10 items-center justify-center rounded-lg text-red-600 active:bg-red-50 dark:text-red-400 dark:active:bg-red-950/40"
         >
           <svg
             className="h-5 w-5"
@@ -679,7 +928,7 @@ function DoorCard({
           onDeleted={onPhotoDeleted}
         />
       </div>
-    </li>
+    </div>
   );
 }
 
@@ -762,10 +1011,68 @@ function DoorItemRow({
     });
   }
 
+  async function toggleComplete() {
+    const nextCompletedAt = item.completed_at ? null : new Date().toISOString();
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from("job_door_items")
+      .update({ completed_at: nextCompletedAt })
+      .eq("id", item.id)
+      .select("*")
+      .single();
+    if (error || !data) {
+      alert(error?.message ?? "Couldn't update item.");
+      return;
+    }
+    onUpdate(data as JobDoorItem);
+  }
+
+  const isDone = !!item.completed_at;
+
   return (
-    <li className="rounded-lg border border-neutral-200 bg-white p-2.5 dark:border-neutral-800 dark:bg-neutral-900">
+    <li
+      className={
+        "rounded-lg border p-2.5 transition " +
+        (isDone
+          ? "border-emerald-300 bg-emerald-50/60 dark:border-emerald-900/60 dark:bg-emerald-950/30"
+          : "border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900")
+      }
+    >
       <div className="flex items-center gap-2">
-        <p className="flex-1 text-sm font-medium">{item.name}</p>
+        <button
+          type="button"
+          onClick={toggleComplete}
+          aria-label={isDone ? `Mark ${item.name} not done` : `Mark ${item.name} done`}
+          aria-pressed={isDone}
+          className={
+            "flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md border transition " +
+            (isDone
+              ? "border-emerald-600 bg-emerald-600 text-white"
+              : "border-neutral-300 bg-white dark:border-neutral-600 dark:bg-neutral-900")
+          }
+        >
+          {isDone && (
+            <svg
+              className="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          )}
+        </button>
+        <p
+          className={
+            "flex-1 text-sm font-medium " +
+            (isDone ? "text-neutral-400 line-through dark:text-neutral-500" : "")
+          }
+        >
+          {item.name}
+        </p>
         <button
           type="button"
           onClick={onRemove}
@@ -971,7 +1278,7 @@ function JobPhotoSection({
   );
 }
 
-function SiteMapSection({
+function SiteMapBody({
   job,
   onJobUpdate,
   supabaseUrl,
@@ -1024,7 +1331,7 @@ function SiteMapSection({
   }
 
   return (
-    <Section title="Site map">
+    <>
       {error && <ErrorBanner message={error} />}
       {job.site_map_path ? (
         <div className="space-y-2">
@@ -1105,7 +1412,7 @@ function SiteMapSection({
         className="hidden"
         onChange={onChange}
       />
-    </Section>
+    </>
   );
 }
 

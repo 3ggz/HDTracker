@@ -38,7 +38,7 @@ export default async function JobDetailPage({
       : await supabase
           .from("job_door_items")
           .select(
-            "id, door_id, name, note, photo_storage_path, photo_uploaded_at, position, created_at",
+            "id, door_id, name, note, photo_storage_path, photo_uploaded_at, completed_at, position, created_at",
           )
           .in("door_id", doorIds)
           .order("position", { ascending: true })
@@ -68,10 +68,16 @@ export default async function JobDetailPage({
           {job.name}
         </h1>
         <Link
+          href={`/jobs/${job.id}/quickview`}
+          className="text-sm font-medium text-neutral-600 underline-offset-4 active:text-neutral-900 hover:underline dark:text-neutral-400 dark:active:text-neutral-100"
+        >
+          Quick view
+        </Link>
+        <Link
           href={`/jobs/${job.id}/print`}
           className="text-sm font-medium text-neutral-600 underline-offset-4 active:text-neutral-900 hover:underline dark:text-neutral-400 dark:active:text-neutral-100"
         >
-          Export PDF
+          PDF
         </Link>
       </header>
 
