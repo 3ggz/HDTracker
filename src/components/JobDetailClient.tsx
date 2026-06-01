@@ -184,8 +184,47 @@ export function JobDetailClient({
     address: initialJob.address ?? "",
     notes: initialJob.notes ?? "",
   });
+  const [syncedHeader, setSyncedHeader] = useState({
+    name: initialJob.name,
+    number: initialJob.number ?? "",
+    address: initialJob.address ?? "",
+    notes: initialJob.notes ?? "",
+  });
   const [headerSaving, setHeaderSaving] = useState(false);
   const [headerError, setHeaderError] = useState<string | null>(null);
+
+  // Sync header drafts with realtime job updates, but preserve any
+  // field the user has typed into since the last server snapshot.
+  const currentJobHeader = {
+    name: job.name,
+    number: job.number ?? "",
+    address: job.address ?? "",
+    notes: job.notes ?? "",
+  };
+  if (
+    currentJobHeader.name !== syncedHeader.name ||
+    currentJobHeader.number !== syncedHeader.number ||
+    currentJobHeader.address !== syncedHeader.address ||
+    currentJobHeader.notes !== syncedHeader.notes
+  ) {
+    setHeaderDraft((draft) => ({
+      name:
+        draft.name === syncedHeader.name ? currentJobHeader.name : draft.name,
+      number:
+        draft.number === syncedHeader.number
+          ? currentJobHeader.number
+          : draft.number,
+      address:
+        draft.address === syncedHeader.address
+          ? currentJobHeader.address
+          : draft.address,
+      notes:
+        draft.notes === syncedHeader.notes
+          ? currentJobHeader.notes
+          : draft.notes,
+    }));
+    setSyncedHeader(currentJobHeader);
+  }
 
   const headerDirty =
     headerDraft.name !== job.name ||
@@ -390,6 +429,7 @@ export function JobDetailClient({
             <CollapsibleSection
               title={`Doors (${doors.length})`}
               defaultOpen
+              storageKey={`hd:job:${initialJob.id}:doors`}
               rightHeader={headerControls}
             >
               {errorBanners}
@@ -424,6 +464,7 @@ export function JobDetailClient({
             <CollapsibleSection
               title={`Doors (${doors.length})`}
               defaultOpen
+              storageKey={`hd:job:${initialJob.id}:doors`}
               rightHeader={headerControls}
             >
               {errorBanners}
@@ -451,6 +492,7 @@ export function JobDetailClient({
                   title={`${floor ?? "Unassigned"} — ${floorDoors.length} ${
                     floorDoors.length === 1 ? "door" : "doors"
                   }${total ? ` · ${done}/${total}` : ""}`}
+                  storageKey={`hd:job:${initialJob.id}:floor:${floor ?? "_unassigned"}`}
                 >
                   <DndContext
                     sensors={sensors}
@@ -473,7 +515,11 @@ export function JobDetailClient({
         );
       })()}
 
-      <CollapsibleSection title="Site map" defaultOpen={!!job.site_map_path}>
+      <CollapsibleSection
+        title="Site map"
+        defaultOpen={!!job.site_map_path}
+        storageKey={`hd:job:${initialJob.id}:sitemap`}
+      >
         <SiteMapBody
           job={job}
           onJobUpdate={(j) => setJob(j)}
@@ -510,6 +556,7 @@ export function JobDetailClient({
 
       <CollapsibleSection
         title={`Job photos (${photos.filter((p) => !p.door_id).length})`}
+        storageKey={`hd:job:${initialJob.id}:photos`}
       >
         {photosLoadError && (
           <ErrorBanner message={`Photos load error: ${photosLoadError}`} />
@@ -526,7 +573,10 @@ export function JobDetailClient({
         />
       </CollapsibleSection>
 
-      <CollapsibleSection title="Job details">
+      <CollapsibleSection
+        title="Job details"
+        storageKey={`hd:job:${initialJob.id}:details`}
+      >
         <Field label="Name">
           <input
             className={inputClass}
@@ -668,20 +718,49 @@ function JobSummaryCard({
 function CollapsibleSection({
   title,
   defaultOpen = false,
+  storageKey,
   rightHeader,
   children,
 }: {
   title: string;
   defaultOpen?: boolean;
+  storageKey?: string;
   rightHeader?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  // Read once from localStorage when the storageKey first appears on the
+  // client. In-render setState is allowed once-per-mount via the sentinel.
+  const [syncedKey, setSyncedKey] = useState<string | null | undefined>(
+    undefined,
+  );
+  if (typeof window !== "undefined" && syncedKey !== (storageKey ?? null)) {
+    setSyncedKey(storageKey ?? null);
+    if (storageKey) {
+      try {
+        const stored = localStorage.getItem(storageKey);
+        if (stored !== null) setOpen(stored === "true");
+      } catch {
+        // localStorage unavailable (private mode etc) — keep defaultOpen.
+      }
+    }
+  }
+  function toggle() {
+    const next = !open;
+    setOpen(next);
+    if (storageKey && typeof window !== "undefined") {
+      try {
+        localStorage.setItem(storageKey, String(next));
+      } catch {
+        // Ignore — best-effort persistence.
+      }
+    }
+  }
   return (
     <section className="overflow-hidden rounded-2xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggle}
         className="flex w-full items-center justify-between gap-2 px-4 py-3 active:bg-neutral-100 dark:active:bg-neutral-800"
         aria-expanded={open}
       >
@@ -918,7 +997,30 @@ function DoorCard({
   onPhotoDeleted,
   dragHandle,
 }: DoorCardProps & { dragHandle?: React.ReactNode }) {
+  const expandKey = `hd:job:${job.id}:door:${door.id}`;
   const [expanded, setExpanded] = useState(false);
+  const [expandSynced, setExpandSynced] = useState(false);
+  if (typeof window !== "undefined" && !expandSynced) {
+    setExpandSynced(true);
+    try {
+      const stored = localStorage.getItem(expandKey);
+      if (stored !== null) setExpanded(stored === "true");
+    } catch {
+      // localStorage unavailable — keep default.
+    }
+  }
+  function toggleExpanded() {
+    const next = !expanded;
+    setExpanded(next);
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem(expandKey, String(next));
+      } catch {
+        // Ignore — best-effort persistence.
+      }
+    }
+  }
+
   const [nameDraft, setNameDraft] = useState(door.name);
   const [notesDraft, setNotesDraft] = useState(door.notes ?? "");
   const [floorDraft, setFloorDraft] = useState(door.floor ?? "");
@@ -926,17 +1028,20 @@ function DoorCard({
   const [syncedNotes, setSyncedNotes] = useState(door.notes ?? "");
   const [syncedFloor, setSyncedFloor] = useState(door.floor ?? "");
 
+  // Realtime-aware sync: only overwrite the draft if the user hasn't
+  // started editing (draft still matches the last value we saw from
+  // the server). If they've typed, preserve their edit.
   if (door.name !== syncedName) {
+    if (nameDraft === syncedName) setNameDraft(door.name);
     setSyncedName(door.name);
-    setNameDraft(door.name);
   }
   if ((door.notes ?? "") !== syncedNotes) {
+    if (notesDraft === syncedNotes) setNotesDraft(door.notes ?? "");
     setSyncedNotes(door.notes ?? "");
-    setNotesDraft(door.notes ?? "");
   }
   if ((door.floor ?? "") !== syncedFloor) {
+    if (floorDraft === syncedFloor) setFloorDraft(door.floor ?? "");
     setSyncedFloor(door.floor ?? "");
-    setFloorDraft(door.floor ?? "");
   }
 
   async function commitField(patch: Partial<JobDoor>) {
@@ -1018,7 +1123,7 @@ function DoorCard({
         {dragHandle}
         <button
           type="button"
-          onClick={() => setExpanded((v) => !v)}
+          onClick={toggleExpanded}
           aria-label={expanded ? "Collapse door" : "Expand door"}
           aria-expanded={expanded}
           className="flex h-10 w-7 flex-shrink-0 items-center justify-center rounded text-neutral-400 active:bg-neutral-200 dark:active:bg-neutral-800"
@@ -1237,8 +1342,8 @@ function DoorItemRow({
   const photoInput = useRef<HTMLInputElement>(null);
 
   if ((item.note ?? "") !== syncedNote) {
+    if (noteDraft === syncedNote) setNoteDraft(item.note ?? "");
     setSyncedNote(item.note ?? "");
-    setNoteDraft(item.note ?? "");
   }
 
   async function saveNote(next: string | null) {
