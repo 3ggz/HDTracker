@@ -19,7 +19,13 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { compareDoorNames, type Job, type JobDoor, type JobDoorItem } from "@/lib/jobs";
+import {
+  compareCanonicalItems,
+  compareDoorNames,
+  type Job,
+  type JobDoor,
+  type JobDoorItem,
+} from "@/lib/jobs";
 import {
   deleteJobPhoto,
   deleteSiteMap,
@@ -123,7 +129,7 @@ export function JobDetailClient({
       map.set(it.door_id, list);
     }
     for (const list of map.values()) {
-      list.sort((a, b) => a.position - b.position);
+      list.sort(compareCanonicalItems);
     }
     return map;
   }, [items]);
@@ -184,10 +190,15 @@ export function JobDetailClient({
         photoCount={photos.length}
       />
 
-      <CollapsibleSection
-        title={`Doors (${doors.length})`}
-        defaultOpen
-        rightHeader={
+      {(() => {
+        const distinctFloors = Array.from(
+          new Set(doors.map((d) => d.floor ?? null)),
+        );
+        const useFloorGroups =
+          distinctFloors.length > 1 ||
+          (distinctFloors.length === 1 && distinctFloors[0] !== null);
+
+        const headerControls = (
           <div className="flex items-center gap-1">
             {doors.length >= 2 && (
               <button
@@ -211,75 +222,150 @@ export function JobDetailClient({
               }}
             />
           </div>
-        }
-      >
-        {doorsLoadError && (
-          <ErrorBanner message={`Doors load error: ${doorsLoadError}`} />
-        )}
-        {itemsLoadError && (
-          <ErrorBanner message={`Items load error: ${itemsLoadError}`} />
-        )}
-        {doors.length === 0 ? (
+        );
+
+        const renderDoor = (door: JobDoor) => (
+          <SortableDoorCard
+            key={door.id}
+            job={job}
+            door={door}
+            items={itemsByDoor.get(door.id) ?? []}
+            supabaseUrl={supabaseUrl}
+            jobPhotos={photos.filter((p) => p.door_id === door.id)}
+            onDoorUpdate={(updated) =>
+              setDoors((current) =>
+                current.map((d) => (d.id === updated.id ? updated : d)),
+              )
+            }
+            onDoorDelete={(id) => {
+              setDoors((current) => current.filter((d) => d.id !== id));
+              setItems((current) =>
+                current.filter((it) => it.door_id !== id),
+              );
+              setPhotos((current) => current.filter((p) => p.door_id !== id));
+            }}
+            onItemsChange={(doorId, next) => {
+              setItems((current) => [
+                ...current.filter((it) => it.door_id !== doorId),
+                ...next,
+              ]);
+            }}
+            onPhotoAdded={(photo) =>
+              setPhotos((current) => [photo, ...current])
+            }
+            onPhotoDeleted={(id) =>
+              setPhotos((current) => current.filter((p) => p.id !== id))
+            }
+          />
+        );
+
+        const errorBanners = (
+          <>
+            {doorsLoadError && (
+              <ErrorBanner message={`Doors load error: ${doorsLoadError}`} />
+            )}
+            {itemsLoadError && (
+              <ErrorBanner message={`Items load error: ${itemsLoadError}`} />
+            )}
+          </>
+        );
+
+        const emptyState = (
           <p className="rounded-lg border border-dashed border-neutral-300 px-4 py-6 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
             No doors yet. Tap{" "}
             <span className="font-medium">+ Door</span> to add one.
           </p>
-        ) : (
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            onDragEnd={onDragEnd}
-          >
-            <SortableContext
-              items={doors.map((d) => d.id)}
-              strategy={verticalListSortingStrategy}
-            >
-              <ul className="space-y-3">
-                {doors.map((door) => (
-                  <SortableDoorCard
-                    key={door.id}
-                    job={job}
-                    door={door}
-                    items={itemsByDoor.get(door.id) ?? []}
-                    supabaseUrl={supabaseUrl}
-                    jobPhotos={photos.filter((p) => p.door_id === door.id)}
-                    onDoorUpdate={(updated) =>
-                      setDoors((current) =>
-                        current.map((d) => (d.id === updated.id ? updated : d)),
-                      )
-                    }
-                    onDoorDelete={(id) => {
-                      setDoors((current) => current.filter((d) => d.id !== id));
-                      setItems((current) =>
-                        current.filter((it) => it.door_id !== id),
-                      );
-                      setPhotos((current) =>
-                        current.filter((p) => p.door_id !== id),
-                      );
-                    }}
-                    onItemsChange={(doorId, next) => {
-                      setItems((current) => [
-                        ...current.filter((it) => it.door_id !== doorId),
-                        ...next,
-                      ]);
-                    }}
-                    onPhotoAdded={(photo) =>
-                      setPhotos((current) => [photo, ...current])
-                    }
-                    onPhotoDeleted={(id) =>
-                      setPhotos((current) =>
-                        current.filter((p) => p.id !== id),
-                      )
-                    }
-                  />
-                ))}
-              </ul>
-            </SortableContext>
-          </DndContext>
-        )}
-      </CollapsibleSection>
+        );
 
-      <CollapsibleSection title="Site map">
+        if (!useFloorGroups) {
+          return (
+            <CollapsibleSection
+              title={`Doors (${doors.length})`}
+              defaultOpen
+              rightHeader={headerControls}
+            >
+              {errorBanners}
+              {doors.length === 0 ? (
+                emptyState
+              ) : (
+                <DndContext
+                  sensors={sensors}
+                  collisionDetection={closestCenter}
+                  onDragEnd={onDragEnd}
+                >
+                  <SortableContext
+                    items={doors.map((d) => d.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    <ul className="space-y-3">{doors.map(renderDoor)}</ul>
+                  </SortableContext>
+                </DndContext>
+              )}
+            </CollapsibleSection>
+          );
+        }
+
+        const floorOrder = distinctFloors.sort((a, b) => {
+          if (a === null) return 1;
+          if (b === null) return -1;
+          return a.localeCompare(b, undefined, { numeric: true });
+        });
+
+        return (
+          <>
+            <CollapsibleSection
+              title={`Doors (${doors.length})`}
+              defaultOpen
+              rightHeader={headerControls}
+            >
+              {errorBanners}
+              {doors.length === 0 ? emptyState : null}
+              <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                Grouped by floor — tap each to expand.
+              </p>
+            </CollapsibleSection>
+            {floorOrder.map((floor) => {
+              const floorDoors = doors.filter((d) => (d.floor ?? null) === floor);
+              const total = floorDoors.reduce(
+                (sum, d) => sum + (itemsByDoor.get(d.id)?.length ?? 0),
+                0,
+              );
+              const done = floorDoors.reduce(
+                (sum, d) =>
+                  sum +
+                  (itemsByDoor.get(d.id)?.filter((it) => it.completed_at)
+                    .length ?? 0),
+                0,
+              );
+              return (
+                <CollapsibleSection
+                  key={floor ?? "__unassigned"}
+                  title={`${floor ?? "Unassigned"} — ${floorDoors.length} ${
+                    floorDoors.length === 1 ? "door" : "doors"
+                  }${total ? ` · ${done}/${total}` : ""}`}
+                >
+                  <DndContext
+                    sensors={sensors}
+                    collisionDetection={closestCenter}
+                    onDragEnd={onDragEnd}
+                  >
+                    <SortableContext
+                      items={floorDoors.map((d) => d.id)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      <ul className="space-y-3">
+                        {floorDoors.map(renderDoor)}
+                      </ul>
+                    </SortableContext>
+                  </DndContext>
+                </CollapsibleSection>
+              );
+            })}
+          </>
+        );
+      })()}
+
+      <CollapsibleSection title="Site map" defaultOpen={!!job.site_map_path}>
         <SiteMapBody
           job={job}
           onJobUpdate={(j) => setJob(j)}
@@ -397,6 +483,15 @@ export function JobDetailClient({
           )}
         </div>
       </CollapsibleSection>
+
+      <div className="pt-1 text-center">
+        <a
+          href={`/jobs/${job.id}/history`}
+          className="text-sm font-medium text-neutral-500 underline underline-offset-4 active:text-neutral-900 dark:text-neutral-400 dark:active:text-neutral-100"
+        >
+          View history
+        </a>
+      </div>
 
       <DeleteJobSection jobId={job.id} jobName={job.name} />
     </main>
@@ -589,7 +684,8 @@ function AddDoorMenu({
 
     let newItems: JobDoorItem[] = [];
     if (template === "hugs") {
-      const itemRows = HUGS_TEMPLATE.requiredItems.map((name, idx) => ({
+      const names = [...HUGS_TEMPLATE.requiredItems, "Door contact"];
+      const itemRows = names.map((name, idx) => ({
         door_id: door.id,
         name,
         position: idx,
@@ -714,10 +810,13 @@ function DoorCard({
   onPhotoDeleted,
   dragHandle,
 }: DoorCardProps & { dragHandle?: React.ReactNode }) {
+  const [expanded, setExpanded] = useState(false);
   const [nameDraft, setNameDraft] = useState(door.name);
   const [notesDraft, setNotesDraft] = useState(door.notes ?? "");
+  const [floorDraft, setFloorDraft] = useState(door.floor ?? "");
   const [syncedName, setSyncedName] = useState(door.name);
   const [syncedNotes, setSyncedNotes] = useState(door.notes ?? "");
+  const [syncedFloor, setSyncedFloor] = useState(door.floor ?? "");
 
   if (door.name !== syncedName) {
     setSyncedName(door.name);
@@ -726,6 +825,10 @@ function DoorCard({
   if ((door.notes ?? "") !== syncedNotes) {
     setSyncedNotes(door.notes ?? "");
     setNotesDraft(door.notes ?? "");
+  }
+  if ((door.floor ?? "") !== syncedFloor) {
+    setSyncedFloor(door.floor ?? "");
+    setFloorDraft(door.floor ?? "");
   }
 
   async function commitField(patch: Partial<JobDoor>) {
@@ -795,6 +898,8 @@ function DoorCard({
   const quickAdds = [
     ...HUGS_TEMPLATE.requiredItems,
     ...HUGS_TEMPLATE.optionalItems,
+    "Door contact",
+    "REX",
   ].filter((n) => !usedNames.has(n));
 
   const completedCount = items.filter((it) => it.completed_at).length;
@@ -803,6 +908,25 @@ function DoorCard({
     <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
       <div className="flex items-center gap-2">
         {dragHandle}
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-label={expanded ? "Collapse door" : "Expand door"}
+          aria-expanded={expanded}
+          className="flex h-10 w-7 flex-shrink-0 items-center justify-center rounded text-neutral-400 active:bg-neutral-200 dark:active:bg-neutral-800"
+        >
+          <svg
+            className={"h-4 w-4 transition-transform " + (expanded ? "rotate-90" : "")}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <polyline points="9 6 15 12 9 18" />
+          </svg>
+        </button>
         <input
           className={inputClass + " flex-1"}
           value={nameDraft}
@@ -853,81 +977,101 @@ function DoorCard({
         </button>
       </div>
 
-      <div className="mt-3 space-y-2">
-        <h3 className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-          Equipment
-        </h3>
-        {items.length === 0 && (
-          <p className="text-xs text-neutral-500 dark:text-neutral-400">
-            No items yet.
-          </p>
-        )}
-        <ul className="space-y-2">
-          {items.map((it) => (
-            <DoorItemRow
-              key={it.id}
-              job={job}
-              door={door}
-              item={it}
-              supabaseUrl={supabaseUrl}
-              onUpdate={(updated) =>
-                onItemsChange(
-                  door.id,
-                  items.map((x) => (x.id === updated.id ? updated : x)),
-                )
-              }
-              onRemove={() => removeItem(it.id)}
+      {expanded && (
+        <>
+          <label className="mt-2 flex items-center gap-2 pl-7">
+            <span className="text-[10px] font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+              Floor
+            </span>
+            <input
+              className="h-8 flex-1 rounded border border-neutral-300 bg-white px-2 text-xs dark:border-neutral-700 dark:bg-neutral-900"
+              placeholder="optional"
+              value={floorDraft}
+              onChange={(e) => setFloorDraft(e.target.value)}
+              onBlur={() => {
+                const next = floorDraft.trim() || null;
+                if (next !== door.floor) commitField({ floor: next });
+              }}
             />
-          ))}
-        </ul>
+          </label>
 
-        {quickAdds.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 pt-1">
-            {quickAdds.map((name) => (
-              <button
-                key={name}
-                type="button"
-                onClick={() => addItem(name)}
-                className="rounded-full border border-neutral-300 bg-white px-2.5 py-1 text-xs font-medium text-neutral-700 transition active:scale-95 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
-              >
-                + {name}
-              </button>
-            ))}
+          <div className="mt-3 space-y-2">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+              Equipment
+            </h3>
+            {items.length === 0 && (
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                No items yet.
+              </p>
+            )}
+            <ul className="space-y-2">
+              {items.map((it) => (
+                <DoorItemRow
+                  key={it.id}
+                  job={job}
+                  door={door}
+                  item={it}
+                  supabaseUrl={supabaseUrl}
+                  onUpdate={(updated) =>
+                    onItemsChange(
+                      door.id,
+                      items.map((x) => (x.id === updated.id ? updated : x)),
+                    )
+                  }
+                  onRemove={() => removeItem(it.id)}
+                />
+              ))}
+            </ul>
+
+            {quickAdds.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {quickAdds.map((name) => (
+                  <button
+                    key={name}
+                    type="button"
+                    onClick={() => addItem(name)}
+                    className="rounded-full border border-neutral-300 bg-white px-2.5 py-1 text-xs font-medium text-neutral-700 transition active:scale-95 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+                  >
+                    + {name}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <CustomItemAdd onAdd={addItem} />
           </div>
-        )}
 
-        <CustomItemAdd onAdd={addItem} />
-      </div>
+          <div className="mt-3">
+            <h3 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+              Notes
+            </h3>
+            <textarea
+              className={textareaClass}
+              value={notesDraft}
+              onChange={(e) => setNotesDraft(e.target.value)}
+              onBlur={() => {
+                const next = notesDraft.trim() || null;
+                if (next !== door.notes) commitField({ notes: next });
+              }}
+              placeholder="Notes for this door..."
+            />
+          </div>
 
-      <div className="mt-3">
-        <h3 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-          Notes
-        </h3>
-        <textarea
-          className={textareaClass}
-          value={notesDraft}
-          onChange={(e) => setNotesDraft(e.target.value)}
-          onBlur={() => {
-            const next = notesDraft.trim() || null;
-            if (next !== door.notes) commitField({ notes: next });
-          }}
-          placeholder="Notes for this door..."
-        />
-      </div>
-
-      <div className="mt-3">
-        <h3 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-          Photos
-        </h3>
-        <JobPhotoSection
-          jobId={job.id}
-          doorId={door.id}
-          photos={jobPhotos}
-          supabaseUrl={supabaseUrl}
-          onAdded={onPhotoAdded}
-          onDeleted={onPhotoDeleted}
-        />
-      </div>
+          <div className="mt-3">
+            <h3 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+              Photos
+            </h3>
+            <JobPhotoSection
+              jobId={job.id}
+              doorId={door.id}
+              photos={jobPhotos}
+              supabaseUrl={supabaseUrl}
+              onAdded={onPhotoAdded}
+              onDeleted={onPhotoDeleted}
+            />
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -977,14 +1121,31 @@ function DoorItemRow({
   onUpdate: (item: JobDoorItem) => void;
   onRemove: () => void;
 }) {
+  const [noteEditing, setNoteEditing] = useState(false);
   const [noteDraft, setNoteDraft] = useState(item.note ?? "");
   const [syncedNote, setSyncedNote] = useState(item.note ?? "");
   const [uploading, setUploading] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
   const photoInput = useRef<HTMLInputElement>(null);
 
   if ((item.note ?? "") !== syncedNote) {
     setSyncedNote(item.note ?? "");
     setNoteDraft(item.note ?? "");
+  }
+
+  async function saveNote(next: string | null) {
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from("job_door_items")
+      .update({ note: next })
+      .eq("id", item.id)
+      .select("*")
+      .single();
+    if (error || !data) {
+      alert(error?.message ?? "Couldn't save note.");
+      return;
+    }
+    onUpdate(data as JobDoorItem);
   }
 
   async function uploadPhoto(file: File) {
@@ -1011,6 +1172,24 @@ function DoorItemRow({
     });
   }
 
+  async function removePhoto() {
+    if (!item.photo_storage_path) return;
+    if (!confirm("Remove this photo?")) return;
+    const supabase = createClient();
+    await supabase.storage.from("job-files").remove([item.photo_storage_path]);
+    const { data, error } = await supabase
+      .from("job_door_items")
+      .update({ photo_storage_path: null, photo_uploaded_at: null })
+      .eq("id", item.id)
+      .select("*")
+      .single();
+    if (error || !data) {
+      alert(error?.message ?? "Couldn't remove photo.");
+      return;
+    }
+    onUpdate(data as JobDoorItem);
+  }
+
   async function toggleComplete() {
     const nextCompletedAt = item.completed_at ? null : new Date().toISOString();
     const supabase = createClient();
@@ -1028,6 +1207,8 @@ function DoorItemRow({
   }
 
   const isDone = !!item.completed_at;
+  const hasNote = !!item.note;
+  const hasPhoto = !!item.photo_storage_path;
 
   return (
     <li
@@ -1065,14 +1246,50 @@ function DoorItemRow({
             </svg>
           )}
         </button>
+        {hasPhoto && (
+          <a
+            href={publicJobFileUrl(supabaseUrl, item.photo_storage_path!)}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={`View ${item.name} photo`}
+            className="block h-8 w-8 flex-shrink-0 overflow-hidden rounded border border-neutral-200 dark:border-neutral-700"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={publicJobFileUrl(supabaseUrl, item.photo_storage_path!)}
+              alt=""
+              className="h-full w-full object-cover"
+            />
+          </a>
+        )}
         <p
           className={
-            "flex-1 text-sm font-medium " +
+            "flex-1 truncate text-sm font-medium " +
             (isDone ? "text-neutral-400 line-through dark:text-neutral-500" : "")
           }
         >
           {item.name}
         </p>
+        <button
+          type="button"
+          onClick={() => setActionsOpen((v) => !v)}
+          aria-label={`More actions for ${item.name}`}
+          aria-expanded={actionsOpen}
+          className="flex h-8 w-8 items-center justify-center rounded text-neutral-500 active:bg-neutral-100 dark:text-neutral-400 dark:active:bg-neutral-800"
+        >
+          <svg
+            className="h-4 w-4"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+        </button>
         <button
           type="button"
           onClick={onRemove}
@@ -1094,71 +1311,102 @@ function DoorItemRow({
         </button>
       </div>
 
-      <input
-        className={inputClass + " mt-2 h-9 text-sm"}
-        placeholder="Note (optional)"
-        value={noteDraft}
-        onChange={(e) => setNoteDraft(e.target.value)}
-        onBlur={() => {
-          const next = noteDraft.trim() || null;
-          if (next !== item.note) {
-            createClient()
-              .from("job_door_items")
-              .update({ note: next })
-              .eq("id", item.id)
-              .select("*")
-              .single()
-              .then(({ data, error }) => {
-                if (error || !data) {
-                  alert(error?.message ?? "Couldn't save note.");
-                  return;
-                }
-                onUpdate(data as JobDoorItem);
-              });
-          }
-        }}
-      />
-
-      <div className="mt-2 flex items-center gap-2">
-        {item.photo_storage_path ? (
-          <a
-            href={publicJobFileUrl(supabaseUrl, item.photo_storage_path)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="block h-14 w-14 overflow-hidden rounded border border-neutral-200 dark:border-neutral-700"
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={publicJobFileUrl(supabaseUrl, item.photo_storage_path)}
-              alt={`${item.name} photo`}
-              className="h-full w-full object-cover"
-            />
-          </a>
-        ) : null}
-        <input
-          ref={photoInput}
-          type="file"
-          accept="image/*"
-          capture="environment"
-          className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) uploadPhoto(f);
-          }}
-        />
+      {hasNote && !noteEditing && (
         <button
           type="button"
-          disabled={uploading}
-          onClick={() => photoInput.current?.click()}
-          className="h-9 rounded-lg border border-neutral-300 px-3 text-xs font-medium text-neutral-700 transition active:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
+          onClick={() => setNoteEditing(true)}
+          className="mt-1.5 block w-full text-left text-xs italic text-neutral-600 dark:text-neutral-400"
         >
-          {uploading
-            ? "Uploading..."
-            : item.photo_storage_path
-              ? "Replace photo"
-              : "Add photo"}
+          “{item.note}”
         </button>
-      </div>
+      )}
+
+      {noteEditing && (
+        <input
+          autoFocus
+          className={inputClass + " mt-2 h-9 text-sm"}
+          placeholder="Note for this item"
+          value={noteDraft}
+          onChange={(e) => setNoteDraft(e.target.value)}
+          onBlur={() => {
+            const next = noteDraft.trim() || null;
+            setNoteEditing(false);
+            if (next !== item.note) void saveNote(next);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+            if (e.key === "Escape") {
+              setNoteDraft(item.note ?? "");
+              setNoteEditing(false);
+            }
+          }}
+        />
+      )}
+
+      {actionsOpen && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              setNoteEditing(true);
+              setActionsOpen(false);
+            }}
+            className="rounded-full border border-neutral-300 bg-white px-3 py-1 text-xs font-medium dark:border-neutral-700 dark:bg-neutral-900"
+          >
+            {hasNote ? "Edit note" : "+ Note"}
+          </button>
+          <button
+            type="button"
+            disabled={uploading}
+            onClick={() => {
+              photoInput.current?.click();
+              setActionsOpen(false);
+            }}
+            className="rounded-full border border-neutral-300 bg-white px-3 py-1 text-xs font-medium disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900"
+          >
+            {uploading
+              ? "Uploading..."
+              : hasPhoto
+                ? "Replace photo"
+                : "+ Photo"}
+          </button>
+          {hasNote && (
+            <button
+              type="button"
+              onClick={() => {
+                setActionsOpen(false);
+                void saveNote(null);
+              }}
+              className="rounded-full border border-red-300 bg-white px-3 py-1 text-xs font-medium text-red-600 dark:border-red-900 dark:bg-neutral-900 dark:text-red-400"
+            >
+              Remove note
+            </button>
+          )}
+          {hasPhoto && (
+            <button
+              type="button"
+              onClick={() => {
+                setActionsOpen(false);
+                void removePhoto();
+              }}
+              className="rounded-full border border-red-300 bg-white px-3 py-1 text-xs font-medium text-red-600 dark:border-red-900 dark:bg-neutral-900 dark:text-red-400"
+            >
+              Remove photo
+            </button>
+          )}
+        </div>
+      )}
+
+      <input
+        ref={photoInput}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) uploadPhoto(f);
+        }}
+      />
     </li>
   );
 }
@@ -1262,7 +1510,6 @@ function JobPhotoSection({
         ref={fileInput}
         type="file"
         accept="image/*"
-        capture="environment"
         className="hidden"
         onChange={onChange}
       />
@@ -1335,26 +1582,28 @@ function SiteMapBody({
       {error && <ErrorBanner message={error} />}
       {job.site_map_path ? (
         <div className="space-y-2">
+          <object
+            data={publicJobFileUrl(supabaseUrl, job.site_map_path) + "#view=FitH"}
+            type="application/pdf"
+            className="h-[65vh] w-full rounded-lg border border-neutral-200 bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-950"
+            aria-label="Site map PDF"
+          >
+            <a
+              href={publicJobFileUrl(supabaseUrl, job.site_map_path)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex h-full w-full items-center justify-center p-6 text-center text-sm text-neutral-600 dark:text-neutral-400"
+            >
+              Your browser can&apos;t render PDFs inline. Tap to open.
+            </a>
+          </object>
           <a
             href={publicJobFileUrl(supabaseUrl, job.site_map_path)}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-2 rounded-lg border border-neutral-200 px-3 py-2 text-sm font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
+            className="block text-center text-[11px] font-medium text-neutral-500 underline-offset-2 active:text-neutral-900 hover:underline dark:text-neutral-400 dark:active:text-neutral-100"
           >
-            <svg
-              className="h-5 w-5 text-red-500"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-              <polyline points="14 2 14 8 20 8" />
-            </svg>
-            <span className="flex-1 truncate">Site map.pdf</span>
-            <span className="text-[11px] text-neutral-400">View</span>
+            Open fullscreen
           </a>
           <div className="flex gap-2">
             <button

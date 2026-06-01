@@ -3,7 +3,12 @@
 import { useEffect } from "react";
 import Link from "next/link";
 import { publicJobFileUrl, type JobPhoto } from "@/lib/job-photos";
-import type { Job, JobDoor, JobDoorItem } from "@/lib/jobs";
+import {
+  compareCanonicalItems,
+  type Job,
+  type JobDoor,
+  type JobDoorItem,
+} from "@/lib/jobs";
 
 export function JobPrintView({
   job,
@@ -31,6 +36,9 @@ export function JobPrintView({
     const list = itemsByDoor.get(it.door_id) ?? [];
     list.push(it);
     itemsByDoor.set(it.door_id, list);
+  }
+  for (const list of itemsByDoor.values()) {
+    list.sort(compareCanonicalItems);
   }
 
   return (

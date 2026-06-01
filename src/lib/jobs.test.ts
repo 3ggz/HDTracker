@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compareDoorNames } from "./jobs";
+import { compareCanonicalItems, compareDoorNames } from "./jobs";
 
 describe("compareDoorNames", () => {
   it("sorts pure numeric order within a letter prefix", () => {
@@ -54,6 +54,42 @@ describe("compareDoorNames", () => {
       "E113",
       "SW",
       "SX",
+    ]);
+  });
+});
+
+describe("compareCanonicalItems", () => {
+  it("ranks items in HUGS canonical order regardless of insertion position", () => {
+    const input = [
+      { name: "5500 Exciter", position: 0 },
+      { name: "Strobe", position: 1 },
+      { name: "HUGS 8 board", position: 2 },
+      { name: "4210 Antenna", position: 3 },
+      { name: "5200 Exciter", position: 4 },
+      { name: "3220 Exciter", position: 5 },
+    ];
+    const sorted = [...input].sort(compareCanonicalItems);
+    expect(sorted.map((it) => it.name)).toEqual([
+      "HUGS 8 board",
+      "5500 Exciter",
+      "Strobe",
+      "5200 Exciter",
+      "3220 Exciter",
+      "4210 Antenna",
+    ]);
+  });
+
+  it("puts custom items after the canonical list, in insertion order", () => {
+    const input = [
+      { name: "Custom B", position: 1 },
+      { name: "5500 Exciter", position: 2 },
+      { name: "Custom A", position: 0 },
+    ];
+    const sorted = [...input].sort(compareCanonicalItems);
+    expect(sorted.map((it) => it.name)).toEqual([
+      "5500 Exciter",
+      "Custom A",
+      "Custom B",
     ]);
   });
 });

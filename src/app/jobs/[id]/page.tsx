@@ -20,6 +20,7 @@ export default async function JobDetailPage({
         .from("job_doors")
         .select("*")
         .eq("job_id", id)
+        .order("floor", { ascending: true, nullsFirst: false })
         .order("position", { ascending: true })
         .order("created_at", { ascending: true }),
       supabase

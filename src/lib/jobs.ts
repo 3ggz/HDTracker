@@ -15,6 +15,7 @@ export type JobDoor = {
   job_id: string;
   name: string;
   notes: string | null;
+  floor: string | null;
   position: number;
   created_at: string;
   updated_at: string;
@@ -31,6 +32,42 @@ export type JobDoorItem = {
   position: number;
   created_at: string;
 };
+
+// Canonical install order of HUGS equipment. Any item name not in this
+// list is sorted to the end, in insertion order. The comparator is
+// used at display time only — the database stores `position` as a
+// stable tiebreaker but the actual ordering on screen comes from here.
+export const CANONICAL_ITEM_ORDER: readonly string[] = [
+  "HUGS 8 board",
+  "5500 Exciter",
+  "Strobe",
+  "5200 Exciter",
+  "3220 Exciter",
+  "4210 Antenna",
+  "Door contact",
+  "REX",
+];
+
+// Door labels starting with E are elevators (REX). Everything else
+// — D, S (stairwells), SW/SX/SB/ST etc. — uses a door contact.
+export function doorContactItemForName(doorName: string): "Door contact" | "REX" {
+  return /^e/i.test(doorName.trim()) ? "REX" : "Door contact";
+}
+
+export function compareCanonicalItems(
+  a: { name: string; position: number },
+  b: { name: string; position: number },
+): number {
+  const ai = CANONICAL_ITEM_ORDER.indexOf(a.name);
+  const bi = CANONICAL_ITEM_ORDER.indexOf(b.name);
+  // Both known → canonical order.
+  if (ai !== -1 && bi !== -1) return ai - bi;
+  // Known beats unknown.
+  if (ai !== -1) return -1;
+  if (bi !== -1) return 1;
+  // Two unknowns → fall back to position (insertion order).
+  return a.position - b.position;
+}
 
 // Natural sort that handles "D1 < D9 < D10 < D15" and "E101 < E113".
 // Splits each name into [non-digits, digits, non-digits, ...] and

@@ -159,7 +159,7 @@ export function formatRelativeTime(
 // on common separators (".", "_", "-") and title-case each segment so
 // "mark@..." renders as "Mark" and "mark.hacz@..." as "Mark Hacz".
 // Pre-auth history rows (user_email is null) render as "Anonymous".
-export function activityActorName(activity: VehicleActivity): string {
+export function activityActorName(activity: { user_email: string | null }): string {
   const email = activity.user_email?.trim();
   if (!email) return "Anonymous";
 
@@ -206,11 +206,13 @@ export function dayBucketLabel(
   });
 }
 
-export function groupActivitiesByDay(
-  activities: VehicleActivity[],
+export function groupActivitiesByDay<
+  T extends { created_at: string },
+>(
+  activities: T[],
   now: number = Date.now(),
-): { label: string; activities: VehicleActivity[] }[] {
-  const groups: { label: string; activities: VehicleActivity[] }[] = [];
+): { label: string; activities: T[] }[] {
+  const groups: { label: string; activities: T[] }[] = [];
   for (const activity of activities) {
     const label = dayBucketLabel(activity.created_at, now);
     const existing = groups[groups.length - 1];

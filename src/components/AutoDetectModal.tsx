@@ -64,6 +64,7 @@ export function AutoDetectModal({
       jobId,
       doors: selected.map((r) => ({
         name: r.name,
+        floor: r.floor,
         items: r.items,
         notes: r.notes,
       })),
@@ -239,6 +240,18 @@ function DoorReviewRow({
           value={row.name}
           onChange={(e) => onChange({ name: e.target.value })}
           className="h-9 flex-1 rounded-md border border-neutral-300 bg-white px-2 text-sm font-medium dark:border-neutral-700 dark:bg-neutral-900"
+        />
+      </label>
+      <label className="mt-1 flex items-center gap-2 pl-8">
+        <span className="text-[10px] font-medium uppercase tracking-wide text-neutral-400">
+          Floor
+        </span>
+        <input
+          type="text"
+          value={row.floor ?? ""}
+          placeholder="optional"
+          onChange={(e) => onChange({ floor: e.target.value || null })}
+          className="h-7 flex-1 rounded border border-neutral-300 bg-white px-2 text-[11px] dark:border-neutral-700 dark:bg-neutral-900"
         />
       </label>
       <div className="mt-2 flex flex-wrap gap-1.5 pl-8">

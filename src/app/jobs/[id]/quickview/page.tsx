@@ -3,7 +3,13 @@ import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { LiveUpdater } from "@/components/LiveUpdater";
 import { publicJobFileUrl, type JobPhoto } from "@/lib/job-photos";
-import { compareDoorNames, type Job, type JobDoor, type JobDoorItem } from "@/lib/jobs";
+import {
+  compareCanonicalItems,
+  compareDoorNames,
+  type Job,
+  type JobDoor,
+  type JobDoorItem,
+} from "@/lib/jobs";
 
 export default async function JobQuickViewPage({
   params,
@@ -53,6 +59,9 @@ export default async function JobQuickViewPage({
     const list = itemsByDoor.get(it.door_id) ?? [];
     list.push(it);
     itemsByDoor.set(it.door_id, list);
+  }
+  for (const list of itemsByDoor.values()) {
+    list.sort(compareCanonicalItems);
   }
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";

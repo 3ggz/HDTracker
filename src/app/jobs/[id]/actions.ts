@@ -6,6 +6,7 @@ import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { JOB_BUCKET } from "@/lib/job-photos";
+import { doorContactItemForName } from "@/lib/jobs";
 
 const EQUIPMENT_ENUM = [
   "5500 Exciter",
@@ -17,6 +18,11 @@ const EQUIPMENT_ENUM = [
 
 const DetectedDoorSchema = z.object({
   name: z.string().describe("Door label as printed on the map, e.g. 'E113', 'D9', 'SX'."),
+  floor: z
+    .union([z.string(), z.null()])
+    .describe(
+      "Floor or unit label from the page this door appears on. Read it from the title block, page header, or large floor-name text on the page (e.g. '3rd floor', 'NICU', 'Mother-Baby Floor 3'). All doors on the same PDF page share this label. Null if no floor info is visible.",
+    ),
   items: z
     .array(z.enum(EQUIPMENT_ENUM))
     .describe(
@@ -56,7 +62,7 @@ You are analyzing a site-map PDF for a low-voltage installation tech. Extract ev
 
 ${LEGEND}
 
-For each door you can identify, output its label, the list of equipment from the legend within ~200px of the label, and an optional one-line note. Use ONLY the exact equipment strings from the enum; do not invent items. Be conservative — if you are not confident a dot belongs to a particular door, omit it. If the same door label appears on multiple pages, return it once with the union of its equipment.
+For each door you can identify, output its label, the floor / unit label from that page's header, the list of equipment from the legend within ~200px of the label, and an optional one-line note. Use ONLY the exact equipment strings from the enum; do not invent items. Be conservative — if you are not confident a dot belongs to a particular door, omit it. Multi-floor PDFs typically have one floor per page; read the floor label from the title block or page header and apply the same floor to every door on that page. If the same door label appears on multiple pages, return it once with the union of its equipment and the floor of the first occurrence.
 `.trim();
 
 export async function autoDetectDoorsAction(
@@ -140,6 +146,7 @@ export async function autoDetectDoorsAction(
     const normalized: DetectedDoor[] = response.parsed_output.doors
       .map((d) => ({
         name: d.name.trim(),
+        floor: d.floor?.trim() || null,
         items: Array.from(new Set(d.items)),
         notes: d.notes?.trim() || null,
       }))
@@ -164,6 +171,7 @@ export type ImportDoorsInput = {
   jobId: string;
   doors: {
     name: string;
+    floor: string | null;
     items: string[];
     notes: string | null;
   }[];
@@ -197,6 +205,7 @@ export async function importDetectedDoorsAction(
       .insert({
         job_id: input.jobId,
         name: d.name,
+        floor: d.floor,
         notes: d.notes,
         position: positionStart + i,
       })
@@ -210,9 +219,10 @@ export async function importDetectedDoorsAction(
       };
     }
 
-    const itemNames = d.items.includes("5500 Exciter")
+    const withBoard = d.items.includes("5500 Exciter")
       ? [...d.items, "HUGS 8 board"]
       : d.items;
+    const itemNames = [...withBoard, doorContactItemForName(d.name)];
 
     if (itemNames.length > 0) {
       const itemRows = itemNames.map((name, idx) => ({
