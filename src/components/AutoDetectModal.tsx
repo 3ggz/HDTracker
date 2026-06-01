@@ -37,7 +37,24 @@ export function AutoDetectModal({
   async function runDetection() {
     setPhase("detecting");
     setError(null);
-    const result = await autoDetectDoorsAction(jobId);
+    // Client-side cap — if the server action doesn't return in 100s
+    // (typically because Vercel killed the function) we bail with a
+    // friendly error instead of leaving the user on a forever-spinner.
+    const timeout = new Promise<{ ok: false; error: string }>((resolve) =>
+      setTimeout(
+        () =>
+          resolve({
+            ok: false,
+            error:
+              "Took longer than 100s — the server probably timed out. Try a smaller PDF or check your Vercel function timeout limit.",
+          }),
+        100_000,
+      ),
+    );
+    const result = await Promise.race([
+      autoDetectDoorsAction(jobId),
+      timeout,
+    ]);
     if (!result.ok) {
       setError(result.error);
       setPhase("idle");

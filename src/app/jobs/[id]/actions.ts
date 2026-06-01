@@ -126,7 +126,11 @@ export async function autoDetectDoorsAction(
   const pdfBytes = Buffer.from(await pdfBlob.arrayBuffer());
   const pdfBase64 = pdfBytes.toString("base64");
 
-  const anthropic = new Anthropic();
+  // Hard wall-clock cap on the Anthropic call — beats the SDK's default
+  // 10-minute timeout which would otherwise let Vercel kill the function
+  // before we see a real error.
+  const anthropic = new Anthropic({ timeout: 90_000 });
+  const callStart = Date.now();
 
   try {
     const response = await anthropic.messages.parse({
@@ -134,7 +138,7 @@ export async function autoDetectDoorsAction(
       max_tokens: 16000,
       thinking: { type: "adaptive" },
       output_config: {
-        effort: "high",
+        effort: "medium",
         format: zodOutputFormat(ExtractionSchema),
       },
       messages: [
@@ -171,8 +175,20 @@ export async function autoDetectDoorsAction(
       }))
       .filter((d) => d.name.length > 0);
 
+    console.log(`[auto-detect] success ${Date.now() - callStart}ms`);
     return { ok: true, doors: normalized };
   } catch (err) {
+    console.log(
+      `[auto-detect] failed ${Date.now() - callStart}ms:`,
+      err instanceof Error ? err.message : err,
+    );
+    if (err instanceof Anthropic.APIConnectionTimeoutError) {
+      return {
+        ok: false,
+        error:
+          "The Claude API call took longer than 90s. Try a smaller PDF, or upgrade Vercel to a tier with a longer function timeout.",
+      };
+    }
     if (err instanceof Anthropic.APIError) {
       return {
         ok: false,
