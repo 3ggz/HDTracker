@@ -131,7 +131,7 @@ export async function autoDetectDoorsAction(
   try {
     const response = await anthropic.messages.parse({
       model: "claude-opus-4-8",
-      max_tokens: 32000,
+      max_tokens: 16000,
       thinking: { type: "adaptive" },
       output_config: {
         effort: "xhigh",
