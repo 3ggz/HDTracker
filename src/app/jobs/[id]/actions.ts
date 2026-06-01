@@ -44,25 +44,44 @@ export type AutoDetectResult =
   | { ok: false; error: string };
 
 const LEGEND = `
-Site map equipment legend (HUGS infant protection system):
-- Magenta/pink filled dot           → "5500 Exciter"  (EX-5500 LF Controller, PoE + 24 VDC)
-- Green filled dot                  → "5200 Exciter"  (EX-5200 LF Exciter, PoE)
-- Cyan / light blue dot             → "3220 Exciter"  (EX-3220 LF Exciter, PoE)
-- Small red dot labeled "ANT"       → "4210 Antenna"  (ANT-4210 LF Antenna)
-- Yellow circle with "S" inside     → "Strobe"        (Strobe-Sounder, 24 VDC)
-
-Doors are red-bordered boxes labeled with codes like "E113", "D9", "D15", "E101", "SX", "SW".
-A door's equipment is the cluster of dots within roughly 200 pixels of the door label.
-Ignore the legend block, the title block, and any equipment dots not adjacent to a labeled door.
-The HUGS 8 board has no map marker — it is standard kit per door and is added at import time, not by you.
+HUGS infant-protection site-map legend:
+- Magenta/pink filled dot           → "5500 Exciter"  (EX-5500 LF Controller — the door's main controller; one per door)
+- Green filled dot                  → "5200 Exciter"  (EX-5200 LF Exciter)
+- Cyan / light blue dot             → "3220 Exciter"  (EX-3220 LF Exciter)
+- Small red dot labeled "ANT"       → "4210 Antenna"
+- Yellow circle with "S" inside     → "Strobe"        (Strobe-Sounder)
 `.trim();
 
 const EXTRACTION_PROMPT = `
-You are analyzing a site-map PDF for a low-voltage installation tech. Extract every labeled door on the map along with the equipment dots clustered near it.
+You are analyzing a site-map PDF for a low-voltage HUGS install. Extract one door per 5500 controller. Be exhaustive and consistent.
 
 ${LEGEND}
 
-For each door you can identify, output its label, the floor / unit label from that page's header, the list of equipment from the legend within ~200px of the label, and an optional one-line note. Use ONLY the exact equipment strings from the enum; do not invent items. Be conservative — if you are not confident a dot belongs to a particular door, omit it. Multi-floor PDFs typically have one floor per page; read the floor label from the title block or page header and apply the same floor to every door on that page. If the same door label appears on multiple pages, return it once with the union of its equipment and the floor of the first occurrence.
+THE PRIMARY RULE — COUNT DOORS BY 5500 DOTS:
+Each magenta/pink dot (5500 Exciter) represents exactly ONE door. The total number of doors equals the total number of 5500 dots across all pages. Do not count by red-bordered labels — labels can be ambiguous; 5500 dots are not. If you see N 5500 dots on a page, you must output N doors for that page.
+
+DEVICE-TO-DOOR ASSIGNMENT — FOLLOW THE WIRE:
+Each non-5500 device (5200, 3220, 4210, Strobe) belongs to whichever 5500 it is connected to via the wire line (usually a brown/red line that visually links the dots). Use the wire connection, not Euclidean distance. If a device has no visible wire to any 5500, omit it.
+
+DOOR NAMING — CONSOLIDATE SUB-LABELS:
+A 5500 dot is usually surrounded by one or more red-bordered text labels (e.g. "E113", "D9", "E79-CG", "E79-CF", "E101-FD"). Pick the door's name like this:
+1. Collect every label within ~150 px of the 5500 dot.
+2. If multiple labels share a base prefix followed by a hyphen-suffix (e.g. "E79-CG" and "E79-CF", or "E101-FD" and "E101-FC"), use just the base ("E79", "E101"). These are sub-labels of the same door.
+3. If only one label appears, use it as-is — including any hyphen suffix.
+4. If no label is visible near a 5500, name the door "Door #N" where N is the sequential index of that 5500 on the page.
+Never invent labels.
+
+FLOOR / UNIT:
+Read the floor or unit label from the page's title block or large header text (e.g. "3rd floor", "NICU", "Mother-Baby Floor 3"). Every door on the same page shares that floor.
+
+ITEMS:
+For each door, list the equipment connected via wire to its 5500. Use ONLY these exact strings — never invent or paraphrase: "5500 Exciter", "5200 Exciter", "3220 Exciter", "4210 Antenna", "Strobe". Always include "5500 Exciter" since every door has one. Other devices are included only when the wire connects them to that 5500.
+
+DEDUPLICATION ACROSS PAGES:
+If the same consolidated door name appears on multiple pages (e.g. wiring continuation), return it once with the union of its equipment and the floor of the first occurrence.
+
+SELF-CHECK BEFORE RESPONDING:
+Recount the magenta 5500 dots on each page. Confirm your output door count equals that total. If they don't match, find the missing 5500(s) and add the corresponding door(s) before responding.
 `.trim();
 
 export async function autoDetectDoorsAction(
@@ -112,10 +131,10 @@ export async function autoDetectDoorsAction(
   try {
     const response = await anthropic.messages.parse({
       model: "claude-opus-4-8",
-      max_tokens: 16000,
+      max_tokens: 32000,
       thinking: { type: "adaptive" },
       output_config: {
-        effort: "high",
+        effort: "xhigh",
         format: zodOutputFormat(ExtractionSchema),
       },
       messages: [

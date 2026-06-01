@@ -5,6 +5,10 @@ import { JobDetailClient } from "@/components/JobDetailClient";
 import type { Job, JobDoor, JobDoorItem } from "@/lib/jobs";
 import type { JobPhoto } from "@/lib/job-photos";
 
+// Auto-detect calls Claude vision with xhigh effort on multi-page PDFs;
+// allow up to 2 minutes so the server action doesn't time out at 10s/60s.
+export const maxDuration = 120;
+
 export default async function JobDetailPage({
   params,
 }: {
