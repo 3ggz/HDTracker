@@ -10,7 +10,6 @@ import {
 
 type Row = DetectedDoor & {
   include: boolean;
-  includeHugsBoard: boolean;
 };
 
 export function AutoDetectModal({
@@ -48,7 +47,6 @@ export function AutoDetectModal({
       result.doors.map((d) => ({
         ...d,
         include: true,
-        includeHugsBoard: true,
       })),
     );
     setPhase("review");
@@ -68,7 +66,6 @@ export function AutoDetectModal({
         name: r.name,
         items: r.items,
         notes: r.notes,
-        includeHugsBoard: r.includeHugsBoard,
       })),
     });
     if (!result.ok) {
@@ -170,7 +167,7 @@ export function AutoDetectModal({
               <p className="mb-3 text-xs text-neutral-500 dark:text-neutral-400">
                 Found {rows.length} {rows.length === 1 ? "door" : "doors"}. Review
                 and uncheck anything wrong before importing. HUGS 8 board is
-                added automatically.
+                added automatically for any door with a 5500 Exciter.
               </p>
               <ul className="space-y-2">
                 {rows.map((row, idx) => (
@@ -265,15 +262,11 @@ function DoorReviewRow({
           ))
         )}
       </div>
-      <label className="mt-2 flex items-center gap-2 pl-8 text-[11px] text-neutral-600 dark:text-neutral-400">
-        <input
-          type="checkbox"
-          checked={row.includeHugsBoard}
-          onChange={(e) => onChange({ includeHugsBoard: e.target.checked })}
-          className="h-3.5 w-3.5"
-        />
-        Also add HUGS 8 board
-      </label>
+      {row.items.includes("5500 Exciter") && (
+        <p className="mt-1.5 pl-8 text-[11px] text-neutral-500 dark:text-neutral-500">
+          + HUGS 8 board (auto-added)
+        </p>
+      )}
       {row.notes && (
         <p className="mt-1 pl-8 text-[11px] italic text-neutral-500">
           {row.notes}
