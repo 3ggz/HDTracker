@@ -2,8 +2,8 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { createClient } from "@/lib/supabase/client";
 import {
-  autoDetectDoorsAction,
   importDetectedDoorsAction,
   type DetectedDoor,
 } from "@/app/jobs/[id]/actions";
@@ -37,31 +37,52 @@ export function AutoDetectModal({
   async function runDetection() {
     setPhase("detecting");
     setError(null);
-    // Client-side cap — if the server action doesn't return in 100s
-    // (typically because Vercel killed the function) we bail with a
-    // friendly error instead of leaving the user on a forever-spinner.
-    const timeout = new Promise<{ ok: false; error: string }>((resolve) =>
-      setTimeout(
-        () =>
-          resolve({
-            ok: false,
-            error:
-              "Took longer than 100s — the server probably timed out. Try a smaller PDF or check your Vercel function timeout limit.",
-          }),
-        100_000,
-      ),
+
+    const supabase = createClient();
+    // Client-side cap — Edge Functions are bounded at 150s, this gives
+    // a little headroom and prevents a forever-spinner if the function
+    // never returns.
+    const timeout = new Promise<{ data: null; error: { message: string } }>(
+      (resolve) =>
+        setTimeout(
+          () =>
+            resolve({
+              data: null,
+              error: {
+                message:
+                  "Took longer than 150s — the function probably timed out. Try a smaller PDF.",
+              },
+            }),
+          150_000,
+        ),
     );
-    const result = await Promise.race([
-      autoDetectDoorsAction(jobId),
+    const { data, error: invokeError } = (await Promise.race([
+      supabase.functions.invoke("auto-detect-doors", { body: { jobId } }),
       timeout,
-    ]);
-    if (!result.ok) {
-      setError(result.error);
+    ])) as {
+      data: { ok: true; doors: DetectedDoor[] } | { ok: false; error: string } | null;
+      error: { message: string } | null;
+    };
+
+    if (invokeError) {
+      setError(
+        `Couldn't reach the auto-detect function: ${invokeError.message}. Make sure the 'auto-detect-doors' Edge Function is deployed in Supabase.`,
+      );
+      setPhase("idle");
+      return;
+    }
+    if (!data) {
+      setError("Auto-detect returned no data.");
+      setPhase("idle");
+      return;
+    }
+    if (!data.ok) {
+      setError(data.error);
       setPhase("idle");
       return;
     }
     setRows(
-      result.doors.map((d) => ({
+      data.doors.map((d) => ({
         ...d,
         include: true,
       })),
