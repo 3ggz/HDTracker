@@ -1,23 +1,23 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { AppHeader } from "@/components/AppHeader";
-import { AddVehicleFab } from "@/components/AddVehicleFab";
+import { AddJobFab } from "@/components/AddJobFab";
 import { LiveUpdater } from "@/components/LiveUpdater";
 import { PendingApprovalsBanner } from "@/components/PendingApprovalsBanner";
 import { SectionTabs } from "@/components/SectionTabs";
 import { isAdminEmail } from "@/lib/admin";
 
-export default async function Home() {
+export default async function JobsPage() {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   const isAdmin = isAdminEmail(user?.email);
 
-  const [{ data: vehicles, error }, pendingApprovals] = await Promise.all([
+  const [{ data: jobs, error }, pendingApprovals] = await Promise.all([
     supabase
-      .from("vehicles")
-      .select("id, name, location_label, last_worked_job, updated_at")
+      .from("jobs")
+      .select("id, name, number, address, updated_at")
       .order("updated_at", { ascending: false }),
     isAdmin
       ? supabase
@@ -32,34 +32,34 @@ export default async function Home() {
 
   return (
     <>
-      <LiveUpdater channelName="home-vehicles" table="vehicles" />
+      <LiveUpdater channelName="jobs-list" table="jobs" />
       <AppHeader />
       {isAdmin && <PendingApprovalsBanner initialCount={pendingCount} />}
-      <SectionTabs active="vehicles" />
+      <SectionTabs active="jobs" />
       <section className="mx-auto w-full max-w-md flex-1 px-4 pb-28 pt-4">
         {error ? (
           <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-300">
-            Couldn&apos;t load vehicles: {error.message}
+            Couldn&apos;t load jobs: {error.message}
           </p>
-        ) : !vehicles || vehicles.length === 0 ? (
+        ) : !jobs || jobs.length === 0 ? (
           <EmptyState />
         ) : (
           <ul className="space-y-3">
-            {vehicles.map((v) => (
-              <li key={v.id}>
+            {jobs.map((j) => (
+              <li key={j.id}>
                 <Link
-                  href={`/vehicles/${v.id}`}
+                  href={`/jobs/${j.id}`}
                   className="block rounded-2xl border border-neutral-200 bg-white px-4 py-4 transition active:scale-[0.99] dark:border-neutral-800 dark:bg-neutral-900"
                 >
-                  <p className="text-base font-medium">{v.name}</p>
-                  {v.location_label && (
+                  <p className="text-base font-medium">{j.name}</p>
+                  {j.number && (
                     <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
-                      {v.location_label}
+                      #{j.number}
                     </p>
                   )}
-                  {v.last_worked_job && (
+                  {j.address && (
                     <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
-                      Last job: {v.last_worked_job}
+                      {j.address}
                     </p>
                   )}
                 </Link>
@@ -68,7 +68,7 @@ export default async function Home() {
           </ul>
         )}
       </section>
-      <AddVehicleFab />
+      <AddJobFab />
     </>
   );
 }
@@ -86,12 +86,10 @@ function EmptyState() {
           strokeLinecap="round"
           strokeLinejoin="round"
         >
-          <path d="M3 17h2.5a1.5 1.5 0 0 0 3 0h7a1.5 1.5 0 0 0 3 0H21V8l-3-3H6L3 8v9Z" />
-          <circle cx="7.5" cy="17" r="1.5" />
-          <circle cx="17" cy="17" r="1.5" />
+          <path d="M3 7h18M3 12h18M3 17h18" />
         </svg>
       </div>
-      <h2 className="mt-4 text-lg font-medium">No vehicles yet</h2>
+      <h2 className="mt-4 text-lg font-medium">No jobs yet</h2>
       <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
         Tap the + button to add your first one.
       </p>
