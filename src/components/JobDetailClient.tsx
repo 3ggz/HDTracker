@@ -14,6 +14,7 @@ import {
   type JobPhoto,
 } from "@/lib/job-photos";
 import { HUGS_TEMPLATE } from "@/lib/job-templates";
+import { AutoDetectModal } from "./AutoDetectModal";
 
 const inputClass =
   "block h-12 w-full rounded-lg border border-neutral-300 bg-white px-3 text-base text-neutral-900 outline-none transition focus:border-neutral-900 focus:ring-2 focus:ring-neutral-900/10 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50 dark:focus:border-neutral-100 dark:focus:ring-neutral-100/10";
@@ -45,6 +46,7 @@ export function JobDetailClient({
   const [doors, setDoors] = useState(initialDoors);
   const [items, setItems] = useState(initialItems);
   const [photos, setPhotos] = useState(initialPhotos);
+  const [autoDetectOpen, setAutoDetectOpen] = useState(false);
 
   const [headerDraft, setHeaderDraft] = useState({
     name: initialJob.name,
@@ -182,6 +184,33 @@ export function JobDetailClient({
         job={job}
         onJobUpdate={(j) => setJob(j)}
         supabaseUrl={supabaseUrl}
+        onOpenAutoDetect={() => setAutoDetectOpen(true)}
+      />
+
+      <AutoDetectModal
+        jobId={job.id}
+        open={autoDetectOpen}
+        onClose={() => setAutoDetectOpen(false)}
+        onImported={async () => {
+          const supabase = createClient();
+          const { data: refreshedDoors } = await supabase
+            .from("job_doors")
+            .select("*")
+            .eq("job_id", job.id)
+            .order("position", { ascending: true })
+            .order("created_at", { ascending: true });
+          setDoors((refreshedDoors ?? []) as JobDoor[]);
+          const doorIds = (refreshedDoors ?? []).map((d) => d.id);
+          if (doorIds.length > 0) {
+            const { data: refreshedItems } = await supabase
+              .from("job_door_items")
+              .select("*")
+              .in("door_id", doorIds)
+              .order("position", { ascending: true })
+              .order("created_at", { ascending: true });
+            setItems((refreshedItems ?? []) as JobDoorItem[]);
+          }
+        }}
       />
 
       <Section
@@ -946,10 +975,12 @@ function SiteMapSection({
   job,
   onJobUpdate,
   supabaseUrl,
+  onOpenAutoDetect,
 }: {
   job: Job;
   onJobUpdate: (job: Job) => void;
   supabaseUrl: string;
+  onOpenAutoDetect: () => void;
 }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
@@ -1035,6 +1066,27 @@ function SiteMapSection({
               Remove
             </button>
           </div>
+          <button
+            type="button"
+            onClick={onOpenAutoDetect}
+            className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 text-sm font-medium text-white active:scale-[0.98] dark:bg-indigo-500"
+          >
+            <svg
+              className="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" />
+            </svg>
+            Auto-detect doors from PDF
+            <span className="ml-1 text-[10px] font-normal italic opacity-80">
+              Beta
+            </span>
+          </button>
         </div>
       ) : (
         <button
