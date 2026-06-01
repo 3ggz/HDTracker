@@ -70,6 +70,114 @@ export function JobDetailClient({
   const [photos, setPhotos] = useState(initialPhotos);
   const [autoDetectOpen, setAutoDetectOpen] = useState(false);
 
+  // Tracks door IDs belonging to this job. job_door_items has no job_id
+  // column so we filter incoming item events client-side via this set.
+  const doorIdsRef = useRef(new Set(initialDoors.map((d) => d.id)));
+
+  useEffect(() => {
+    const supabase = createClient();
+    const channel = supabase
+      .channel(`job-${initialJob.id}-live`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "jobs",
+          filter: `id=eq.${initialJob.id}`,
+        },
+        (payload) => {
+          setJob(payload.new as Job);
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "job_doors",
+          filter: `job_id=eq.${initialJob.id}`,
+        },
+        (payload) => {
+          if (payload.eventType === "INSERT") {
+            const next = payload.new as JobDoor;
+            doorIdsRef.current.add(next.id);
+            setDoors((current) =>
+              current.some((d) => d.id === next.id)
+                ? current
+                : [...current, next],
+            );
+          } else if (payload.eventType === "UPDATE") {
+            const next = payload.new as JobDoor;
+            setDoors((current) =>
+              current.map((d) => (d.id === next.id ? next : d)),
+            );
+          } else if (payload.eventType === "DELETE") {
+            const oldId = (payload.old as { id: string }).id;
+            doorIdsRef.current.delete(oldId);
+            setDoors((current) => current.filter((d) => d.id !== oldId));
+            setItems((current) =>
+              current.filter((it) => it.door_id !== oldId),
+            );
+            setPhotos((current) =>
+              current.filter((p) => p.door_id !== oldId),
+            );
+          }
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "job_door_items" },
+        (payload) => {
+          if (payload.eventType === "INSERT") {
+            const next = payload.new as JobDoorItem;
+            if (!doorIdsRef.current.has(next.door_id)) return;
+            setItems((current) =>
+              current.some((it) => it.id === next.id)
+                ? current
+                : [...current, next],
+            );
+          } else if (payload.eventType === "UPDATE") {
+            const next = payload.new as JobDoorItem;
+            if (!doorIdsRef.current.has(next.door_id)) return;
+            setItems((current) =>
+              current.map((it) => (it.id === next.id ? next : it)),
+            );
+          } else if (payload.eventType === "DELETE") {
+            const oldRow = payload.old as { id: string };
+            setItems((current) => current.filter((it) => it.id !== oldRow.id));
+          }
+        },
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "job_photos",
+          filter: `job_id=eq.${initialJob.id}`,
+        },
+        (payload) => {
+          if (payload.eventType === "INSERT") {
+            const next = payload.new as JobPhoto;
+            setPhotos((current) =>
+              current.some((p) => p.id === next.id)
+                ? current
+                : [next, ...current],
+            );
+          } else if (payload.eventType === "DELETE") {
+            const oldId = (payload.old as { id: string }).id;
+            setPhotos((current) => current.filter((p) => p.id !== oldId));
+          }
+        },
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [initialJob.id]);
+
   const [headerDraft, setHeaderDraft] = useState({
     name: initialJob.name,
     number: initialJob.number ?? "",
