@@ -2,7 +2,13 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { JobDetailClient } from "@/components/JobDetailClient";
-import type { Job, JobDoor, JobDoorItem } from "@/lib/jobs";
+import type {
+  Job,
+  JobDoor,
+  JobDoorItem,
+  JobPanel,
+  JobPanelDoor,
+} from "@/lib/jobs";
 import type { JobPhoto } from "@/lib/job-photos";
 
 // Auto-detect calls Claude vision with xhigh effort on multi-page PDFs;
@@ -17,22 +23,32 @@ export default async function JobDetailPage({
   const { id } = await params;
   const supabase = await createClient();
 
-  const [{ data: job, error }, { data: doors, error: doorsError }, { data: photos, error: photosError }] =
-    await Promise.all([
-      supabase.from("jobs").select("*").eq("id", id).single(),
-      supabase
-        .from("job_doors")
-        .select("*")
-        .eq("job_id", id)
-        .order("floor", { ascending: true, nullsFirst: false })
-        .order("position", { ascending: true })
-        .order("created_at", { ascending: true }),
-      supabase
-        .from("job_photos")
-        .select("*")
-        .eq("job_id", id)
-        .order("created_at", { ascending: false }),
-    ]);
+  const [
+    { data: job, error },
+    { data: doors, error: doorsError },
+    { data: photos, error: photosError },
+    { data: panels },
+  ] = await Promise.all([
+    supabase.from("jobs").select("*").eq("id", id).single(),
+    supabase
+      .from("job_doors")
+      .select("*")
+      .eq("job_id", id)
+      .order("floor", { ascending: true, nullsFirst: false })
+      .order("position", { ascending: true })
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("job_photos")
+      .select("*")
+      .eq("job_id", id)
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("job_panels")
+      .select("*")
+      .eq("job_id", id)
+      .order("position", { ascending: true })
+      .order("created_at", { ascending: true }),
+  ]);
 
   if (error || !job) notFound();
 
@@ -48,6 +64,15 @@ export default async function JobDetailPage({
           .in("door_id", doorIds)
           .order("position", { ascending: true })
           .order("created_at", { ascending: true });
+
+  const panelIds = (panels ?? []).map((p) => p.id);
+  const { data: panelDoors } =
+    panelIds.length === 0
+      ? { data: [] as JobPanelDoor[] }
+      : await supabase
+          .from("job_panel_doors")
+          .select("*")
+          .in("panel_id", panelIds);
 
   return (
     <>
@@ -91,6 +116,8 @@ export default async function JobDetailPage({
         initialDoors={(doors ?? []) as JobDoor[]}
         initialItems={(items ?? []) as JobDoorItem[]}
         initialPhotos={(photos ?? []) as JobPhoto[]}
+        initialPanels={(panels ?? []) as JobPanel[]}
+        initialPanelDoors={(panelDoors ?? []) as JobPanelDoor[]}
         doorsLoadError={doorsError?.message ?? null}
         itemsLoadError={itemsError?.message ?? null}
         photosLoadError={photosError?.message ?? null}

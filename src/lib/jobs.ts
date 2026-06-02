@@ -33,6 +33,25 @@ export type JobDoorItem = {
   created_at: string;
 };
 
+export type JobPanel = {
+  id: string;
+  job_id: string;
+  name: string;
+  comm_room: string | null;
+  photo_storage_path: string | null;
+  photo_uploaded_at: string | null;
+  position: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type JobPanelDoor = {
+  panel_id: string;
+  door_id: string;
+  position: number;
+  created_at: string;
+};
+
 // Canonical install order of HUGS equipment. Any item name not in this
 // list is sorted to the end, in insertion order. The comparator is
 // used at display time only — the database stores `position` as a

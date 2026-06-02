@@ -25,6 +25,8 @@ import {
   type Job,
   type JobDoor,
   type JobDoorItem,
+  type JobPanel,
+  type JobPanelDoor,
 } from "@/lib/jobs";
 import {
   deleteJobPhoto,
@@ -32,6 +34,7 @@ import {
   publicJobFileUrl,
   uploadDoorItemPhoto,
   uploadJobPhoto,
+  uploadPanelPhoto,
   uploadSiteMap,
   type JobPhoto,
 } from "@/lib/job-photos";
@@ -59,6 +62,8 @@ export function JobDetailClient({
   initialDoors,
   initialItems,
   initialPhotos,
+  initialPanels,
+  initialPanelDoors,
   doorsLoadError,
   itemsLoadError,
   photosLoadError,
@@ -67,6 +72,8 @@ export function JobDetailClient({
   initialDoors: JobDoor[];
   initialItems: JobDoorItem[];
   initialPhotos: JobPhoto[];
+  initialPanels: JobPanel[];
+  initialPanelDoors: JobPanelDoor[];
   doorsLoadError: string | null;
   itemsLoadError: string | null;
   photosLoadError: string | null;
@@ -78,6 +85,8 @@ export function JobDetailClient({
   const [doors, setDoors] = useState(initialDoors);
   const [items, setItems] = useState(initialItems);
   const [photos, setPhotos] = useState(initialPhotos);
+  const [panels, setPanels] = useState(initialPanels);
+  const [panelDoors, setPanelDoors] = useState(initialPanelDoors);
   const [autoDetectOpen, setAutoDetectOpen] = useState(false);
 
   // Tracks door IDs belonging to this job. job_door_items has no job_id
@@ -550,6 +559,84 @@ export function JobDetailClient({
           </>
         );
       })()}
+
+      <CollapsibleSection
+        title={`Panels (${panels.length})`}
+        storageKey={`hd:job:${initialJob.id}:panels`}
+        rightHeader={
+          <button
+            type="button"
+            onClick={async (e) => {
+              e.stopPropagation();
+              const supabase = createClient();
+              const nextName = `Panel ${panels.length + 1}`;
+              const { data, error } = await supabase
+                .from("job_panels")
+                .insert({
+                  job_id: job.id,
+                  name: nextName,
+                  position: panels.length,
+                })
+                .select("*")
+                .single();
+              if (error || !data) {
+                alert(error?.message ?? "Couldn't add panel.");
+                return;
+              }
+              setPanels((current) => [...current, data as JobPanel]);
+            }}
+            className="h-9 rounded-lg bg-neutral-900 px-3 text-xs font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
+          >
+            + Panel
+          </button>
+        }
+      >
+        {panels.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-neutral-300 px-4 py-6 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+            No panels yet. Tap{" "}
+            <span className="font-medium">+ Panel</span> to add one.
+          </p>
+        ) : (
+          <ul className="space-y-3">
+            {panels.map((panel) => (
+              <PanelCard
+                key={panel.id}
+                panel={panel}
+                jobId={job.id}
+                allDoors={doors.filter(
+                  (d) => d.name !== STANDALONE_DOOR_NAME,
+                )}
+                panelDoorIds={panelDoors
+                  .filter((pd) => pd.panel_id === panel.id)
+                  .map((pd) => pd.door_id)}
+                supabaseUrl={supabaseUrl}
+                onPanelUpdate={(updated) =>
+                  setPanels((current) =>
+                    current.map((p) => (p.id === updated.id ? updated : p)),
+                  )
+                }
+                onPanelDelete={(id) => {
+                  setPanels((current) => current.filter((p) => p.id !== id));
+                  setPanelDoors((current) =>
+                    current.filter((pd) => pd.panel_id !== id),
+                  );
+                }}
+                onPanelDoorsChange={(panelId, doorIds) => {
+                  setPanelDoors((current) => [
+                    ...current.filter((pd) => pd.panel_id !== panelId),
+                    ...doorIds.map((doorId, idx) => ({
+                      panel_id: panelId,
+                      door_id: doorId,
+                      position: idx,
+                      created_at: new Date().toISOString(),
+                    })),
+                  ]);
+                }}
+              />
+            ))}
+          </ul>
+        )}
+      </CollapsibleSection>
 
       <CollapsibleSection
         title="Site map"
@@ -1790,6 +1877,332 @@ function JobPhotoSection({
         {uploading ? "Uploading..." : "+ Add photo"}
       </button>
     </div>
+  );
+}
+
+function PanelCard({
+  panel,
+  jobId,
+  allDoors,
+  panelDoorIds,
+  supabaseUrl,
+  onPanelUpdate,
+  onPanelDelete,
+  onPanelDoorsChange,
+}: {
+  panel: JobPanel;
+  jobId: string;
+  allDoors: JobDoor[];
+  panelDoorIds: string[];
+  supabaseUrl: string;
+  onPanelUpdate: (panel: JobPanel) => void;
+  onPanelDelete: (id: string) => void;
+  onPanelDoorsChange: (panelId: string, doorIds: string[]) => void;
+}) {
+  const [nameDraft, setNameDraft] = useState(panel.name);
+  const [commDraft, setCommDraft] = useState(panel.comm_room ?? "");
+  const [syncedName, setSyncedName] = useState(panel.name);
+  const [syncedComm, setSyncedComm] = useState(panel.comm_room ?? "");
+  const [uploading, setUploading] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [pickingDoor, setPickingDoor] = useState(false);
+  const photoInput = useRef<HTMLInputElement>(null);
+
+  if (panel.name !== syncedName) {
+    if (nameDraft === syncedName) setNameDraft(panel.name);
+    setSyncedName(panel.name);
+  }
+  if ((panel.comm_room ?? "") !== syncedComm) {
+    if (commDraft === syncedComm) setCommDraft(panel.comm_room ?? "");
+    setSyncedComm(panel.comm_room ?? "");
+  }
+
+  async function commit(patch: Partial<JobPanel>) {
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from("job_panels")
+      .update(patch)
+      .eq("id", panel.id)
+      .select("*")
+      .single();
+    if (error || !data) {
+      alert(error?.message ?? "Couldn't save panel.");
+      return;
+    }
+    onPanelUpdate(data as JobPanel);
+  }
+
+  async function deletePanel() {
+    setDeleting(true);
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from("job_panels")
+      .delete()
+      .eq("id", panel.id)
+      .select("id");
+    setDeleting(false);
+    setConfirmingDelete(false);
+    if (error) {
+      alert(error.message);
+      return;
+    }
+    if (!data || data.length === 0) {
+      alert("No rows affected.");
+      return;
+    }
+    onPanelDelete(panel.id);
+  }
+
+  async function addDoor(doorId: string) {
+    const supabase = createClient();
+    const next = [...panelDoorIds, doorId];
+    const { error } = await supabase
+      .from("job_panel_doors")
+      .insert({
+        panel_id: panel.id,
+        door_id: doorId,
+        position: next.length - 1,
+      });
+    if (error) {
+      alert(error.message);
+      return;
+    }
+    onPanelDoorsChange(panel.id, next);
+    setPickingDoor(false);
+  }
+
+  async function removeDoor(doorId: string) {
+    const supabase = createClient();
+    const { error } = await supabase
+      .from("job_panel_doors")
+      .delete()
+      .eq("panel_id", panel.id)
+      .eq("door_id", doorId);
+    if (error) {
+      alert(error.message);
+      return;
+    }
+    onPanelDoorsChange(
+      panel.id,
+      panelDoorIds.filter((id) => id !== doorId),
+    );
+  }
+
+  async function uploadPhoto(file: File) {
+    setUploading(true);
+    const supabase = createClient();
+    const result = await uploadPanelPhoto({
+      supabase,
+      file,
+      jobId,
+      panelId: panel.id,
+      oldStoragePath: panel.photo_storage_path,
+    });
+    if (photoInput.current) photoInput.current.value = "";
+    setUploading(false);
+    if (!result.ok) {
+      alert(result.error);
+      return;
+    }
+    onPanelUpdate({
+      ...panel,
+      photo_storage_path: result.storage_path,
+      photo_uploaded_at: result.uploaded_at,
+    });
+  }
+
+  const doorMap = new Map(allDoors.map((d) => [d.id, d]));
+  const linkedDoors = panelDoorIds
+    .map((id) => doorMap.get(id))
+    .filter((d): d is JobDoor => !!d);
+  const availableDoors = allDoors.filter((d) => !panelDoorIds.includes(d.id));
+
+  return (
+    <li className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
+      <div className="flex items-center gap-2">
+        <input
+          className={inputClass + " flex-1"}
+          value={nameDraft}
+          onChange={(e) => setNameDraft(e.target.value)}
+          onBlur={() => {
+            const trimmed = nameDraft.trim();
+            if (trimmed && trimmed !== panel.name) {
+              void commit({ name: trimmed });
+            } else if (!trimmed) {
+              setNameDraft(panel.name);
+            }
+          }}
+          placeholder="Panel name"
+        />
+        {confirmingDelete ? (
+          <>
+            <button
+              type="button"
+              onClick={deletePanel}
+              disabled={deleting}
+              className="h-10 rounded-lg bg-red-600 px-3 text-xs font-semibold text-white disabled:opacity-50"
+            >
+              {deleting ? "..." : "Delete"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmingDelete(false)}
+              className="h-10 rounded-lg border border-neutral-300 px-3 text-xs font-medium text-neutral-700 dark:border-neutral-700 dark:text-neutral-300"
+            >
+              Cancel
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirmingDelete(true)}
+            aria-label="Delete panel"
+            className="flex h-10 w-10 items-center justify-center rounded-lg text-red-600 active:bg-red-50 dark:text-red-400 dark:active:bg-red-950/40"
+          >
+            <svg
+              className="h-5 w-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+            </svg>
+          </button>
+        )}
+      </div>
+
+      <label className="mt-2 block">
+        <span className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+          Comm room / location
+        </span>
+        <input
+          className={inputClass + " h-10 text-sm"}
+          placeholder="optional — e.g. 'Comm 312' or '3rd-floor IDF'"
+          value={commDraft}
+          onChange={(e) => setCommDraft(e.target.value)}
+          onBlur={() => {
+            const next = commDraft.trim() || null;
+            if (next !== panel.comm_room) void commit({ comm_room: next });
+          }}
+        />
+      </label>
+
+      <div className="mt-3">
+        <h4 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+          Doors on this panel
+        </h4>
+        {linkedDoors.length === 0 && (
+          <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            None yet.
+          </p>
+        )}
+        <div className="flex flex-wrap gap-1.5">
+          {linkedDoors.map((d) => (
+            <span
+              key={d.id}
+              className="inline-flex items-center gap-1 rounded-full border border-neutral-300 bg-white px-2.5 py-1 text-xs font-medium dark:border-neutral-700 dark:bg-neutral-900"
+            >
+              {d.name}
+              <button
+                type="button"
+                onClick={() => removeDoor(d.id)}
+                aria-label={`Remove ${d.name} from panel`}
+                className="text-neutral-400 active:text-red-600"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+          {availableDoors.length > 0 && !pickingDoor && (
+            <button
+              type="button"
+              onClick={() => setPickingDoor(true)}
+              className="rounded-full border border-dashed border-neutral-300 px-2.5 py-1 text-xs font-medium text-neutral-600 dark:border-neutral-700 dark:text-neutral-400"
+            >
+              + door
+            </button>
+          )}
+        </div>
+        {pickingDoor && (
+          <div className="mt-2 rounded-lg border border-neutral-200 bg-white p-2 dark:border-neutral-800 dark:bg-neutral-900">
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                Tap a door to add
+              </span>
+              <button
+                type="button"
+                onClick={() => setPickingDoor(false)}
+                className="text-[11px] text-neutral-500 dark:text-neutral-400"
+              >
+                Close
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {availableDoors.map((d) => (
+                <button
+                  key={d.id}
+                  type="button"
+                  onClick={() => addDoor(d.id)}
+                  className="rounded-full border border-neutral-300 bg-white px-2.5 py-1 text-xs font-medium text-neutral-700 active:scale-95 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+                >
+                  + {d.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-3">
+        <h4 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+          Photo
+        </h4>
+        <div className="flex items-center gap-2">
+          {panel.photo_storage_path ? (
+            <a
+              href={publicJobFileUrl(supabaseUrl, panel.photo_storage_path)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block h-20 w-20 overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-700"
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={publicJobFileUrl(supabaseUrl, panel.photo_storage_path)}
+                alt={`${panel.name} photo`}
+                className="h-full w-full object-cover"
+              />
+            </a>
+          ) : null}
+          <input
+            ref={photoInput}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void uploadPhoto(f);
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => photoInput.current?.click()}
+            disabled={uploading}
+            className="h-10 rounded-lg border border-neutral-300 px-3 text-xs font-medium text-neutral-700 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300"
+          >
+            {uploading
+              ? "Uploading..."
+              : panel.photo_storage_path
+                ? "Replace photo"
+                : "Add photo"}
+          </button>
+        </div>
+      </div>
+    </li>
   );
 }
 

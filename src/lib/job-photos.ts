@@ -258,3 +258,58 @@ export async function deleteSiteMap(
   if (dbError) return { ok: false, error: dbError.message };
   return { ok: true };
 }
+
+// Panel photo: one photo per panel row, replace-on-upload, with the
+// upload timestamp tracked so the UI can show "uploaded N hours ago".
+type UploadPanelPhotoOptions = {
+  supabase: SupabaseClient;
+  file: File;
+  jobId: string;
+  panelId: string;
+  oldStoragePath: string | null;
+};
+
+export type UploadPanelPhotoResult =
+  | { ok: true; storage_path: string; uploaded_at: string }
+  | { ok: false; error: string };
+
+export async function uploadPanelPhoto({
+  supabase,
+  file,
+  jobId,
+  panelId,
+  oldStoragePath,
+}: UploadPanelPhotoOptions): Promise<UploadPanelPhotoResult> {
+  const validation = validatePhotoFile(file);
+  if (!validation.ok) return validation;
+
+  const photoId = crypto.randomUUID();
+  const ext = guessExtension(file);
+  const storagePath = `${jobId}/panels/${panelId}/${photoId}${ext}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from(JOB_BUCKET)
+    .upload(storagePath, file, { upsert: false, contentType: file.type });
+
+  if (uploadError) return { ok: false, error: uploadError.message };
+
+  const uploadedAt = new Date().toISOString();
+  const { error: dbError } = await supabase
+    .from("job_panels")
+    .update({
+      photo_storage_path: storagePath,
+      photo_uploaded_at: uploadedAt,
+    })
+    .eq("id", panelId);
+
+  if (dbError) {
+    await supabase.storage.from(JOB_BUCKET).remove([storagePath]);
+    return { ok: false, error: dbError.message };
+  }
+
+  if (oldStoragePath) {
+    await supabase.storage.from(JOB_BUCKET).remove([oldStoragePath]);
+  }
+
+  return { ok: true, storage_path: storagePath, uploaded_at: uploadedAt };
+}
