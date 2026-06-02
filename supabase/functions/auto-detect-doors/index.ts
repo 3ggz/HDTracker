@@ -38,18 +38,27 @@ const EXTRACTION_PROMPT = [
   LEGEND,
   "",
   "THE PRIMARY RULE - COUNT DOORS BY 5500 DOTS:",
-  "Each magenta/pink dot (5500 Exciter) represents exactly ONE door. The total number of doors equals the total number of 5500 dots across all pages. Do not count by red-bordered labels. If you see N 5500 dots on a page, you must output N doors for that page.",
+  "Each SOLID MAGENTA/PINK filled circle (5500 Exciter) represents exactly ONE door. The total number of doors equals the total number of 5500 dots across all pages. Do not count by red-bordered labels — two labels near one dot is still one door, see DOOR NAMING below. If you see N solid magenta dots on a page, you must output N doors for that page.",
+  "",
+  "DO NOT CONFUSE WITH LOOKALIKES:",
+  "Some maps contain BLUE CROSSHAIR CIRCLES (a blue ring with a + or crosshair inside). These are GW-3000 / GW-3100 gateways or Wi-Fi access points, NOT 5500 Exciters. The 5500 is a SOLID FILLED magenta/pink circle with no crosshair. Never count a blue crosshair as a 5500, and never create a door for one. They belong in miscNotes only if they appear in the legend with a count.",
   "",
   "DEVICE-TO-DOOR ASSIGNMENT - FOLLOW THE WIRE:",
   "Each non-5500 device (5200, 3220, 4210, Strobe) belongs to whichever 5500 it is connected to via the wire line (usually a brown/red line that visually links the dots). Use the wire connection, not Euclidean distance. If a device has no visible wire to any 5500, omit it.",
   "",
-  "DOOR NAMING - CONSOLIDATE SUB-LABELS:",
-  "A 5500 dot is usually surrounded by one or more red-bordered text labels (e.g. 'E113', 'D9', 'E79-CG', 'E79-CF', 'E101-FD'). Pick the door's name like this:",
-  "1. Collect every label within ~150 px of the 5500 dot.",
-  "2. If multiple labels share a base prefix followed by a hyphen-suffix (e.g. 'E79-CG' and 'E79-CF', or 'E101-FD' and 'E101-FC'), use just the base ('E79', 'E101'). These are sub-labels of the same door.",
-  "3. If only one label appears, use it as-is - including any hyphen suffix.",
-  "4. If no label is visible near a 5500, name the door 'Door #N' where N is the sequential index of that 5500 on the page.",
-  "Never invent labels.",
+  "DOOR NAMING - ONE 5500 = ONE DOOR, NO MATTER HOW MANY LABELS:",
+  "A 5500 dot is often surrounded by MORE THAN ONE red-bordered text label. THIS IS NORMAL — many physical doors are chained off one controller and they share the 5500. Examples seen in the wild:",
+  "  - 'E7' and 'E8' both sitting next to the same magenta dot (paired elevators chained on one controller) → ONE door named 'E7+E8'",
+  "  - 'E79-CG' and 'E79-CF' near the same dot (hyphenated sub-labels) → ONE door named 'E79'",
+  "  - 'D11' and 'D12' adjacent and sharing a dot → ONE door named 'D11+D12'",
+  "  - 'E101-FD' alone near a dot → ONE door named 'E101-FD'",
+  "Naming rules, applied in order:",
+  "1. Find every red-bordered label within ~200 px of the 5500 dot AND visibly connected to it by the wire line (or sharing the wire cluster).",
+  "2. If those labels share a hyphenated base prefix (e.g. 'E79-CG', 'E79-CF'), collapse to the base: 'E79'.",
+  "3. If those labels are distinct codes (e.g. 'E7' and 'E8'), join them with '+' in numerical order: 'E7+E8'. NEVER output them as separate doors — they share the 5500.",
+  "4. If only one label, use it as-is.",
+  "5. If no label visible, name 'Door #N' where N is the page-local index of the 5500.",
+  "Never invent labels. Never split one 5500 into multiple doors just because multiple labels exist.",
   "",
   "FLOOR / UNIT:",
   "Read the floor or unit label from the page's title block or large header text (e.g. '3rd floor', 'NICU', 'Mother-Baby Floor 3'). Every door on the same page shares that floor.",
@@ -66,14 +75,16 @@ const EXTRACTION_PROMPT = [
   "DEDUPLICATION ACROSS PAGES:",
   "If the same consolidated door name appears on multiple pages (wiring continuation), return it once with the union of its equipment and the floor of the first occurrence.",
   "",
-  "MANDATORY SELF-CHECK USING THE LEGEND BEFORE RESPONDING:",
-  "For each page in the PDF, sum your extracted device counts and compare to the HUGS SYMBOLS legend box on that page:",
-  "- Number of doors on the page == legend's EX-5500 count (one door per 5500)",
-  "- Sum of '5200 Exciter' items across doors on that page == legend's EX-5200 count",
-  "- Sum of '3220 Exciter' items across doors on that page == legend's EX-3220 count",
-  "- Sum of '4210 Antenna' items across doors on that page == legend's ANT-4210 count",
-  "- Sum of 'Strobe' items across doors on that page == legend's Strobe-Sounder count",
-  "If ANY of these sums do not match the legend, you have missed dots somewhere on the page. Go back to the map, find the missing dots (look near walls, in corners, partially obscured, behind labels), assign them to the correct doors via the wire line, and update your output. Do not respond until every per-device total matches the legend on every page.",
+  "MANDATORY VERIFICATION — fill in pageVerification[] HONESTLY:",
+  "Your response includes a 'pageVerification' array with one entry per PDF page. For each page you MUST:",
+  "1. Read the HUGS SYMBOLS legend box on that page and copy each device-type count into 'legend' verbatim. If a device type is not in the legend, use 0.",
+  "2. Independently count the dots you actually see on the map for that page (5500, 5200, 3220, 4210, Strobe) and write those into 'detected'.",
+  "3. The host will diff 'legend' against 'detected' and flag mismatches to the user. Do NOT make detected match legend by guessing — only by actually finding the dots. If you can't find them, leave detected at the true count and the user will be alerted.",
+  "4. The number of doors you return per page MUST equal that page's 'detected.ex5500' (one door per 5500).",
+  "5. Before finalizing, if 'detected' is less than 'legend' for any device on any page, RE-SCAN the page (look near walls, in corners, behind text labels, in dense clusters) and find the missing dots if possible. Only then submit.",
+  "",
+  "DENSE CLUSTERS WARNING:",
+  "On busy maps the 5500/5200/3220/Strobe dots can sit on top of each other or just a few pixels apart. Treat any pixel cluster with mixed colors as multiple dots, not one. Zoom in mentally and count each colored mark separately.",
 ].join("\n");
 
 const RESPONSE_SCHEMA = {
@@ -100,8 +111,49 @@ const RESPONSE_SCHEMA = {
       type: "array",
       items: { type: "string" },
     },
+    pageVerification: {
+      type: "array",
+      description:
+        "One entry per page in the PDF, in order. For each page, fill in BOTH the legend counts you read from the HUGS SYMBOLS box on that page AND the counts you actually found by examining the map. These must be filled in honestly — the host will compare them and flag mismatches.",
+      items: {
+        type: "object",
+        properties: {
+          pageNumber: { type: "integer" },
+          legend: {
+            type: "object",
+            description:
+              "Counts copied verbatim from the HUGS SYMBOLS legend box on this page. If a device type is absent from the legend, use 0.",
+            properties: {
+              ex5500: { type: "integer" },
+              ex5200: { type: "integer" },
+              ex3220: { type: "integer" },
+              ant4210: { type: "integer" },
+              strobe: { type: "integer" },
+            },
+            required: ["ex5500", "ex5200", "ex3220", "ant4210", "strobe"],
+            additionalProperties: false,
+          },
+          detected: {
+            type: "object",
+            description:
+              "Counts you actually found by examining dots on this page. Must equal the sum across doors you returned for this page.",
+            properties: {
+              ex5500: { type: "integer" },
+              ex5200: { type: "integer" },
+              ex3220: { type: "integer" },
+              ant4210: { type: "integer" },
+              strobe: { type: "integer" },
+            },
+            required: ["ex5500", "ex5200", "ex3220", "ant4210", "strobe"],
+            additionalProperties: false,
+          },
+        },
+        required: ["pageNumber", "legend", "detected"],
+        additionalProperties: false,
+      },
+    },
   },
-  required: ["doors", "miscNotes"],
+  required: ["doors", "miscNotes", "pageVerification"],
   additionalProperties: false,
 } as const;
 
@@ -200,7 +252,9 @@ Deno.serve(async (req: Request) => {
     const response = await anthropic.messages.create({
       model: "claude-opus-4-8",
       max_tokens: 16000,
+      thinking: { type: "adaptive" },
       output_config: {
+        effort: "high",
         format: { type: "json_schema", schema: RESPONSE_SCHEMA },
       },
       messages: [
@@ -229,11 +283,16 @@ Deno.serve(async (req: Request) => {
       return json({ ok: false, error: "Model returned no text output." });
     }
 
-    let parsed: { doors?: unknown[]; miscNotes?: unknown[] };
+    let parsed: {
+      doors?: unknown[];
+      miscNotes?: unknown[];
+      pageVerification?: unknown[];
+    };
     try {
       parsed = JSON.parse(textBlock.text) as {
         doors?: unknown[];
         miscNotes?: unknown[];
+        pageVerification?: unknown[];
       };
     } catch {
       return json({
@@ -272,7 +331,43 @@ Deno.serve(async (req: Request) => {
       .map((s) => (typeof s === "string" ? s.trim() : ""))
       .filter((s) => s.length > 0);
 
-    return json({ ok: true, doors: normalized, miscNotes });
+    // Diff each page's legend vs detected counts. Surface mismatches to
+    // the user so they know which device the model under-counted on.
+    type PageVer = {
+      pageNumber: number;
+      legend: Record<string, number>;
+      detected: Record<string, number>;
+    };
+    const pageVerification = (parsed.pageVerification ?? []) as PageVer[];
+    const DEVICE_LABELS: Record<string, string> = {
+      ex5500: "5500 Exciter",
+      ex5200: "5200 Exciter",
+      ex3220: "3220 Exciter",
+      ant4210: "4210 Antenna",
+      strobe: "Strobe",
+    };
+    const warnings: string[] = [];
+    for (const pv of pageVerification) {
+      for (const key of Object.keys(DEVICE_LABELS)) {
+        const want = pv?.legend?.[key] ?? 0;
+        const got = pv?.detected?.[key] ?? 0;
+        if (want !== got) {
+          const dir = got < want ? "missed" : "over-counted";
+          warnings.push(
+            `Page ${pv.pageNumber}: legend says ${want} × ${DEVICE_LABELS[key]}, detected ${got} (${dir} ${Math.abs(want - got)}).`,
+          );
+        }
+      }
+    }
+    console.log(
+      "[auto-detect] pageVerification:",
+      JSON.stringify(pageVerification),
+    );
+    if (warnings.length > 0) {
+      console.log("[auto-detect] warnings:", warnings.join(" | "));
+    }
+
+    return json({ ok: true, doors: normalized, miscNotes, warnings });
   } catch (err) {
     console.error("[auto-detect] error:", err);
     const message = err instanceof Error ? err.message : String(err);

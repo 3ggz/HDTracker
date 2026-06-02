@@ -28,6 +28,7 @@ export function AutoDetectModal({
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<Row[]>([]);
   const [miscNotes, setMiscNotes] = useState<string[]>([]);
+  const [warnings, setWarnings] = useState<string[]>([]);
   const [, startTransition] = useTransition();
 
   useEffect(() => {
@@ -62,7 +63,12 @@ export function AutoDetectModal({
       timeout,
     ])) as {
       data:
-        | { ok: true; doors: DetectedDoor[]; miscNotes?: string[] }
+        | {
+            ok: true;
+            doors: DetectedDoor[];
+            miscNotes?: string[];
+            warnings?: string[];
+          }
         | { ok: false; error: string }
         | null;
       error: { message: string } | null;
@@ -92,6 +98,7 @@ export function AutoDetectModal({
       })),
     );
     setMiscNotes(data.miscNotes ?? []);
+    setWarnings(data.warnings ?? []);
     setPhase("review");
   }
 
@@ -127,6 +134,7 @@ export function AutoDetectModal({
     setPhase("idle");
     setRows([]);
     setMiscNotes([]);
+    setWarnings([]);
     setError(null);
     onClose();
   }
@@ -210,6 +218,21 @@ export function AutoDetectModal({
 
           {phase === "review" && rows.length > 0 && (
             <>
+              {warnings.length > 0 && (
+                <div className="mb-3 rounded-lg border border-red-300 bg-red-50 p-3 dark:border-red-900/60 dark:bg-red-950/30">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-red-700 dark:text-red-400">
+                    Count mismatches vs HUGS Symbols legend
+                  </p>
+                  <ul className="mt-1.5 list-disc space-y-0.5 pl-5 text-xs text-red-900 dark:text-red-200">
+                    {warnings.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                  <p className="mt-2 text-[11px] italic text-red-700/80 dark:text-red-400/80">
+                    Review carefully — the model thinks it missed (or over-counted) some dots. You can still import and edit, or close this and run again.
+                  </p>
+                </div>
+              )}
               <p className="mb-3 text-xs text-neutral-500 dark:text-neutral-400">
                 Found {rows.length} {rows.length === 1 ? "door" : "doors"}. Review
                 and uncheck anything wrong before importing. HUGS 8 board is
