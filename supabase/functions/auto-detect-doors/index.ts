@@ -2,13 +2,8 @@
 // vision. Runs as a Supabase Edge Function (Deno runtime, 150s default
 // timeout) so we don't hit Vercel Hobby's 10s function cap.
 //
-// Deploy from the Supabase dashboard (Edge Functions -> New function),
-// or via `supabase functions deploy auto-detect-doors`. Set the
-// ANTHROPIC_API_KEY secret first:
-//   supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
-//
-// The client calls it via supabase.functions.invoke('auto-detect-doors',
-// { body: { jobId } }). The user's JWT is forwarded automatically.
+// Deployed automatically via .github/workflows/deploy-edge-functions.yml
+// on every push to main that touches this file.
 
 import Anthropic from "npm:@anthropic-ai/sdk@0.100.1";
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
