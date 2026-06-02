@@ -1062,12 +1062,19 @@ function DoorCard({
   async function deleteDoor() {
     if (!confirm(`Delete "${door.name}" and everything on it?`)) return;
     const supabase = createClient();
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("job_doors")
       .delete()
-      .eq("id", door.id);
+      .eq("id", door.id)
+      .select("id");
     if (error) {
       alert(error.message);
+      return;
+    }
+    if (!data || data.length === 0) {
+      alert(
+        "Couldn't delete — the database didn't report an error but no rows were affected. Try signing out and back in.",
+      );
       return;
     }
     onDoorDelete(door.id);
@@ -1093,12 +1100,19 @@ function DoorCard({
   async function removeItem(id: string) {
     if (!confirm("Remove this item?")) return;
     const supabase = createClient();
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("job_door_items")
       .delete()
-      .eq("id", id);
+      .eq("id", id)
+      .select("id");
     if (error) {
       alert(error.message);
+      return;
+    }
+    if (!data || data.length === 0) {
+      alert(
+        "Couldn't remove — the database didn't report an error but no rows were affected.",
+      );
       return;
     }
     onItemsChange(
@@ -1897,9 +1911,20 @@ function DeleteJobSection({
       return;
     setPending(true);
     const supabase = createClient();
-    const { error } = await supabase.from("jobs").delete().eq("id", jobId);
+    const { data, error } = await supabase
+      .from("jobs")
+      .delete()
+      .eq("id", jobId)
+      .select("id");
     if (error) {
       alert(error.message);
+      setPending(false);
+      return;
+    }
+    if (!data || data.length === 0) {
+      alert(
+        "Couldn't delete the job — no rows affected. Try signing out and back in.",
+      );
       setPending(false);
       return;
     }

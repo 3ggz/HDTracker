@@ -64,6 +64,22 @@ export default async function JobQuickViewPage({
     list.sort(compareCanonicalItems);
   }
 
+  const deviceStats = new Map<string, { done: number; total: number }>();
+  for (const it of allItems) {
+    const stat = deviceStats.get(it.name) ?? { done: 0, total: 0 };
+    stat.total++;
+    if (it.completed_at) stat.done++;
+    deviceStats.set(it.name, stat);
+  }
+  const deviceRows = Array.from(deviceStats.entries())
+    .map(([name, stat]) => ({ name, ...stat }))
+    .sort((a, b) =>
+      compareCanonicalItems(
+        { name: a.name, position: 0 },
+        { name: b.name, position: 0 },
+      ),
+    );
+
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
   const sortedDoors = ([...(doors ?? [])] as JobDoor[]).sort((a, b) =>
     compareDoorNames(a.name, b.name),
@@ -154,6 +170,51 @@ export default async function JobQuickViewPage({
             />
           </div>
         </section>
+
+        {deviceRows.length > 0 && (
+          <section className="rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+            <h2 className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+              By device
+            </h2>
+            <ul className="space-y-2">
+              {deviceRows.map((row) => {
+                const pct =
+                  row.total === 0
+                    ? 0
+                    : Math.round((row.done / row.total) * 100);
+                const allDone = row.done === row.total;
+                return (
+                  <li key={row.name}>
+                    <div className="mb-1 flex items-baseline justify-between gap-2">
+                      <span className="truncate text-sm font-medium">
+                        {row.name}
+                      </span>
+                      <span
+                        className={
+                          "tabular-nums text-xs font-medium " +
+                          (allDone
+                            ? "text-emerald-600 dark:text-emerald-400"
+                            : "text-neutral-600 dark:text-neutral-400")
+                        }
+                      >
+                        {row.done} / {row.total}
+                      </span>
+                    </div>
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
+                      <div
+                        className={
+                          "h-full transition-all " +
+                          (allDone ? "bg-emerald-500" : "bg-neutral-500")
+                        }
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        )}
 
         {sortedDoors.length === 0 ? (
           <p className="rounded-lg border border-dashed border-neutral-300 px-4 py-6 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
