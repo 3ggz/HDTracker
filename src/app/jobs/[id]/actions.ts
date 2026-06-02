@@ -171,3 +171,42 @@ export async function importDetectedDoorsAction(
 
   return { ok: true, created };
 }
+
+// Door delete as a server action. Mirrors deleteVehicleAction:
+// .select("id") catches silent RLS-filtered deletes (where the
+// query "succeeds" with error: null but affects zero rows).
+export type DeleteResult = { ok: true } | { ok: false; error: string };
+
+export async function deleteDoorAction(doorId: string): Promise<DeleteResult> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("job_doors")
+    .delete()
+    .eq("id", doorId)
+    .select("id");
+  if (error) return { ok: false, error: error.message };
+  if (!data || data.length === 0) {
+    return {
+      ok: false,
+      error:
+        "Database didn't report an error but no rows were affected — RLS may have filtered, or the row was already gone.",
+    };
+  }
+  return { ok: true };
+}
+
+export async function deleteDoorItemAction(
+  itemId: string,
+): Promise<DeleteResult> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("job_door_items")
+    .delete()
+    .eq("id", itemId)
+    .select("id");
+  if (error) return { ok: false, error: error.message };
+  if (!data || data.length === 0) {
+    return { ok: false, error: "No rows were affected." };
+  }
+  return { ok: true };
+}

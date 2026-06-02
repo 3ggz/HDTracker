@@ -36,6 +36,10 @@ import {
   type JobPhoto,
 } from "@/lib/job-photos";
 import { HUGS_TEMPLATE } from "@/lib/job-templates";
+import {
+  deleteDoorAction,
+  deleteDoorItemAction,
+} from "@/app/jobs/[id]/actions";
 import { AutoDetectModal } from "./AutoDetectModal";
 
 const inputClass =
@@ -1059,22 +1063,16 @@ function DoorCard({
     onDoorUpdate(data as JobDoor);
   }
 
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
   async function deleteDoor() {
-    if (!confirm(`Delete "${door.name}" and everything on it?`)) return;
-    const supabase = createClient();
-    const { data, error } = await supabase
-      .from("job_doors")
-      .delete()
-      .eq("id", door.id)
-      .select("id");
-    if (error) {
-      alert(error.message);
-      return;
-    }
-    if (!data || data.length === 0) {
-      alert(
-        "Couldn't delete — the database didn't report an error but no rows were affected. Try signing out and back in.",
-      );
+    setDeleting(true);
+    const result = await deleteDoorAction(door.id);
+    setDeleting(false);
+    setConfirmingDelete(false);
+    if (!result.ok) {
+      alert(`Couldn't delete: ${result.error}`);
       return;
     }
     onDoorDelete(door.id);
@@ -1098,21 +1096,9 @@ function DoorCard({
   }
 
   async function removeItem(id: string) {
-    if (!confirm("Remove this item?")) return;
-    const supabase = createClient();
-    const { data, error } = await supabase
-      .from("job_door_items")
-      .delete()
-      .eq("id", id)
-      .select("id");
-    if (error) {
-      alert(error.message);
-      return;
-    }
-    if (!data || data.length === 0) {
-      alert(
-        "Couldn't remove — the database didn't report an error but no rows were affected.",
-      );
+    const result = await deleteDoorItemAction(id);
+    if (!result.ok) {
+      alert(`Couldn't remove: ${result.error}`);
       return;
     }
     onItemsChange(
@@ -1181,27 +1167,50 @@ function DoorCard({
             {completedCount}/{items.length}
           </span>
         )}
-        <button
-          type="button"
-          onClick={deleteDoor}
-          aria-label="Delete door"
-          className="flex h-10 w-10 items-center justify-center rounded-lg text-red-600 active:bg-red-50 dark:text-red-400 dark:active:bg-red-950/40"
-        >
-          <svg
-            className="h-5 w-5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+        {confirmingDelete ? (
+          <>
+            <button
+              type="button"
+              onClick={deleteDoor}
+              disabled={deleting}
+              aria-label={`Confirm delete ${door.name}`}
+              className="h-10 rounded-lg bg-red-600 px-3 text-xs font-semibold text-white active:scale-95 disabled:opacity-50"
+            >
+              {deleting ? "..." : "Delete"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmingDelete(false)}
+              disabled={deleting}
+              aria-label="Cancel delete"
+              className="h-10 rounded-lg border border-neutral-300 px-3 text-xs font-medium text-neutral-700 dark:border-neutral-700 dark:text-neutral-300"
+            >
+              Cancel
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirmingDelete(true)}
+            aria-label="Delete door"
+            className="flex h-10 w-10 items-center justify-center rounded-lg text-red-600 active:bg-red-50 dark:text-red-400 dark:active:bg-red-950/40"
           >
-            <polyline points="3 6 5 6 21 6" />
-            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-            <path d="M10 11v6" />
-            <path d="M14 11v6" />
-          </svg>
-        </button>
+            <svg
+              className="h-5 w-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+              <path d="M10 11v6" />
+              <path d="M14 11v6" />
+            </svg>
+          </button>
+        )}
       </div>
 
       {expanded && (
