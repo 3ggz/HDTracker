@@ -62,11 +62,20 @@ const EXTRACTION_PROMPT = [
   "ITEMS:",
   "For each door, list the equipment connected via wire to its 5500. Use ONLY these exact strings - never invent or paraphrase: '5500 Exciter', '5200 Exciter', '3220 Exciter', '4210 Antenna', 'Strobe'. Always include '5500 Exciter' since every door has one.",
   "",
+  "HUGS SYMBOLS LEGEND - GROUND TRUTH COUNTS PER PAGE:",
+  "Each page usually has a 'HUGS SYMBOLS' legend box (often in the top-right corner of the page, on a Securitas Healthcare title block) that lists each device type with its exact count for that page. Example numbers you may see: '14' next to EX-5500 LF Controller, '9' next to EX-5200 LF Exciter, '17' next to EX-3220 LF Exciter, '8' next to ANT-4210 LF Antenna, '14' next to Strobe-Sounder. These per-device counts are GROUND TRUTH for the page. Read them carefully before finalizing your output. The legend may also list devices we do not track ('RJ-45 Jumper Cable', 'Card Reader', 'Keypad', 'HUGS Tag Charging Station') - ignore those.",
+  "",
   "DEDUPLICATION ACROSS PAGES:",
   "If the same consolidated door name appears on multiple pages (wiring continuation), return it once with the union of its equipment and the floor of the first occurrence.",
   "",
-  "SELF-CHECK BEFORE RESPONDING:",
-  "Recount the magenta 5500 dots on each page. Confirm your output door count equals that total. If they don't match, find the missing 5500(s) and add them before responding.",
+  "MANDATORY SELF-CHECK USING THE LEGEND BEFORE RESPONDING:",
+  "For each page in the PDF, sum your extracted device counts and compare to the HUGS SYMBOLS legend box on that page:",
+  "- Number of doors on the page == legend's EX-5500 count (one door per 5500)",
+  "- Sum of '5200 Exciter' items across doors on that page == legend's EX-5200 count",
+  "- Sum of '3220 Exciter' items across doors on that page == legend's EX-3220 count",
+  "- Sum of '4210 Antenna' items across doors on that page == legend's ANT-4210 count",
+  "- Sum of 'Strobe' items across doors on that page == legend's Strobe-Sounder count",
+  "If ANY of these sums do not match the legend, you have missed dots somewhere on the page. Go back to the map, find the missing dots (look near walls, in corners, partially obscured, behind labels), assign them to the correct doors via the wire line, and update your output. Do not respond until every per-device total matches the legend on every page.",
 ].join("\n");
 
 const RESPONSE_SCHEMA = {
@@ -187,7 +196,7 @@ Deno.serve(async (req: Request) => {
 
     const callStart = Date.now();
     const response = await anthropic.messages.create({
-      model: "claude-haiku-4-5",
+      model: "claude-opus-4-8",
       max_tokens: 16000,
       output_config: {
         format: { type: "json_schema", schema: RESPONSE_SCHEMA },
