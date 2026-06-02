@@ -11,7 +11,7 @@
 // { body: { jobId } }). The user's JWT is forwarded automatically, and
 // we use it to scope Supabase queries to RLS (currently permissive).
 
-import Anthropic from "npm:@anthropic-ai/sdk@^0.100.1";
+import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.100.1?target=deno";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { encodeBase64 } from "https://deno.land/std@0.224.0/encoding/base64.ts";
 
