@@ -94,11 +94,17 @@ const EXTRACTION_PROMPT = [
   "EVERY door has a '5500 Exciter' (one per door, by definition). Beyond that, devices VARY per door — many doors have only the 5500 and a Strobe; others have a 5200 or a 4210 or both; some have neither. DO NOT assume every door gets the same kit. DO NOT add a 4210 just because the previous door had one. DO NOT add a 5200 because 'most doors usually have one'. Add a device to a door ONLY if you can see the dot on the map AND trace the wire from that dot back to this door's 5500.",
   "When in doubt, leave the device OUT. It's better to omit a real device than to invent one that isn't on the map — the per-device legend totals will catch under-counts on the next pass anyway.",
   "",
-  "OTHER DEVICES (NOT TRACKED PER-DOOR):",
-  "The HUGS SYMBOLS legend usually lists devices we do NOT track per door. For every legend row whose device type is in the INCLUDE list below AND whose count is > 0, append one concise string to the top-level 'miscNotes' array describing it. Format like '8 GW-3100 Gateways', '1 Wi-Fi Access Point (Existing)', '2 Keypads'.",
-  "  INCLUDE in miscNotes: GW-3000 Gateways, GW-3100 Gateways (Existing or Planned), Wi-Fi Access Points (Existing or Planned), Keypads.",
-  "  EXCLUDE — do NOT add to miscNotes: RJ-45 Jumper Cables (just wiring), Card Readers (we don't install for HUGS), HUGS Tag Charging Stations (we don't install).",
-  "Do NOT add any of these to any door's items list — they belong only in miscNotes (or nowhere, if excluded).",
+  "OTHER DEVICES — split into TWO buckets:",
+  "",
+  "BUCKET 1: 'standaloneItems' — gateways we install but that aren't labeled per door. For each of these legend rows with count > 0, add ONE entry to the top-level 'standaloneItems' array with {type, count}:",
+  "  - GW-3000 Gateway (any 'PoE' / 'Switched' variant — treat each variant as its own entry)",
+  "  - GW-3100 Gateway (any 'PoE' / 'Switched' variant — treat each variant as its own entry)",
+  "Example: legend shows '8 GW-3100 Gateway PoE' and '1 GW-3000 Gateway' → standaloneItems = [{type:'GW-3100 Gateway', count:8}, {type:'GW-3000 Gateway', count:1}].",
+  "Do NOT put these in miscNotes. Do NOT attach them to any door. The host will create a 'Standalone Equipment' synthetic door with one checkable item per unit so the tech can mark each one installed.",
+  "",
+  "BUCKET 2: 'miscNotes' — informational only, NOT installed by us. For each legend row with count > 0 in this list, append a concise string like '4 Wi-Fi Access Points (Existing)' to miscNotes:",
+  "  INCLUDE: Wi-Fi Access Points (Existing or Planned), Keypads.",
+  "  EXCLUDE — do NOT add anywhere: RJ-45 Jumper Cables, Card Readers, HUGS Tag Charging Stations.",
   "",
   "HUGS SYMBOLS LEGEND - GROUND TRUTH COUNTS PER PAGE:",
   "Each page usually has a 'HUGS SYMBOLS' legend box (often in the top-right corner of the page, on a Securitas Healthcare title block) that lists each device type with its exact count for that page. The legend may also list devices we do not track ('RJ-45 Jumper Cable', 'Card Reader', 'Keypad', 'HUGS Tag Charging Station', 'GW-3000 Gateway', 'Wi-Fi Access Point') — ignore those for the per-device tracked counts.",
@@ -171,6 +177,20 @@ const RESPONSE_SCHEMA = {
       type: "array",
       items: { type: "string" },
     },
+    standaloneItems: {
+      type: "array",
+      description:
+        "Devices we install but that aren't labeled per door (gateways). Becomes a synthetic 'Standalone Equipment' door with one item per unit so each can be marked done.",
+      items: {
+        type: "object",
+        properties: {
+          type: { type: "string" },
+          count: { type: "integer" },
+        },
+        required: ["type", "count"],
+        additionalProperties: false,
+      },
+    },
     pageVerification: {
       type: "array",
       description:
@@ -213,7 +233,7 @@ const RESPONSE_SCHEMA = {
       },
     },
   },
-  required: ["doors", "miscNotes", "pageVerification"],
+  required: ["doors", "miscNotes", "standaloneItems", "pageVerification"],
   additionalProperties: false,
 } as const;
 
@@ -344,12 +364,14 @@ Deno.serve(async (req: Request) => {
     let parsed: {
       doors?: unknown[];
       miscNotes?: unknown[];
+      standaloneItems?: unknown[];
       pageVerification?: unknown[];
     };
     try {
       parsed = JSON.parse(textBlock.text) as {
         doors?: unknown[];
         miscNotes?: unknown[];
+        standaloneItems?: unknown[];
         pageVerification?: unknown[];
       };
     } catch {
@@ -388,6 +410,21 @@ Deno.serve(async (req: Request) => {
     const miscNotes: string[] = (parsed.miscNotes ?? [])
       .map((s) => (typeof s === "string" ? s.trim() : ""))
       .filter((s) => s.length > 0);
+
+    const standaloneItems: { type: string; count: number }[] = (
+      parsed.standaloneItems ?? []
+    )
+      .map((raw) => {
+        const r = raw as { type?: unknown; count?: unknown };
+        return {
+          type: String(r?.type ?? "").trim(),
+          count:
+            typeof r?.count === "number" && Number.isInteger(r.count)
+              ? r.count
+              : 0,
+        };
+      })
+      .filter((s) => s.type.length > 0 && s.count > 0);
 
     // Diff each page's legend vs detected counts. Surface mismatches to
     // the user so they know which device the model under-counted on.
@@ -459,7 +496,13 @@ Deno.serve(async (req: Request) => {
       console.log("[auto-detect] warnings:", warnings.join(" | "));
     }
 
-    return json({ ok: true, doors: normalized, miscNotes, warnings });
+    return json({
+      ok: true,
+      doors: normalized,
+      miscNotes,
+      standaloneItems,
+      warnings,
+    });
   } catch (err) {
     console.error("[auto-detect] error:", err);
     const message = err instanceof Error ? err.message : String(err);

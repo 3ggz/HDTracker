@@ -25,6 +25,7 @@ export type ImportDoorsInput = {
     notes: string | null;
   }[];
   miscNotes?: string[];
+  standaloneItems?: { type: string; count: number }[];
 };
 
 export type ImportDoorsResult =
@@ -91,6 +92,62 @@ export async function importDetectedDoorsAction(
       }
     }
     created++;
+  }
+
+  // Create a synthetic "Standalone Equipment" door holding the
+  // unlabeled gateways (and similar). Each unit becomes its own
+  // checkable item so the tech can track installation individually.
+  if (input.standaloneItems && input.standaloneItems.length > 0) {
+    const totalUnits = input.standaloneItems.reduce(
+      (acc, s) => acc + s.count,
+      0,
+    );
+    if (totalUnits > 0) {
+      const { data: standaloneDoor, error: standaloneDoorError } =
+        await supabase
+          .from("job_doors")
+          .insert({
+            job_id: input.jobId,
+            name: "Standalone Equipment",
+            floor: null,
+            notes: null,
+            position: positionStart + input.doors.length,
+          })
+          .select("id")
+          .single();
+
+      if (standaloneDoorError || !standaloneDoor) {
+        return {
+          ok: false,
+          error: `Doors imported, but couldn't create Standalone Equipment door: ${standaloneDoorError?.message ?? "unknown error"}`,
+        };
+      }
+
+      const itemRows: { door_id: string; name: string; position: number }[] =
+        [];
+      let pos = 0;
+      for (const s of input.standaloneItems) {
+        for (let i = 0; i < s.count; i++) {
+          itemRows.push({
+            door_id: standaloneDoor.id,
+            name: s.type,
+            position: pos++,
+          });
+        }
+      }
+      if (itemRows.length > 0) {
+        const { error: standaloneItemsError } = await supabase
+          .from("job_door_items")
+          .insert(itemRows);
+        if (standaloneItemsError) {
+          return {
+            ok: false,
+            error: `Standalone Equipment door was created, but its items failed: ${standaloneItemsError.message}`,
+          };
+        }
+      }
+      created++;
+    }
   }
 
   // Append misc-notes (non-tracked devices from the legend) to the job's

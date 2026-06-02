@@ -28,6 +28,9 @@ export function AutoDetectModal({
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<Row[]>([]);
   const [miscNotes, setMiscNotes] = useState<string[]>([]);
+  const [standaloneItems, setStandaloneItems] = useState<
+    { type: string; count: number }[]
+  >([]);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [, startTransition] = useTransition();
 
@@ -67,6 +70,7 @@ export function AutoDetectModal({
             ok: true;
             doors: DetectedDoor[];
             miscNotes?: string[];
+            standaloneItems?: { type: string; count: number }[];
             warnings?: string[];
           }
         | { ok: false; error: string }
@@ -98,6 +102,7 @@ export function AutoDetectModal({
       })),
     );
     setMiscNotes(data.miscNotes ?? []);
+    setStandaloneItems(data.standaloneItems ?? []);
     setWarnings(data.warnings ?? []);
     setPhase("review");
   }
@@ -119,6 +124,7 @@ export function AutoDetectModal({
         notes: r.notes,
       })),
       miscNotes,
+      standaloneItems,
     });
     if (!result.ok) {
       setError(result.error);
@@ -134,6 +140,7 @@ export function AutoDetectModal({
     setPhase("idle");
     setRows([]);
     setMiscNotes([]);
+    setStandaloneItems([]);
     setWarnings([]);
     setError(null);
     onClose();
@@ -253,6 +260,23 @@ export function AutoDetectModal({
                   />
                 ))}
               </ul>
+              {standaloneItems.length > 0 && (
+                <div className="mt-4 rounded-lg border border-indigo-300 bg-indigo-50 p-3 dark:border-indigo-900/60 dark:bg-indigo-950/30">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-400">
+                    Standalone equipment to install
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-indigo-700/80 dark:text-indigo-400/80">
+                    Will be added as a separate &ldquo;Standalone Equipment&rdquo; door so each unit can be checked off.
+                  </p>
+                  <ul className="mt-1.5 list-disc space-y-0.5 pl-5 text-xs text-indigo-900 dark:text-indigo-200">
+                    {standaloneItems.map((s, i) => (
+                      <li key={i}>
+                        {s.count} × {s.type}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {miscNotes.length > 0 && (
                 <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/60 dark:bg-amber-950/30">
                   <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
