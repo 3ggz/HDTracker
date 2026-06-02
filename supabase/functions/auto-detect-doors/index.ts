@@ -187,11 +187,9 @@ Deno.serve(async (req: Request) => {
 
     const callStart = Date.now();
     const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
+      model: "claude-haiku-4-5",
       max_tokens: 16000,
-      thinking: { type: "adaptive" },
       output_config: {
-        effort: "high",
         format: { type: "json_schema", schema: RESPONSE_SCHEMA },
       },
       messages: [
