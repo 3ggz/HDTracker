@@ -5,6 +5,7 @@ import { AddFaqFab } from "@/components/AddFaqFab";
 import { LiveUpdater } from "@/components/LiveUpdater";
 import { PendingApprovalsBanner } from "@/components/PendingApprovalsBanner";
 import { SectionTabs } from "@/components/SectionTabs";
+import { FaqSubTabs } from "@/components/FaqSubTabs";
 import { isAdminEmail } from "@/lib/admin";
 import { publicFaqPhotoUrl } from "@/lib/faq-photos";
 
@@ -50,6 +51,7 @@ export default async function FaqPage() {
       <AppHeader />
       {isAdmin && <PendingApprovalsBanner initialCount={pendingCount} />}
       <SectionTabs active="faq" />
+      <FaqSubTabs active="articles" />
       <section className="mx-auto w-full max-w-md flex-1 px-4 pb-28 pt-4">
         {error ? (
           <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-300">
