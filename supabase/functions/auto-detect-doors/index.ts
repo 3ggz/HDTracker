@@ -119,16 +119,26 @@ const EXTRACTION_PROMPT = [
   "DEDUPLICATION ACROSS PAGES:",
   "If the same consolidated door name appears on multiple pages (wiring continuation), return it once with the union of its equipment and the floor of the first occurrence.",
   "",
-  "MANDATORY VERIFICATION — fill in pageVerification[] HONESTLY:",
-  "Your response includes a 'pageVerification' array with one entry per PDF page. For each page you MUST:",
-  "1. Read the HUGS SYMBOLS legend box on that page and copy each device-type count into 'legend' verbatim. If a device type is not in the legend, use 0.",
-  "2. Independently count the dots you actually see on the map for that page (5500, 5200, 3220, 4210, Strobe) and write those into 'detected'.",
-  "3. The host will diff 'legend' against 'detected' and flag mismatches to the user. Do NOT make detected match legend by guessing — only by actually finding the dots. If you can't find them, leave detected at the true count and the user will be alerted.",
-  "4. The number of doors you return per page MUST equal that page's 'detected.ex5500' (one door per 5500).",
-  "5. Before finalizing, reconcile 'detected' against 'legend' for every device on every page:",
-  "   - If detected < legend, you've missed dots. Re-scan (walls, corners, behind labels, in dense clusters) and find them.",
-  "   - If detected > legend, you've ADDED A DEVICE TO A DOOR THAT DOESN'T HAVE ONE. This is the most common over-count cause: you blanket-assigned (e.g. gave every door a 4210 because you expected to). Go through each door's items, find the one where you can't actually see the dot on the map, and REMOVE that device from that door's items array. Repeat until detected matches legend. Other over-count causes: one fat dot read as two, a stray mark misread as a tracked device, a blue crosshair gateway mistaken for a 5500.",
-  "   - Only submit when both totals match per page (or you've genuinely exhausted the re-scan).",
+  "MANDATORY TWO-STAGE PROCESS — DO NOT SKIP EITHER STAGE:",
+  "",
+  "STAGE A — COUNT FIRST (fill pageVerification[]):",
+  "Before listing any door, go page by page and count what's actually on the map.",
+  "  1. For each page, read the HUGS SYMBOLS legend and copy each tracked-device count into pageVerification[page].legend. Absent row = 0.",
+  "  2. For each page, INDEPENDENTLY count every tracked-device dot you can see on the map (one count per device type: 5500, 5200, 3220, 4210, Strobe) and write those into pageVerification[page].detected. Look at the actual dots, do not guess based on patterns.",
+  "  3. Reconcile detected vs legend:",
+  "       - detected < legend → you missed dots. Re-scan (walls, corners, behind labels, dense clusters) and find them.",
+  "       - detected > legend → you over-counted (a fat dot read as two, a stray mark, a blue crosshair gateway mistaken for a 5500). Re-examine and reduce.",
+  "       - Adjust until detected matches legend, OR you've genuinely exhausted the re-scan. Whatever pageVerification[page].detected ends up at is your COMMITTED count for that page.",
+  "",
+  "STAGE B — DISTRIBUTE INTO DOORS (fill doors[]):",
+  "Only after Stage A is locked in.",
+  "  4. For each page, create exactly pageVerification[page].detected.ex5500 doors (one per 5500 dot).",
+  "  5. Each non-5500 device in pageVerification[page].detected has a fixed budget. For example if detected.ant4210 = 4 on page 1, then EXACTLY 4 of the doors on page 1 get a '4210 Antenna' in their items. Not 3, not 5. Exactly 4.",
+  "  6. Decide which doors get which devices by tracing the wire line FROM each non-5500 dot BACK to its 5500. The 4210 dot at the top-right wires back to door D2 → door D2's items include '4210 Antenna'. Repeat for every non-5500 dot.",
+  "  7. After distributing, double-check the SUM of each device across doors on each page equals pageVerification[page].detected for that device. If they don't match, you've either invented an item on a door (delete it) or missed assigning a real dot (find the door it wires to).",
+  "",
+  "HARD CONSTRAINT — DO NOT BLANKET-ASSIGN:",
+  "Many doors have ONLY a 5500 Exciter + (sometimes) a Strobe. They do NOT have a 5200, a 3220, or a 4210. Do not add a device to a door just because you've added it to neighbors. The pageVerification counts are your distribution BUDGET — once they're spent, no more of that device gets added to any door.",
   "",
   "DENSE CLUSTERS WARNING:",
   "On busy maps the 5500/5200/3220/Strobe dots can sit on top of each other or just a few pixels apart. Treat any pixel cluster with mixed colors as multiple dots, not one. Zoom in mentally and count each colored mark separately.",
@@ -400,6 +410,40 @@ Deno.serve(async (req: Request) => {
           const dir = got < want ? "missed" : "over-counted";
           warnings.push(
             `Page ${pv.pageNumber}: legend says ${want} × ${DEVICE_LABELS[key]}, detected ${got} (${dir} ${Math.abs(want - got)}).`,
+          );
+        }
+      }
+    }
+
+    // Internal consistency: the model's per-page "detected" claim must
+    // match the sum of that device across the doors it actually output
+    // on that page. If they don't, the model contradicted itself —
+    // surface that loudly so the user knows to re-run.
+    const DEVICE_NAME_FROM_KEY: Record<string, string> = {
+      ex5500: "5500 Exciter",
+      ex5200: "5200 Exciter",
+      ex3220: "3220 Exciter",
+      ant4210: "4210 Antenna",
+      strobe: "Strobe",
+    };
+    for (const pv of pageVerification) {
+      // We don't know which doors live on which page from the door rows
+      // alone (the model doesn't return page numbers per door). Sum
+      // across ALL doors that share the same floor — close enough for
+      // single-page jobs, and a useful check otherwise.
+      for (const key of Object.keys(DEVICE_LABELS)) {
+        const detected = pv?.detected?.[key] ?? 0;
+        const summed = normalized.reduce(
+          (acc, d) =>
+            acc +
+            (d.items.includes(DEVICE_NAME_FROM_KEY[key]) ? 1 : 0),
+          0,
+        );
+        // Only flag if this is a single-page job (one pageVerification
+        // entry) — otherwise the all-doors sum isn't comparable.
+        if (pageVerification.length === 1 && summed !== detected) {
+          warnings.push(
+            `Internal mismatch: model says detected ${detected} × ${DEVICE_LABELS[key]} on page ${pv.pageNumber}, but ${summed} doors in the output actually list it. Re-run.`,
           );
         }
       }
