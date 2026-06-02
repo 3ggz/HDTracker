@@ -42,6 +42,12 @@ import {
 } from "@/app/jobs/[id]/actions";
 import { AutoDetectModal } from "./AutoDetectModal";
 
+// Doors with this exact name are the synthetic bucket created by the
+// auto-detect import for unlabeled standalone equipment (gateways,
+// etc). They aren't real doors, so they're excluded from door counts
+// and rendered as their own section below the floor groups.
+const STANDALONE_DOOR_NAME = "Standalone Equipment";
+
 const inputClass =
   "block h-12 w-full rounded-lg border border-neutral-300 bg-white px-3 text-base text-neutral-900 outline-none transition focus:border-neutral-900 focus:ring-2 focus:ring-neutral-900/10 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50 dark:focus:border-neutral-100 dark:focus:ring-neutral-100/10";
 
@@ -337,13 +343,19 @@ export function JobDetailClient({
       <JobSummaryCard
         job={job}
         completionStats={completionStats}
-        doorCount={doors.length}
+        doorCount={doors.filter((d) => d.name !== STANDALONE_DOOR_NAME).length}
         photoCount={photos.length}
       />
 
       {(() => {
+        const regularDoors = doors.filter(
+          (d) => d.name !== STANDALONE_DOOR_NAME,
+        );
+        const standaloneDoor = doors.find(
+          (d) => d.name === STANDALONE_DOOR_NAME,
+        );
         const distinctFloors = Array.from(
-          new Set(doors.map((d) => d.floor ?? null)),
+          new Set(regularDoors.map((d) => d.floor ?? null)),
         );
         const useFloorGroups =
           distinctFloors.length > 1 ||
@@ -428,32 +440,53 @@ export function JobDetailClient({
           </p>
         );
 
+        const standaloneItems = standaloneDoor
+          ? itemsByDoor.get(standaloneDoor.id) ?? []
+          : [];
+        const standaloneDone = standaloneItems.filter(
+          (it) => it.completed_at,
+        ).length;
+
+        const standaloneSection = standaloneDoor ? (
+          <CollapsibleSection
+            title={`Standalone equipment — ${standaloneItems.length} ${standaloneItems.length === 1 ? "item" : "items"}${standaloneItems.length ? ` · ${standaloneDone}/${standaloneItems.length}` : ""}`}
+            storageKey={`hd:job:${initialJob.id}:standalone`}
+          >
+            <ul className="space-y-3">{renderDoor(standaloneDoor)}</ul>
+          </CollapsibleSection>
+        ) : null;
+
         if (!useFloorGroups) {
           return (
-            <CollapsibleSection
-              title={`Doors (${doors.length})`}
-              defaultOpen
-              storageKey={`hd:job:${initialJob.id}:doors`}
-              rightHeader={headerControls}
-            >
-              {errorBanners}
-              {doors.length === 0 ? (
-                emptyState
-              ) : (
-                <DndContext
-                  sensors={sensors}
-                  collisionDetection={closestCenter}
-                  onDragEnd={onDragEnd}
-                >
-                  <SortableContext
-                    items={doors.map((d) => d.id)}
-                    strategy={verticalListSortingStrategy}
+            <>
+              <CollapsibleSection
+                title={`Doors (${regularDoors.length})`}
+                defaultOpen
+                storageKey={`hd:job:${initialJob.id}:doors`}
+                rightHeader={headerControls}
+              >
+                {errorBanners}
+                {regularDoors.length === 0 ? (
+                  emptyState
+                ) : (
+                  <DndContext
+                    sensors={sensors}
+                    collisionDetection={closestCenter}
+                    onDragEnd={onDragEnd}
                   >
-                    <ul className="space-y-3">{doors.map(renderDoor)}</ul>
-                  </SortableContext>
-                </DndContext>
-              )}
-            </CollapsibleSection>
+                    <SortableContext
+                      items={regularDoors.map((d) => d.id)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      <ul className="space-y-3">
+                        {regularDoors.map(renderDoor)}
+                      </ul>
+                    </SortableContext>
+                  </DndContext>
+                )}
+              </CollapsibleSection>
+              {standaloneSection}
+            </>
           );
         }
 
@@ -467,14 +500,16 @@ export function JobDetailClient({
           <>
             <div className="flex items-center justify-between gap-2 rounded-2xl border border-neutral-200 bg-white px-4 py-3 dark:border-neutral-800 dark:bg-neutral-900">
               <span className="text-sm font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-300">
-                Doors ({doors.length})
+                Doors ({regularDoors.length})
               </span>
               {headerControls}
             </div>
             {errorBanners}
-            {doors.length === 0 && emptyState}
+            {regularDoors.length === 0 && emptyState}
             {floorOrder.map((floor) => {
-              const floorDoors = doors.filter((d) => (d.floor ?? null) === floor);
+              const floorDoors = regularDoors.filter(
+                (d) => (d.floor ?? null) === floor,
+              );
               const total = floorDoors.reduce(
                 (sum, d) => sum + (itemsByDoor.get(d.id)?.length ?? 0),
                 0,
@@ -511,6 +546,7 @@ export function JobDetailClient({
                 </CollapsibleSection>
               );
             })}
+            {standaloneSection}
           </>
         );
       })()}

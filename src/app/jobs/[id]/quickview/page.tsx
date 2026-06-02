@@ -81,7 +81,13 @@ export default async function JobQuickViewPage({
     );
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-  const sortedDoors = ([...(doors ?? [])] as JobDoor[]).sort((a, b) =>
+  const STANDALONE_DOOR_NAME = "Standalone Equipment";
+  const allDoors = (doors ?? []) as JobDoor[];
+  const regularDoors = allDoors.filter((d) => d.name !== STANDALONE_DOOR_NAME);
+  const standaloneDoor = allDoors.find(
+    (d) => d.name === STANDALONE_DOOR_NAME,
+  );
+  const sortedDoors = [...regularDoors].sort((a, b) =>
     compareDoorNames(a.name, b.name),
   );
   const jobPhotos = ((photos ?? []) as JobPhoto[]).filter((p) => !p.door_id);
@@ -278,6 +284,50 @@ export default async function JobQuickViewPage({
                 );
               })}
             </ul>
+          </section>
+        )}
+
+        {standaloneDoor && (
+          <section className="rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+            <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+              Standalone equipment
+            </h2>
+            {(() => {
+              const sItems = itemsByDoor.get(standaloneDoor.id) ?? [];
+              const sDone = sItems.filter((it) => it.completed_at).length;
+              if (sItems.length === 0) {
+                return (
+                  <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                    No items.
+                  </p>
+                );
+              }
+              return (
+                <>
+                  <p className="mb-2 text-xs text-neutral-600 dark:text-neutral-400">
+                    {sDone} / {sItems.length} installed
+                  </p>
+                  <ul className="space-y-0.5 text-xs">
+                    {sItems.map((it) => (
+                      <li
+                        key={it.id}
+                        className={
+                          "flex items-center gap-1.5 " +
+                          (it.completed_at
+                            ? "text-neutral-400 line-through dark:text-neutral-500"
+                            : "text-neutral-700 dark:text-neutral-300")
+                        }
+                      >
+                        <span aria-hidden>
+                          {it.completed_at ? "✓" : "○"}
+                        </span>
+                        <span>{it.name}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              );
+            })()}
           </section>
         )}
 
