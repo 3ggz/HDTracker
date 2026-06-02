@@ -1,0 +1,40 @@
+name: Deploy Supabase Edge Functions
+
+# Runs on every push to main that touches the functions code, and can
+# also be triggered manually from the GitHub Actions tab. Eliminates
+# the need to copy-paste code into the Supabase dashboard editor.
+#
+# One-time setup — add two repo secrets at
+# https://github.com/3ggz/HDTracker/settings/secrets/actions :
+#   SUPABASE_ACCESS_TOKEN — Personal access token from
+#     https://supabase.com/dashboard/account/tokens
+#   SUPABASE_PROJECT_ID — your project ref (the string in the URL
+#     after /project/, e.g. abcdefghijklmnop)
+#
+# The ANTHROPIC_API_KEY function secret must still be set inside
+# Supabase (Project Settings → Edge Functions → Secrets) — that's a
+# runtime secret for the function, not a deploy credential.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "supabase/functions/**"
+      - ".github/workflows/deploy-edge-functions.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Deploy auto-detect-doors
+        run: supabase functions deploy auto-detect-doors --project-ref "$SUPABASE_PROJECT_ID"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
