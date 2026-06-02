@@ -27,6 +27,7 @@ export function AutoDetectModal({
   const [phase, setPhase] = useState<"idle" | "detecting" | "review" | "importing">("idle");
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<Row[]>([]);
+  const [miscNotes, setMiscNotes] = useState<string[]>([]);
   const [, startTransition] = useTransition();
 
   useEffect(() => {
@@ -60,7 +61,10 @@ export function AutoDetectModal({
       supabase.functions.invoke("auto-detect-doors", { body: { jobId } }),
       timeout,
     ])) as {
-      data: { ok: true; doors: DetectedDoor[] } | { ok: false; error: string } | null;
+      data:
+        | { ok: true; doors: DetectedDoor[]; miscNotes?: string[] }
+        | { ok: false; error: string }
+        | null;
       error: { message: string } | null;
     };
 
@@ -87,6 +91,7 @@ export function AutoDetectModal({
         include: true,
       })),
     );
+    setMiscNotes(data.miscNotes ?? []);
     setPhase("review");
   }
 
@@ -106,6 +111,7 @@ export function AutoDetectModal({
         items: r.items,
         notes: r.notes,
       })),
+      miscNotes,
     });
     if (!result.ok) {
       setError(result.error);
@@ -120,6 +126,7 @@ export function AutoDetectModal({
   function handleClose() {
     setPhase("idle");
     setRows([]);
+    setMiscNotes([]);
     setError(null);
     onClose();
   }
@@ -223,6 +230,21 @@ export function AutoDetectModal({
                   />
                 ))}
               </ul>
+              {miscNotes.length > 0 && (
+                <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/60 dark:bg-amber-950/30">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
+                    Other devices on the map
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-amber-700/80 dark:text-amber-400/80">
+                    Appended to job notes on import — not tracked per-door.
+                  </p>
+                  <ul className="mt-1.5 list-disc space-y-0.5 pl-5 text-xs text-amber-900 dark:text-amber-200">
+                    {miscNotes.map((n, i) => (
+                      <li key={i}>{n}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </>
           )}
         </div>

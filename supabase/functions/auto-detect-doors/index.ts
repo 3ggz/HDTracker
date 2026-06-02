@@ -57,6 +57,9 @@ const EXTRACTION_PROMPT = [
   "ITEMS:",
   "For each door, list the equipment connected via wire to its 5500. Use ONLY these exact strings - never invent or paraphrase: '5500 Exciter', '5200 Exciter', '3220 Exciter', '4210 Antenna', 'Strobe'. Always include '5500 Exciter' since every door has one.",
   "",
+  "OTHER DEVICES (NOT TRACKED PER-DOOR):",
+  "The HUGS SYMBOLS legend usually lists devices we do NOT track per door — GW-3000 Gateways, GW-3100 Gateways, Wi-Fi Access Points (Existing or Planned), Card Readers, Keypads, HUGS Tag Charging Stations, RJ-45 Jumper Cables, etc. For every legend row whose device type is NOT in our 5-item tracked list AND whose count is > 0, append one concise string to the top-level 'miscNotes' array describing it. Format like '8 GW-3100 Gateways', '1 Wi-Fi Access Point (Existing)', '4 Card Readers', '2 HUGS Tag Charging Stations'. Skip RJ-45 Jumper Cables (those are wiring, not devices). Do NOT add these to any door's items list - they belong only in miscNotes.",
+  "",
   "HUGS SYMBOLS LEGEND - GROUND TRUTH COUNTS PER PAGE:",
   "Each page usually has a 'HUGS SYMBOLS' legend box (often in the top-right corner of the page, on a Securitas Healthcare title block) that lists each device type with its exact count for that page. Example numbers you may see: '14' next to EX-5500 LF Controller, '9' next to EX-5200 LF Exciter, '17' next to EX-3220 LF Exciter, '8' next to ANT-4210 LF Antenna, '14' next to Strobe-Sounder. These per-device counts are GROUND TRUTH for the page. Read them carefully before finalizing your output. The legend may also list devices we do not track ('RJ-45 Jumper Cable', 'Card Reader', 'Keypad', 'HUGS Tag Charging Station') - ignore those.",
   "",
@@ -93,8 +96,12 @@ const RESPONSE_SCHEMA = {
         additionalProperties: false,
       },
     },
+    miscNotes: {
+      type: "array",
+      items: { type: "string" },
+    },
   },
-  required: ["doors"],
+  required: ["doors", "miscNotes"],
   additionalProperties: false,
 } as const;
 
@@ -222,9 +229,12 @@ Deno.serve(async (req: Request) => {
       return json({ ok: false, error: "Model returned no text output." });
     }
 
-    let parsed: { doors?: unknown[] };
+    let parsed: { doors?: unknown[]; miscNotes?: unknown[] };
     try {
-      parsed = JSON.parse(textBlock.text) as { doors?: unknown[] };
+      parsed = JSON.parse(textBlock.text) as {
+        doors?: unknown[];
+        miscNotes?: unknown[];
+      };
     } catch {
       return json({
         ok: false,
@@ -258,7 +268,11 @@ Deno.serve(async (req: Request) => {
       })
       .filter((d) => d.name.length > 0);
 
-    return json({ ok: true, doors: normalized });
+    const miscNotes: string[] = (parsed.miscNotes ?? [])
+      .map((s) => (typeof s === "string" ? s.trim() : ""))
+      .filter((s) => s.length > 0);
+
+    return json({ ok: true, doors: normalized, miscNotes });
   } catch (err) {
     console.error("[auto-detect] error:", err);
     const message = err instanceof Error ? err.message : String(err);

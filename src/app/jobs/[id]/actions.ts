@@ -24,6 +24,7 @@ export type ImportDoorsInput = {
     items: string[];
     notes: string | null;
   }[];
+  miscNotes?: string[];
 };
 
 export type ImportDoorsResult =
@@ -90,6 +91,25 @@ export async function importDetectedDoorsAction(
       }
     }
     created++;
+  }
+
+  // Append misc-notes (non-tracked devices from the legend) to the job's
+  // notes field so the tech has a record of what else is on the map.
+  if (input.miscNotes && input.miscNotes.length > 0) {
+    const { data: jobRow } = await supabase
+      .from("jobs")
+      .select("notes")
+      .eq("id", input.jobId)
+      .single();
+    const prior = (jobRow?.notes ?? "").trim();
+    const block =
+      "Other devices on site map (from auto-detect):\n" +
+      input.miscNotes.map((n) => "- " + n).join("\n");
+    const nextNotes = prior ? prior + "\n\n" + block : block;
+    await supabase
+      .from("jobs")
+      .update({ notes: nextNotes })
+      .eq("id", input.jobId);
   }
 
   return { ok: true, created };
