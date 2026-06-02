@@ -1,23 +1,23 @@
 import Link from "next/link";
 
-type Tab = { href: string; label: string };
+type Tab = { href: string; label: string; key: "vehicles" | "jobs" | "faq" };
 
 const TABS: readonly Tab[] = [
-  { href: "/", label: "Vehicles" },
-  { href: "/jobs", label: "Jobs" },
+  { href: "/", label: "Vehicles", key: "vehicles" },
+  { href: "/jobs", label: "Jobs", key: "jobs" },
+  { href: "/faq", label: "FAQ", key: "faq" },
 ];
 
-export function SectionTabs({ active }: { active: "vehicles" | "jobs" }) {
+export function SectionTabs({
+  active,
+}: {
+  active: "vehicles" | "jobs" | "faq";
+}) {
   return (
-    <nav
-      aria-label="Sections"
-      className="mx-auto w-full max-w-md px-4 pt-3"
-    >
+    <nav aria-label="Sections" className="mx-auto w-full max-w-md px-4 pt-3">
       <div className="flex gap-2 rounded-xl bg-neutral-200/60 p-1 dark:bg-neutral-900">
         {TABS.map((tab) => {
-          const isActive =
-            (tab.label === "Vehicles" && active === "vehicles") ||
-            (tab.label === "Jobs" && active === "jobs");
+          const isActive = tab.key === active;
           return (
             <Link
               key={tab.href}

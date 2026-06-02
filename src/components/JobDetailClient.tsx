@@ -465,18 +465,14 @@ export function JobDetailClient({
 
         return (
           <>
-            <CollapsibleSection
-              title={`Doors (${doors.length})`}
-              defaultOpen
-              storageKey={`hd:job:${initialJob.id}:doors`}
-              rightHeader={headerControls}
-            >
-              {errorBanners}
-              {doors.length === 0 ? emptyState : null}
-              <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
-                Grouped by floor — tap each to expand.
-              </p>
-            </CollapsibleSection>
+            <div className="flex items-center justify-between gap-2 rounded-2xl border border-neutral-200 bg-white px-4 py-3 dark:border-neutral-800 dark:bg-neutral-900">
+              <span className="text-sm font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-300">
+                Doors ({doors.length})
+              </span>
+              {headerControls}
+            </div>
+            {errorBanners}
+            {doors.length === 0 && emptyState}
             {floorOrder.map((floor) => {
               const floorDoors = doors.filter((d) => (d.floor ?? null) === floor);
               const total = floorDoors.reduce(
