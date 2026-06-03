@@ -25,11 +25,15 @@ import {
   type Job,
   type JobDoor,
   type JobDoorItem,
+  type JobDoorItemPhoto,
   type JobPanel,
   type JobPanelDoor,
+  type JobPanelPhoto,
 } from "@/lib/jobs";
 import {
+  deleteDoorItemPhoto,
   deleteJobPhoto,
+  deletePanelPhoto,
   deleteSiteMap,
   publicJobFileUrl,
   uploadDoorItemPhoto,
@@ -64,6 +68,8 @@ export function JobDetailClient({
   initialPhotos,
   initialPanels,
   initialPanelDoors,
+  initialItemPhotos,
+  initialPanelPhotos,
   doorsLoadError,
   itemsLoadError,
   photosLoadError,
@@ -74,6 +80,8 @@ export function JobDetailClient({
   initialPhotos: JobPhoto[];
   initialPanels: JobPanel[];
   initialPanelDoors: JobPanelDoor[];
+  initialItemPhotos: JobDoorItemPhoto[];
+  initialPanelPhotos: JobPanelPhoto[];
   doorsLoadError: string | null;
   itemsLoadError: string | null;
   photosLoadError: string | null;
@@ -87,6 +95,8 @@ export function JobDetailClient({
   const [photos, setPhotos] = useState(initialPhotos);
   const [panels, setPanels] = useState(initialPanels);
   const [panelDoors, setPanelDoors] = useState(initialPanelDoors);
+  const [itemPhotos, setItemPhotos] = useState(initialItemPhotos);
+  const [panelPhotos, setPanelPhotos] = useState(initialPanelPhotos);
   const [autoDetectOpen, setAutoDetectOpen] = useState(false);
 
   // Tracks door IDs belonging to this job. job_door_items has no job_id
@@ -404,17 +414,24 @@ export function JobDetailClient({
             items={itemsByDoor.get(door.id) ?? []}
             supabaseUrl={supabaseUrl}
             jobPhotos={photos.filter((p) => p.door_id === door.id)}
+            itemPhotos={itemPhotos}
             onDoorUpdate={(updated) =>
               setDoors((current) =>
                 current.map((d) => (d.id === updated.id ? updated : d)),
               )
             }
             onDoorDelete={(id) => {
+              const doorItemIds = items
+                .filter((it) => it.door_id === id)
+                .map((it) => it.id);
               setDoors((current) => current.filter((d) => d.id !== id));
               setItems((current) =>
                 current.filter((it) => it.door_id !== id),
               );
               setPhotos((current) => current.filter((p) => p.door_id !== id));
+              setItemPhotos((current) =>
+                current.filter((p) => !doorItemIds.includes(p.item_id)),
+              );
             }}
             onItemsChange={(doorId, next) => {
               setItems((current) => [
@@ -427,6 +444,12 @@ export function JobDetailClient({
             }
             onPhotoDeleted={(id) =>
               setPhotos((current) => current.filter((p) => p.id !== id))
+            }
+            onItemPhotoAdded={(photo) =>
+              setItemPhotos((current) => [...current, photo])
+            }
+            onItemPhotoDeleted={(id) =>
+              setItemPhotos((current) => current.filter((p) => p.id !== id))
             }
           />
         );
@@ -609,6 +632,13 @@ export function JobDetailClient({
                 panelDoorIds={panelDoors
                   .filter((pd) => pd.panel_id === panel.id)
                   .map((pd) => pd.door_id)}
+                photos={panelPhotos
+                  .filter((p) => p.panel_id === panel.id)
+                  .sort(
+                    (a, b) =>
+                      a.position - b.position ||
+                      a.created_at.localeCompare(b.created_at),
+                  )}
                 supabaseUrl={supabaseUrl}
                 onPanelUpdate={(updated) =>
                   setPanels((current) =>
@@ -619,6 +649,9 @@ export function JobDetailClient({
                   setPanels((current) => current.filter((p) => p.id !== id));
                   setPanelDoors((current) =>
                     current.filter((pd) => pd.panel_id !== id),
+                  );
+                  setPanelPhotos((current) =>
+                    current.filter((p) => p.panel_id !== id),
                   );
                 }}
                 onPanelDoorsChange={(panelId, doorIds) => {
@@ -632,6 +665,14 @@ export function JobDetailClient({
                     })),
                   ]);
                 }}
+                onPanelPhotoAdded={(photo) =>
+                  setPanelPhotos((current) => [...current, photo])
+                }
+                onPanelPhotoDeleted={(id) =>
+                  setPanelPhotos((current) =>
+                    current.filter((p) => p.id !== id),
+                  )
+                }
               />
             ))}
           </ul>
@@ -1056,11 +1097,14 @@ type DoorCardProps = {
   items: JobDoorItem[];
   supabaseUrl: string;
   jobPhotos: JobPhoto[];
+  itemPhotos: JobDoorItemPhoto[];
   onDoorUpdate: (door: JobDoor) => void;
   onDoorDelete: (id: string) => void;
   onItemsChange: (doorId: string, next: JobDoorItem[]) => void;
   onPhotoAdded: (photo: JobPhoto) => void;
   onPhotoDeleted: (id: string) => void;
+  onItemPhotoAdded: (photo: JobDoorItemPhoto) => void;
+  onItemPhotoDeleted: (id: string) => void;
 };
 
 function SortableDoorCard(props: DoorCardProps) {
@@ -1113,11 +1157,14 @@ function DoorCard({
   items,
   supabaseUrl,
   jobPhotos,
+  itemPhotos,
   onDoorUpdate,
   onDoorDelete,
   onItemsChange,
   onPhotoAdded,
   onPhotoDeleted,
+  onItemPhotoAdded,
+  onItemPhotoDeleted,
   dragHandle,
 }: DoorCardProps & { dragHandle?: React.ReactNode }) {
   const expandKey = `hd:job:${job.id}:door:${door.id}`;
@@ -1366,6 +1413,13 @@ function DoorCard({
                   job={job}
                   door={door}
                   item={it}
+                  photos={itemPhotos
+                    .filter((p) => p.item_id === it.id)
+                    .sort(
+                      (a, b) =>
+                        a.position - b.position ||
+                        a.created_at.localeCompare(b.created_at),
+                    )}
                   supabaseUrl={supabaseUrl}
                   onUpdate={(updated) =>
                     onItemsChange(
@@ -1374,6 +1428,8 @@ function DoorCard({
                     )
                   }
                   onRemove={() => removeItem(it.id)}
+                  onPhotoAdded={onItemPhotoAdded}
+                  onPhotoDeleted={onItemPhotoDeleted}
                 />
               ))}
             </ul>
@@ -1465,16 +1521,22 @@ function DoorItemRow({
   job,
   door,
   item,
+  photos,
   supabaseUrl,
   onUpdate,
   onRemove,
+  onPhotoAdded,
+  onPhotoDeleted,
 }: {
   job: Job;
   door: JobDoor;
   item: JobDoorItem;
+  photos: JobDoorItemPhoto[];
   supabaseUrl: string;
   onUpdate: (item: JobDoorItem) => void;
   onRemove: () => void;
+  onPhotoAdded: (photo: JobDoorItemPhoto) => void;
+  onPhotoDeleted: (id: string) => void;
 }) {
   const [noteEditing, setNoteEditing] = useState(false);
   const [noteDraft, setNoteDraft] = useState(item.note ?? "");
@@ -1512,7 +1574,7 @@ function DoorItemRow({
       jobId: job.id,
       doorId: door.id,
       itemId: item.id,
-      oldStoragePath: item.photo_storage_path,
+      nextPosition: photos.length,
     });
     if (photoInput.current) photoInput.current.value = "";
     setUploading(false);
@@ -1520,29 +1582,17 @@ function DoorItemRow({
       alert(result.error);
       return;
     }
-    onUpdate({
-      ...item,
-      photo_storage_path: result.storage_path,
-      photo_uploaded_at: result.uploaded_at,
-    });
+    onPhotoAdded(result.photo);
   }
 
-  async function removePhoto() {
-    if (!item.photo_storage_path) return;
-    if (!confirm("Remove this photo?")) return;
+  async function removePhoto(photo: JobDoorItemPhoto) {
     const supabase = createClient();
-    await supabase.storage.from("job-files").remove([item.photo_storage_path]);
-    const { data, error } = await supabase
-      .from("job_door_items")
-      .update({ photo_storage_path: null, photo_uploaded_at: null })
-      .eq("id", item.id)
-      .select("*")
-      .single();
-    if (error || !data) {
-      alert(error?.message ?? "Couldn't remove photo.");
+    const result = await deleteDoorItemPhoto(supabase, photo);
+    if (!result.ok) {
+      alert(result.error);
       return;
     }
-    onUpdate(data as JobDoorItem);
+    onPhotoDeleted(photo.id);
   }
 
   async function toggleComplete() {
@@ -1563,7 +1613,7 @@ function DoorItemRow({
 
   const isDone = !!item.completed_at;
   const hasNote = !!item.note;
-  const hasPhoto = !!item.photo_storage_path;
+  const hasPhotos = photos.length > 0;
 
   return (
     <li
@@ -1601,21 +1651,31 @@ function DoorItemRow({
             </svg>
           )}
         </button>
-        {hasPhoto && (
-          <a
-            href={publicJobFileUrl(supabaseUrl, item.photo_storage_path!)}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label={`View ${item.name} photo`}
-            className="block h-8 w-8 flex-shrink-0 overflow-hidden rounded border border-neutral-200 dark:border-neutral-700"
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={publicJobFileUrl(supabaseUrl, item.photo_storage_path!)}
-              alt=""
-              className="h-full w-full object-cover"
-            />
-          </a>
+        {hasPhotos && (
+          <div className="flex flex-shrink-0 -space-x-1">
+            {photos.slice(0, 3).map((p) => (
+              <a
+                key={p.id}
+                href={publicJobFileUrl(supabaseUrl, p.storage_path)}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={`View ${item.name} photo`}
+                className="block h-8 w-8 overflow-hidden rounded border border-white bg-white dark:border-neutral-800 dark:bg-neutral-800"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={publicJobFileUrl(supabaseUrl, p.storage_path)}
+                  alt=""
+                  className="h-full w-full object-cover"
+                />
+              </a>
+            ))}
+            {photos.length > 3 && (
+              <span className="flex h-8 w-8 items-center justify-center rounded border border-white bg-neutral-200 text-[10px] font-semibold text-neutral-700 dark:border-neutral-800 dark:bg-neutral-700 dark:text-neutral-200">
+                +{photos.length - 3}
+              </span>
+            )}
+          </div>
         )}
         <p
           className={
@@ -1699,57 +1759,84 @@ function DoorItemRow({
       )}
 
       {actionsOpen && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          <button
-            type="button"
-            onClick={() => {
-              setNoteEditing(true);
-              setActionsOpen(false);
-            }}
-            className="rounded-full border border-neutral-300 bg-white px-3 py-1 text-xs font-medium dark:border-neutral-700 dark:bg-neutral-900"
-          >
-            {hasNote ? "Edit note" : "+ Note"}
-          </button>
-          <button
-            type="button"
-            disabled={uploading}
-            onClick={() => {
-              photoInput.current?.click();
-              setActionsOpen(false);
-            }}
-            className="rounded-full border border-neutral-300 bg-white px-3 py-1 text-xs font-medium disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900"
-          >
-            {uploading
-              ? "Uploading..."
-              : hasPhoto
-                ? "Replace photo"
-                : "+ Photo"}
-          </button>
-          {hasNote && (
+        <>
+          <div className="mt-2 flex flex-wrap gap-1.5">
             <button
               type="button"
               onClick={() => {
+                setNoteEditing(true);
                 setActionsOpen(false);
-                void saveNote(null);
               }}
-              className="rounded-full border border-red-300 bg-white px-3 py-1 text-xs font-medium text-red-600 dark:border-red-900 dark:bg-neutral-900 dark:text-red-400"
+              className="rounded-full border border-neutral-300 bg-white px-3 py-1 text-xs font-medium dark:border-neutral-700 dark:bg-neutral-900"
             >
-              Remove note
+              {hasNote ? "Edit note" : "+ Note"}
             </button>
-          )}
-          {hasPhoto && (
             <button
               type="button"
+              disabled={uploading}
               onClick={() => {
-                setActionsOpen(false);
-                void removePhoto();
+                photoInput.current?.click();
               }}
-              className="rounded-full border border-red-300 bg-white px-3 py-1 text-xs font-medium text-red-600 dark:border-red-900 dark:bg-neutral-900 dark:text-red-400"
+              className="rounded-full border border-neutral-300 bg-white px-3 py-1 text-xs font-medium disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900"
             >
-              Remove photo
+              {uploading ? "Uploading..." : "+ Photo"}
             </button>
+            {hasNote && (
+              <button
+                type="button"
+                onClick={() => {
+                  setActionsOpen(false);
+                  void saveNote(null);
+                }}
+                className="rounded-full border border-red-300 bg-white px-3 py-1 text-xs font-medium text-red-600 dark:border-red-900 dark:bg-neutral-900 dark:text-red-400"
+              >
+                Remove note
+              </button>
+            )}
+          </div>
+          {hasPhotos && (
+            <div className="mt-2 grid grid-cols-4 gap-1.5">
+              {photos.map((p) => (
+                <div
+                  key={p.id}
+                  className="group relative aspect-square overflow-hidden rounded border border-neutral-200 dark:border-neutral-800"
+                >
+                  <a
+                    href={publicJobFileUrl(supabaseUrl, p.storage_path)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={publicJobFileUrl(supabaseUrl, p.storage_path)}
+                      alt=""
+                      className="h-full w-full object-cover"
+                    />
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => void removePhoto(p)}
+                    aria-label="Delete photo"
+                    className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white"
+                  >
+                    <svg
+                      className="h-3 w-3"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="3"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                </div>
+              ))}
+            </div>
           )}
-        </div>
+        </>
       )}
 
       <input
@@ -1885,19 +1972,25 @@ function PanelCard({
   jobId,
   allDoors,
   panelDoorIds,
+  photos,
   supabaseUrl,
   onPanelUpdate,
   onPanelDelete,
   onPanelDoorsChange,
+  onPanelPhotoAdded,
+  onPanelPhotoDeleted,
 }: {
   panel: JobPanel;
   jobId: string;
   allDoors: JobDoor[];
   panelDoorIds: string[];
+  photos: JobPanelPhoto[];
   supabaseUrl: string;
   onPanelUpdate: (panel: JobPanel) => void;
   onPanelDelete: (id: string) => void;
   onPanelDoorsChange: (panelId: string, doorIds: string[]) => void;
+  onPanelPhotoAdded: (photo: JobPanelPhoto) => void;
+  onPanelPhotoDeleted: (id: string) => void;
 }) {
   const [nameDraft, setNameDraft] = useState(panel.name);
   const [commDraft, setCommDraft] = useState(panel.comm_room ?? "");
@@ -1997,7 +2090,7 @@ function PanelCard({
       file,
       jobId,
       panelId: panel.id,
-      oldStoragePath: panel.photo_storage_path,
+      nextPosition: photos.length,
     });
     if (photoInput.current) photoInput.current.value = "";
     setUploading(false);
@@ -2005,11 +2098,17 @@ function PanelCard({
       alert(result.error);
       return;
     }
-    onPanelUpdate({
-      ...panel,
-      photo_storage_path: result.storage_path,
-      photo_uploaded_at: result.uploaded_at,
-    });
+    onPanelPhotoAdded(result.photo);
+  }
+
+  async function removePhoto(photo: JobPanelPhoto) {
+    const supabase = createClient();
+    const result = await deletePanelPhoto(supabase, photo);
+    if (!result.ok) {
+      alert(result.error);
+      return;
+    }
+    onPanelPhotoDeleted(photo.id);
   }
 
   const doorMap = new Map(allDoors.map((d) => [d.id, d]));
@@ -2160,47 +2259,68 @@ function PanelCard({
 
       <div className="mt-3">
         <h4 className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-          Photo
+          Photos ({photos.length})
         </h4>
-        <div className="flex items-center gap-2">
-          {panel.photo_storage_path ? (
-            <a
-              href={publicJobFileUrl(supabaseUrl, panel.photo_storage_path)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="block h-20 w-20 overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-700"
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={publicJobFileUrl(supabaseUrl, panel.photo_storage_path)}
-                alt={`${panel.name} photo`}
-                className="h-full w-full object-cover"
-              />
-            </a>
-          ) : null}
-          <input
-            ref={photoInput}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) void uploadPhoto(f);
-            }}
-          />
-          <button
-            type="button"
-            onClick={() => photoInput.current?.click()}
-            disabled={uploading}
-            className="h-10 rounded-lg border border-neutral-300 px-3 text-xs font-medium text-neutral-700 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300"
-          >
-            {uploading
-              ? "Uploading..."
-              : panel.photo_storage_path
-                ? "Replace photo"
-                : "Add photo"}
-          </button>
-        </div>
+        {photos.length > 0 && (
+          <div className="mb-2 grid grid-cols-3 gap-1.5">
+            {photos.map((p) => (
+              <div
+                key={p.id}
+                className="group relative aspect-square overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-800"
+              >
+                <a
+                  href={publicJobFileUrl(supabaseUrl, p.storage_path)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={publicJobFileUrl(supabaseUrl, p.storage_path)}
+                    alt={`${panel.name} photo`}
+                    className="h-full w-full object-cover"
+                  />
+                </a>
+                <button
+                  type="button"
+                  onClick={() => void removePhoto(p)}
+                  aria-label="Delete photo"
+                  className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-black/60 text-white"
+                >
+                  <svg
+                    className="h-3 w-3"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <input
+          ref={photoInput}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) void uploadPhoto(f);
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => photoInput.current?.click()}
+          disabled={uploading}
+          className="h-10 w-full rounded-lg border border-dashed border-neutral-300 text-xs font-medium text-neutral-600 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-400"
+        >
+          {uploading ? "Uploading..." : "+ Add photo"}
+        </button>
       </div>
     </li>
   );

@@ -6,8 +6,10 @@ import type {
   Job,
   JobDoor,
   JobDoorItem,
+  JobDoorItemPhoto,
   JobPanel,
   JobPanelDoor,
+  JobPanelPhoto,
 } from "@/lib/jobs";
 import type { JobPhoto } from "@/lib/job-photos";
 
@@ -74,6 +76,27 @@ export default async function JobDetailPage({
           .select("*")
           .in("panel_id", panelIds);
 
+  const itemIds = (items ?? []).map((it) => it.id);
+  const { data: itemPhotos } =
+    itemIds.length === 0
+      ? { data: [] as JobDoorItemPhoto[] }
+      : await supabase
+          .from("job_door_item_photos")
+          .select("*")
+          .in("item_id", itemIds)
+          .order("position", { ascending: true })
+          .order("created_at", { ascending: true });
+
+  const { data: panelPhotos } =
+    panelIds.length === 0
+      ? { data: [] as JobPanelPhoto[] }
+      : await supabase
+          .from("job_panel_photos")
+          .select("*")
+          .in("panel_id", panelIds)
+          .order("position", { ascending: true })
+          .order("created_at", { ascending: true });
+
   return (
     <>
       <header className="sticky top-0 z-10 flex items-center gap-3 border-b border-neutral-200 bg-neutral-50/80 px-4 py-3 backdrop-blur dark:border-neutral-800 dark:bg-neutral-950/80 print:hidden">
@@ -118,6 +141,8 @@ export default async function JobDetailPage({
         initialPhotos={(photos ?? []) as JobPhoto[]}
         initialPanels={(panels ?? []) as JobPanel[]}
         initialPanelDoors={(panelDoors ?? []) as JobPanelDoor[]}
+        initialItemPhotos={(itemPhotos ?? []) as JobDoorItemPhoto[]}
+        initialPanelPhotos={(panelPhotos ?? []) as JobPanelPhoto[]}
         doorsLoadError={doorsError?.message ?? null}
         itemsLoadError={itemsError?.message ?? null}
         photosLoadError={photosError?.message ?? null}
