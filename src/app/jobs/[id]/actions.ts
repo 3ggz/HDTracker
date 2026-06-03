@@ -210,3 +210,134 @@ export async function deleteDoorItemAction(
   }
   return { ok: true };
 }
+
+// Re-creates a door (and its items, door-level photos, item-level
+// photos, and panel links) from a snapshot captured just before
+// deletion. New UUIDs are minted across the board — the originals are
+// gone — but storage objects in the bucket persist through cascade
+// deletes, so re-inserting rows that point at the same storage_path
+// resurrects the photos intact.
+export type RestoreDoorInput = {
+  jobId: string;
+  door: {
+    name: string;
+    notes: string | null;
+    floor: string | null;
+    position: number;
+    tested_at: string | null;
+  };
+  items: {
+    originalId: string;
+    name: string;
+    note: string | null;
+    photo_storage_path: string | null;
+    photo_uploaded_at: string | null;
+    completed_at: string | null;
+    position: number;
+  }[];
+  itemPhotos: {
+    originalItemId: string;
+    storage_path: string;
+    caption: string | null;
+    position: number;
+  }[];
+  jobPhotos: {
+    storage_path: string;
+    caption: string | null;
+  }[];
+  panelIds: string[];
+};
+
+export type RestoreDoorResult =
+  | {
+      ok: true;
+      doorId: string;
+      itemIdMap: Record<string, string>;
+    }
+  | { ok: false; error: string };
+
+export async function restoreDoorAction(
+  input: RestoreDoorInput,
+): Promise<RestoreDoorResult> {
+  const supabase = await createClient();
+
+  const { data: newDoor, error: doorError } = await supabase
+    .from("job_doors")
+    .insert({
+      job_id: input.jobId,
+      name: input.door.name,
+      notes: input.door.notes,
+      floor: input.door.floor,
+      position: input.door.position,
+      tested_at: input.door.tested_at,
+    })
+    .select("id")
+    .single();
+  if (doorError || !newDoor) {
+    return {
+      ok: false,
+      error: doorError?.message ?? "Couldn't restore the door.",
+    };
+  }
+
+  const itemIdMap: Record<string, string> = {};
+  if (input.items.length > 0) {
+    const rows = input.items.map((it) => ({
+      door_id: newDoor.id,
+      name: it.name,
+      note: it.note,
+      photo_storage_path: it.photo_storage_path,
+      photo_uploaded_at: it.photo_uploaded_at,
+      completed_at: it.completed_at,
+      position: it.position,
+    }));
+    const { data: insertedItems, error: itemsError } = await supabase
+      .from("job_door_items")
+      .insert(rows)
+      .select("id");
+    if (itemsError || !insertedItems) {
+      return {
+        ok: false,
+        error: `Door restored, but its items failed: ${itemsError?.message ?? "unknown error"}`,
+      };
+    }
+    insertedItems.forEach((row, idx) => {
+      itemIdMap[input.items[idx].originalId] = row.id;
+    });
+  }
+
+  if (input.itemPhotos.length > 0) {
+    const photoRows = input.itemPhotos
+      .map((p) => ({
+        item_id: itemIdMap[p.originalItemId],
+        storage_path: p.storage_path,
+        caption: p.caption,
+        position: p.position,
+      }))
+      .filter((r) => r.item_id);
+    if (photoRows.length > 0) {
+      await supabase.from("job_door_item_photos").insert(photoRows);
+    }
+  }
+
+  if (input.jobPhotos.length > 0) {
+    const photoRows = input.jobPhotos.map((p) => ({
+      job_id: input.jobId,
+      door_id: newDoor.id,
+      storage_path: p.storage_path,
+      caption: p.caption,
+    }));
+    await supabase.from("job_photos").insert(photoRows);
+  }
+
+  if (input.panelIds.length > 0) {
+    const linkRows = input.panelIds.map((panel_id, idx) => ({
+      panel_id,
+      door_id: newDoor.id,
+      position: idx,
+    }));
+    await supabase.from("job_panel_doors").insert(linkRows);
+  }
+
+  return { ok: true, doorId: newDoor.id, itemIdMap };
+}

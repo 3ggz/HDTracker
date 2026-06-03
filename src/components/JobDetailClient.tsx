@@ -46,6 +46,8 @@ import { HUGS_TEMPLATE } from "@/lib/job-templates";
 import {
   deleteDoorAction,
   deleteDoorItemAction,
+  restoreDoorAction,
+  type RestoreDoorInput,
 } from "@/app/jobs/[id]/actions";
 import { AutoDetectModal } from "./AutoDetectModal";
 
@@ -99,6 +101,17 @@ export function JobDetailClient({
   const [panelPhotos, setPanelPhotos] = useState(initialPanelPhotos);
   const [autoDetectOpen, setAutoDetectOpen] = useState(false);
   const [newDoorId, setNewDoorId] = useState<string | null>(null);
+
+  // Snapshot of the most recently deleted door, kept around so the
+  // top-of-page Undo button can ask the server to recreate it. We
+  // only track one slot at a time — a fresh delete overwrites it.
+  // Items, item-level photos, door-level photos, and panel links all
+  // ride along so the restore is a faithful copy.
+  const [lastDeletedDoor, setLastDeletedDoor] = useState<{
+    label: string;
+    payload: RestoreDoorInput;
+  } | null>(null);
+  const [restoringDoor, setRestoringDoor] = useState(false);
 
   // Tracks door IDs belonging to this job. job_door_items has no job_id
   // column so we filter incoming item events client-side via this set.
@@ -324,6 +337,76 @@ export function JobDetailClient({
     }),
   );
 
+  async function undoLastDoorDelete() {
+    if (!lastDeletedDoor || restoringDoor) return;
+    setRestoringDoor(true);
+    const result = await restoreDoorAction(lastDeletedDoor.payload);
+    setRestoringDoor(false);
+    if (!result.ok) {
+      alert(`Couldn't restore "${lastDeletedDoor.label}": ${result.error}`);
+      return;
+    }
+    // Pull fresh rows for the recreated door so local state matches
+    // the DB (new IDs, server-set timestamps, etc).
+    const supabase = createClient();
+    const [
+      { data: doorRow },
+      { data: itemRows },
+      { data: photoRows },
+      { data: itemPhotoRows },
+      { data: panelDoorRows },
+    ] = await Promise.all([
+      supabase
+        .from("job_doors")
+        .select("*")
+        .eq("id", result.doorId)
+        .single(),
+      supabase
+        .from("job_door_items")
+        .select("*")
+        .eq("door_id", result.doorId),
+      supabase
+        .from("job_photos")
+        .select("*")
+        .eq("door_id", result.doorId),
+      supabase
+        .from("job_door_item_photos")
+        .select("*")
+        .in("item_id", Object.values(result.itemIdMap)),
+      supabase
+        .from("job_panel_doors")
+        .select("*")
+        .eq("door_id", result.doorId),
+    ]);
+    if (doorRow) {
+      doorIdsRef.current.add((doorRow as JobDoor).id);
+      setDoors((current) =>
+        current.some((d) => d.id === (doorRow as JobDoor).id)
+          ? current
+          : [...current, doorRow as JobDoor],
+      );
+    }
+    if (itemRows) {
+      setItems((current) => [...current, ...(itemRows as JobDoorItem[])]);
+    }
+    if (photoRows) {
+      setPhotos((current) => [...(photoRows as JobPhoto[]), ...current]);
+    }
+    if (itemPhotoRows) {
+      setItemPhotos((current) => [
+        ...current,
+        ...(itemPhotoRows as JobDoorItemPhoto[]),
+      ]);
+    }
+    if (panelDoorRows) {
+      setPanelDoors((current) => [
+        ...current,
+        ...(panelDoorRows as JobPanelDoor[]),
+      ]);
+    }
+    setLastDeletedDoor(null);
+  }
+
   async function persistDoorOrder(reordered: JobDoor[]) {
     const supabase = createClient();
     const updates = reordered.map((d, idx) =>
@@ -360,6 +443,52 @@ export function JobDetailClient({
 
   return (
     <main className="mx-auto w-full max-w-md flex-1 space-y-3 px-4 pb-32 pt-4">
+      {lastDeletedDoor && (
+        <div className="sticky top-14 z-40 -mx-4 mb-2 flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 shadow-sm dark:border-amber-900/50 dark:bg-amber-950/60">
+          <svg
+            className="h-4 w-4 flex-shrink-0 text-amber-700 dark:text-amber-400"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <polyline points="3 6 5 6 21 6" />
+            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+          </svg>
+          <span className="flex-1 truncate text-xs font-medium text-amber-900 dark:text-amber-100">
+            Deleted &ldquo;{lastDeletedDoor.label}&rdquo;
+          </span>
+          <button
+            type="button"
+            onClick={undoLastDoorDelete}
+            disabled={restoringDoor}
+            className="h-8 rounded-md bg-amber-600 px-3 text-[11px] font-semibold text-white shadow active:scale-95 disabled:opacity-50"
+          >
+            {restoringDoor ? "Restoring..." : "Undo"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setLastDeletedDoor(null)}
+            aria-label="Dismiss"
+            className="flex h-8 w-8 items-center justify-center rounded-md text-amber-700 active:bg-amber-100 dark:text-amber-400 dark:active:bg-amber-900/60"
+          >
+            <svg
+              className="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+      )}
       {job.site_map_path && (
         <a
           href={`/jobs/${job.id}/map`}
@@ -447,9 +576,51 @@ export function JobDetailClient({
               )
             }
             onDoorDelete={(id) => {
-              const doorItemIds = items
-                .filter((it) => it.door_id === id)
-                .map((it) => it.id);
+              const deletedDoor = doors.find((d) => d.id === id);
+              const deletedItems = items.filter((it) => it.door_id === id);
+              const doorItemIds = deletedItems.map((it) => it.id);
+              const deletedItemPhotos = itemPhotos.filter((p) =>
+                doorItemIds.includes(p.item_id),
+              );
+              const deletedJobPhotos = photos.filter((p) => p.door_id === id);
+              const deletedPanelIds = panelDoors
+                .filter((pd) => pd.door_id === id)
+                .map((pd) => pd.panel_id);
+              if (deletedDoor) {
+                setLastDeletedDoor({
+                  label: deletedDoor.name,
+                  payload: {
+                    jobId: job.id,
+                    door: {
+                      name: deletedDoor.name,
+                      notes: deletedDoor.notes,
+                      floor: deletedDoor.floor,
+                      position: deletedDoor.position,
+                      tested_at: deletedDoor.tested_at,
+                    },
+                    items: deletedItems.map((it) => ({
+                      originalId: it.id,
+                      name: it.name,
+                      note: it.note,
+                      photo_storage_path: it.photo_storage_path,
+                      photo_uploaded_at: it.photo_uploaded_at,
+                      completed_at: it.completed_at,
+                      position: it.position,
+                    })),
+                    itemPhotos: deletedItemPhotos.map((p) => ({
+                      originalItemId: p.item_id,
+                      storage_path: p.storage_path,
+                      caption: p.caption,
+                      position: p.position,
+                    })),
+                    jobPhotos: deletedJobPhotos.map((p) => ({
+                      storage_path: p.storage_path,
+                      caption: p.caption,
+                    })),
+                    panelIds: deletedPanelIds,
+                  },
+                });
+              }
               setDoors((current) => current.filter((d) => d.id !== id));
               setItems((current) =>
                 current.filter((it) => it.door_id !== id),
@@ -457,6 +628,9 @@ export function JobDetailClient({
               setPhotos((current) => current.filter((p) => p.door_id !== id));
               setItemPhotos((current) =>
                 current.filter((p) => !doorItemIds.includes(p.item_id)),
+              );
+              setPanelDoors((current) =>
+                current.filter((pd) => pd.door_id !== id),
               );
             }}
             onItemsChange={(doorId, next) => {

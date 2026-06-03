@@ -74,6 +74,14 @@ export function PdfMapEditor({
   const [saving, setSaving] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
 
+  // Stack of snapshots taken just BEFORE each change, so the global
+  // Undo button can walk back across pages in the order edits happened.
+  // Capped at MAX_HISTORY to keep memory bounded on long sessions.
+  const MAX_HISTORY = 100;
+  const [history, setHistory] = useState<
+    { pageIndex: number; previous: Annotation[] }[]
+  >([]);
+
   useEffect(() => {
     let cancelled = false;
     pdfjsLib
@@ -95,16 +103,33 @@ export function PdfMapEditor({
   function updatePageAnnotations(
     pageIndex: number,
     updater: (current: Annotation[]) => Annotation[],
+    options?: { skipHistory?: boolean },
   ) {
-    setAnnotationsByPage((current) => ({
-      ...current,
-      [pageIndex]: updater(current[pageIndex] ?? []),
-    }));
+    setAnnotationsByPage((current) => {
+      const previous = current[pageIndex] ?? [];
+      const next = updater(previous);
+      if (!options?.skipHistory) {
+        setHistory((h) => {
+          const appended = [...h, { pageIndex, previous }];
+          return appended.length > MAX_HISTORY
+            ? appended.slice(appended.length - MAX_HISTORY)
+            : appended;
+        });
+      }
+      return { ...current, [pageIndex]: next };
+    });
     setDirtyPages((current) => new Set(current).add(pageIndex));
   }
 
-  function undoLast(pageIndex: number) {
-    updatePageAnnotations(pageIndex, (current) => current.slice(0, -1));
+  function undoGlobal() {
+    setHistory((h) => {
+      if (h.length === 0) return h;
+      const last = h[h.length - 1];
+      updatePageAnnotations(last.pageIndex, () => last.previous, {
+        skipHistory: true,
+      });
+      return h.slice(0, -1);
+    });
   }
 
   function clearPage(pageIndex: number) {
@@ -161,6 +186,27 @@ export function PdfMapEditor({
         <p className="truncate flex-1 text-xs font-medium text-neutral-100">
           {jobName}
         </p>
+        <button
+          type="button"
+          onClick={undoGlobal}
+          disabled={history.length === 0}
+          aria-label="Undo last edit"
+          className="flex h-9 items-center gap-1 rounded-md border border-neutral-700 px-2.5 text-[11px] font-medium text-neutral-300 disabled:opacity-40"
+        >
+          <svg
+            className="h-4 w-4"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <polyline points="9 14 4 9 9 4" />
+            <path d="M20 20v-7a4 4 0 0 0-4-4H4" />
+          </svg>
+          Undo
+        </button>
         <button
           type="button"
           onClick={() => setShowEdits((v) => !v)}
@@ -318,7 +364,6 @@ export function PdfMapEditor({
               onChange={(updater) =>
                 updatePageAnnotations(pageIndex, updater)
               }
-              onUndo={() => undoLast(pageIndex)}
               onClear={() => clearPage(pageIndex)}
             />
           ))}
@@ -379,7 +424,6 @@ function PdfPageView({
   showEdits,
   annotations,
   onChange,
-  onUndo,
   onClear,
 }: {
   pdf: PDFDocumentProxy;
@@ -392,7 +436,6 @@ function PdfPageView({
   showEdits: boolean;
   annotations: Annotation[];
   onChange: (updater: (current: Annotation[]) => Annotation[]) => void;
-  onUndo: () => void;
   onClear: () => void;
 }) {
   const pageCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -408,6 +451,7 @@ function PdfPageView({
     value: string;
   } | null>(null);
   const drawingRef = useRef<Stroke | null>(null);
+  const activePointersRef = useRef<Set<number>>(new Set());
 
   // Load page once.
   useEffect(() => {
@@ -425,21 +469,23 @@ function PdfPageView({
     if (!page) return;
     const canvas = pageCanvasRef.current;
     if (!canvas) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const viewport = page.getViewport({ scale: scale * dpr });
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    canvas.style.width = `${viewport.width / dpr}px`;
-    canvas.style.height = `${viewport.height / dpr}px`;
-    setBaseSize({
-      w: viewport.width / dpr,
-      h: viewport.height / dpr,
-    });
+    // Render at 3x oversample regardless of dpr — keeps the page
+    // sharp at any pinch-zoom level up to 3x. PDF pages are vector
+    // sources so we're not amplifying any blur, just allocating
+    // more pixels for the rasterized image.
+    const OVERSAMPLE = 3;
+    const cssViewport = page.getViewport({ scale });
+    const renderViewport = page.getViewport({ scale: scale * OVERSAMPLE });
+    canvas.width = renderViewport.width;
+    canvas.height = renderViewport.height;
+    canvas.style.width = `${cssViewport.width}px`;
+    canvas.style.height = `${cssViewport.height}px`;
+    setBaseSize({ w: cssViewport.width, h: cssViewport.height });
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     const renderTask = page.render({
       canvasContext: ctx,
-      viewport,
+      viewport: renderViewport,
     });
     renderTask.promise.catch(() => {
       // Render can be cancelled by a re-render — swallow.
@@ -453,14 +499,15 @@ function PdfPageView({
   useEffect(() => {
     const overlay = overlayCanvasRef.current;
     if (!overlay || !baseSize) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    overlay.width = baseSize.w * dpr;
-    overlay.height = baseSize.h * dpr;
+    // Match the PDF canvas's oversample so strokes stay sharp at zoom.
+    const OVERSAMPLE = 3;
+    overlay.width = baseSize.w * OVERSAMPLE;
+    overlay.height = baseSize.h * OVERSAMPLE;
     overlay.style.width = `${baseSize.w}px`;
     overlay.style.height = `${baseSize.h}px`;
     const ctx = overlay.getContext("2d");
     if (!ctx) return;
-    ctx.scale(dpr, dpr);
+    ctx.scale(OVERSAMPLE, OVERSAMPLE);
     ctx.clearRect(0, 0, baseSize.w, baseSize.h);
     if (!showEdits) return;
     for (const a of annotations) {
@@ -494,7 +541,51 @@ function PdfPageView({
     };
   }
 
+  function abandonStroke() {
+    drawingRef.current = null;
+    // Re-render the overlay from the saved state to clear any
+    // in-progress line we'd drawn live.
+    const overlay = overlayCanvasRef.current;
+    if (!overlay || !baseSize) return;
+    const ctx = overlay.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const OVERSAMPLE = 3;
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    ctx.scale(OVERSAMPLE, OVERSAMPLE);
+    if (!showEdits) return;
+    for (const a of annotations) {
+      if (a.kind === "pen") {
+        ctx.strokeStyle = a.color;
+        ctx.lineWidth = a.width;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.beginPath();
+        a.points.forEach((pt, i) => {
+          const px = pt[0] * baseSize.w;
+          const py = pt[1] * baseSize.h;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+        ctx.stroke();
+      } else if (a.kind === "text") {
+        ctx.fillStyle = a.color;
+        ctx.font = `${a.size}px system-ui, -apple-system, sans-serif`;
+        ctx.textBaseline = "top";
+        ctx.fillText(a.text, a.x * baseSize.w, a.y * baseSize.h);
+      }
+    }
+  }
+
   function onPointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
+    activePointersRef.current.add(e.pointerId);
+    // Second finger landed — user is pinch-zooming. Drop the
+    // in-progress stroke and stop intercepting so the browser can
+    // handle the gesture.
+    if (activePointersRef.current.size > 1) {
+      abandonStroke();
+      return;
+    }
     if (tool === "view" || !baseSize) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     const { x, y } = toNormalized(e);
@@ -508,8 +599,7 @@ function PdfPageView({
     } else if (tool === "text") {
       setTextInput({ x, y, value: "" });
     } else if (tool === "eraser") {
-      // Hit-test: remove any annotation under the pointer.
-      const hitTol = 0.02; // 2% of page
+      const hitTol = 0.02;
       onChange((current) =>
         current.filter((a) => {
           if (a.kind === "text") {
@@ -531,18 +621,15 @@ function PdfPageView({
 
   function onPointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
     if (tool !== "pen") return;
+    if (activePointersRef.current.size > 1) return;
     const stroke = drawingRef.current;
     if (!stroke) return;
     const { x, y } = toNormalized(e);
     stroke.points.push([x, y]);
-    // Live-draw the latest segment without going through state.
     const overlay = overlayCanvasRef.current;
     if (!overlay || !baseSize) return;
     const ctx = overlay.getContext("2d");
     if (!ctx) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    // ctx is already pre-scaled by dpr from the last redraw, so we
-    // draw in CSS pixels.
     ctx.strokeStyle = stroke.color;
     ctx.lineWidth = stroke.width;
     ctx.lineCap = "round";
@@ -553,10 +640,10 @@ function PdfPageView({
     ctx.moveTo(last[0] * baseSize.w, last[1] * baseSize.h);
     ctx.lineTo(x * baseSize.w, y * baseSize.h);
     ctx.stroke();
-    void dpr;
   }
 
-  function onPointerUp() {
+  function onPointerUp(e: React.PointerEvent<HTMLCanvasElement>) {
+    activePointersRef.current.delete(e.pointerId);
     if (tool !== "pen") return;
     const stroke = drawingRef.current;
     drawingRef.current = null;
@@ -589,24 +676,14 @@ function PdfPageView({
         <span className="text-[10px] font-semibold uppercase tracking-wide text-neutral-500">
           Page {pageIndex + 1}
         </span>
-        <span className="flex gap-1">
-          <button
-            type="button"
-            onClick={onUndo}
-            disabled={annotations.length === 0}
-            className="h-7 rounded border border-neutral-300 px-2 text-[10px] font-medium text-neutral-700 disabled:opacity-40"
-          >
-            Undo
-          </button>
-          <button
-            type="button"
-            onClick={onClear}
-            disabled={annotations.length === 0}
-            className="h-7 rounded border border-red-300 px-2 text-[10px] font-medium text-red-600 disabled:opacity-40"
-          >
-            Clear
-          </button>
-        </span>
+        <button
+          type="button"
+          onClick={onClear}
+          disabled={annotations.length === 0}
+          className="h-7 rounded border border-red-300 px-2 text-[10px] font-medium text-red-600 disabled:opacity-40"
+        >
+          Clear page
+        </button>
       </div>
       <div
         ref={wrapperRef}
