@@ -1229,6 +1229,26 @@ function DoorCard({
     onDoorUpdate(data as JobDoor);
   }
 
+  const [savedFlash, setSavedFlash] = useState(false);
+  const doorDirty =
+    nameDraft.trim() !== door.name ||
+    (notesDraft.trim() || null) !== door.notes ||
+    (floorDraft.trim() || null) !== door.floor;
+  async function saveAll() {
+    const patch: Partial<JobDoor> = {};
+    const trimmedName = nameDraft.trim();
+    if (trimmedName && trimmedName !== door.name) patch.name = trimmedName;
+    const nextNotes = notesDraft.trim() || null;
+    if (nextNotes !== door.notes) patch.notes = nextNotes;
+    const nextFloor = floorDraft.trim() || null;
+    if (nextFloor !== door.floor) patch.floor = nextFloor;
+    if (Object.keys(patch).length > 0) {
+      await commitField(patch);
+    }
+    setSavedFlash(true);
+    window.setTimeout(() => setSavedFlash(false), 1500);
+  }
+
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -1480,6 +1500,27 @@ function DoorCard({
               onAdded={onPhotoAdded}
               onDeleted={onPhotoDeleted}
             />
+          </div>
+
+          <div className="mt-3 border-t border-neutral-200 pt-2 dark:border-neutral-800">
+            <button
+              type="button"
+              onClick={saveAll}
+              className={
+                "h-10 w-full rounded-lg text-sm font-medium transition " +
+                (doorDirty
+                  ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
+                  : savedFlash
+                    ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200"
+                    : "border border-emerald-300 bg-emerald-50/60 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300")
+              }
+            >
+              {doorDirty
+                ? "Save changes"
+                : savedFlash
+                  ? "✓ Saved"
+                  : "✓ All saved"}
+            </button>
           </div>
         </>
       )}
@@ -2000,7 +2041,12 @@ function PanelCard({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [pickingDoor, setPickingDoor] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(false);
   const photoInput = useRef<HTMLInputElement>(null);
+
+  const panelDirty =
+    nameDraft.trim() !== panel.name ||
+    (commDraft.trim() || null) !== panel.comm_room;
 
   if (panel.name !== syncedName) {
     if (nameDraft === syncedName) setNameDraft(panel.name);
@@ -2024,6 +2070,17 @@ function PanelCard({
       return;
     }
     onPanelUpdate(data as JobPanel);
+  }
+
+  async function savePanel() {
+    const patch: Partial<JobPanel> = {};
+    const trimmedName = nameDraft.trim();
+    if (trimmedName && trimmedName !== panel.name) patch.name = trimmedName;
+    const nextComm = commDraft.trim() || null;
+    if (nextComm !== panel.comm_room) patch.comm_room = nextComm;
+    if (Object.keys(patch).length > 0) await commit(patch);
+    setSavedFlash(true);
+    window.setTimeout(() => setSavedFlash(false), 1500);
   }
 
   async function deletePanel() {
@@ -2320,6 +2377,27 @@ function PanelCard({
           className="h-10 w-full rounded-lg border border-dashed border-neutral-300 text-xs font-medium text-neutral-600 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-400"
         >
           {uploading ? "Uploading..." : "+ Add photo"}
+        </button>
+      </div>
+
+      <div className="mt-3 border-t border-neutral-200 pt-2 dark:border-neutral-800">
+        <button
+          type="button"
+          onClick={savePanel}
+          className={
+            "h-10 w-full rounded-lg text-sm font-medium transition " +
+            (panelDirty
+              ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
+              : savedFlash
+                ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200"
+                : "border border-emerald-300 bg-emerald-50/60 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300")
+          }
+        >
+          {panelDirty
+            ? "Save changes"
+            : savedFlash
+              ? "✓ Saved"
+              : "✓ All saved"}
         </button>
       </div>
     </li>
