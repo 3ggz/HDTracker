@@ -1491,6 +1491,11 @@ function DoorCard({
     onDoorDelete(door.id);
   }
 
+  async function toggleTested() {
+    const next = door.tested_at ? null : new Date().toISOString();
+    await commitField({ tested_at: next });
+  }
+
   async function addItem(name: string) {
     const trimmed = name.trim();
     if (!trimmed) return;
@@ -1584,15 +1589,46 @@ function DoorCard({
             {completedCount}/{items.length}
           </span>
         )}
-        {door.tested_at && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            void toggleTested();
+          }}
+          aria-pressed={!!door.tested_at}
+          aria-label={door.tested_at ? "Mark not tested" : "Mark tested"}
+          title={door.tested_at ? "Tested — tap to clear" : "Tap to mark tested"}
+          className={
+            "flex h-8 items-center gap-1 rounded-full border px-2 text-[10px] font-semibold uppercase transition " +
+            (door.tested_at
+              ? "border-emerald-300 bg-emerald-100 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+              : "border-neutral-300 bg-white text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400")
+          }
+        >
           <span
-            className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
-            aria-label="Tested"
-            title="Tested"
+            className={
+              "flex h-4 w-4 items-center justify-center rounded border " +
+              (door.tested_at
+                ? "border-emerald-600 bg-emerald-600 text-white"
+                : "border-neutral-400 bg-white dark:border-neutral-500 dark:bg-neutral-900")
+            }
           >
-            ✓ Tested
+            {door.tested_at && (
+              <svg
+                className="h-3 w-3"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            )}
           </span>
-        )}
+          Tested
+        </button>
         {confirmingDelete ? (
           <>
             <button
@@ -1745,10 +1781,7 @@ function DoorCard({
           <div className="mt-3 border-t border-neutral-200 pt-2 dark:border-neutral-800">
             <button
               type="button"
-              onClick={async () => {
-                const next = door.tested_at ? null : new Date().toISOString();
-                await commitField({ tested_at: next });
-              }}
+              onClick={() => void toggleTested()}
               aria-pressed={!!door.tested_at}
               className={
                 "mb-2 flex h-10 w-full items-center justify-center gap-2 rounded-lg border text-sm font-medium transition " +

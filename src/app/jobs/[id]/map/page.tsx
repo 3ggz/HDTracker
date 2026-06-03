@@ -1,3 +1,4 @@
+import type { Viewport } from "next";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
@@ -6,6 +7,17 @@ import {
   PdfMapEditor,
   type Annotation,
 } from "@/components/PdfMapEditor";
+
+// The map editor provides its own +/- and pinch-to-scale controls. We
+// disable the OS-level visual-viewport pinch on this route so iOS
+// Safari doesn't move the fixed toolbar offscreen when the user
+// pinches the page.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+};
 
 export default async function JobMapPage({
   params,
