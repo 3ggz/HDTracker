@@ -98,6 +98,7 @@ export function JobDetailClient({
   const [itemPhotos, setItemPhotos] = useState(initialItemPhotos);
   const [panelPhotos, setPanelPhotos] = useState(initialPanelPhotos);
   const [autoDetectOpen, setAutoDetectOpen] = useState(false);
+  const [newDoorId, setNewDoorId] = useState<string | null>(null);
 
   // Tracks door IDs belonging to this job. job_door_items has no job_id
   // column so we filter incoming item events client-side via this set.
@@ -359,6 +360,30 @@ export function JobDetailClient({
 
   return (
     <main className="mx-auto w-full max-w-md flex-1 space-y-3 px-4 pb-32 pt-4">
+      {job.site_map_path && (
+        <a
+          href={`/jobs/${job.id}/map`}
+          aria-label="View site map fullscreen"
+          className="fixed right-4 top-16 z-30 flex h-11 items-center gap-1.5 rounded-full bg-indigo-600 px-3 text-xs font-semibold text-white shadow-lg active:scale-95"
+        >
+          <svg
+            className="h-4 w-4"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M9 20l-5.4-2.7A2 2 0 0 1 2.5 15.5V5.2a1 1 0 0 1 1.5-.9L9 7" />
+            <path d="M9 7v13" />
+            <path d="M9 7l6-3 6 3" />
+            <path d="M21 4.2v10.3a2 2 0 0 1-1.1 1.8L15 19" />
+            <path d="M15 7v13" />
+          </svg>
+          View map
+        </a>
+      )}
       <JobSummaryCard
         job={job}
         completionStats={completionStats}
@@ -401,6 +426,7 @@ export function JobDetailClient({
               onAdded={(door, newItems) => {
                 setDoors((d) => [...d, door]);
                 if (newItems.length) setItems((i) => [...i, ...newItems]);
+                setNewDoorId(door.id);
               }}
             />
           </div>
@@ -451,6 +477,8 @@ export function JobDetailClient({
             onItemPhotoDeleted={(id) =>
               setItemPhotos((current) => current.filter((p) => p.id !== id))
             }
+            isNewlyAdded={door.id === newDoorId}
+            onFocusedNewlyAdded={() => setNewDoorId(null)}
           />
         );
 
@@ -998,22 +1026,35 @@ function AddDoorMenu({
   existingCount: number;
   onAdded: (door: JobDoor, items: JobDoorItem[]) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const storageKey = `hd:job:${jobId}:default_door_template`;
+  const [template, setTemplate] = useState<"hugs" | "blank">("hugs");
+  const [templateSynced, setTemplateSynced] = useState(false);
   const [pending, setPending] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    function onDocClick(e: MouseEvent) {
-      if (!containerRef.current?.contains(e.target as Node)) setOpen(false);
+  // One-shot read from localStorage on first client render.
+  if (typeof window !== "undefined" && !templateSynced) {
+    setTemplateSynced(true);
+    try {
+      const stored = localStorage.getItem(storageKey);
+      if (stored === "hugs" || stored === "blank") setTemplate(stored);
+    } catch {
+      // ignore
     }
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [open]);
+  }
 
-  async function addDoor(template: "blank" | "hugs") {
+  function updateTemplate(next: "hugs" | "blank") {
+    setTemplate(next);
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem(storageKey, next);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  async function addDoor() {
     setPending(true);
-    setOpen(false);
     const supabase = createClient();
     const position = existingCount;
     const defaultName =
@@ -1057,36 +1098,24 @@ function AddDoorMenu({
   }
 
   return (
-    <div ref={containerRef} className="relative">
+    <div className="flex items-center gap-1">
+      <select
+        aria-label="Door template"
+        value={template}
+        onChange={(e) => updateTemplate(e.target.value as "hugs" | "blank")}
+        className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-[11px] font-medium text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+      >
+        <option value="hugs">HUGS</option>
+        <option value="blank">Blank</option>
+      </select>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={addDoor}
         disabled={pending}
         className="h-9 rounded-lg bg-neutral-900 px-3 text-xs font-medium text-white transition active:scale-95 disabled:opacity-60 dark:bg-neutral-100 dark:text-neutral-900"
       >
         {pending ? "Adding..." : "+ Door"}
       </button>
-      {open && (
-        <div className="absolute right-0 z-20 mt-1 w-48 rounded-xl border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
-          <button
-            type="button"
-            onClick={() => addDoor("hugs")}
-            className="block w-full rounded-lg px-3 py-2 text-left text-sm font-medium active:bg-neutral-100 dark:active:bg-neutral-800"
-          >
-            HUGS template
-            <span className="block text-[11px] font-normal text-neutral-500 dark:text-neutral-400">
-              5500 Exciter, Strobe, HUGS 8 board
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => addDoor("blank")}
-            className="block w-full rounded-lg px-3 py-2 text-left text-sm font-medium active:bg-neutral-100 dark:active:bg-neutral-800"
-          >
-            Blank door
-          </button>
-        </div>
-      )}
     </div>
   );
 }
@@ -1105,6 +1134,8 @@ type DoorCardProps = {
   onPhotoDeleted: (id: string) => void;
   onItemPhotoAdded: (photo: JobDoorItemPhoto) => void;
   onItemPhotoDeleted: (id: string) => void;
+  isNewlyAdded?: boolean;
+  onFocusedNewlyAdded?: () => void;
 };
 
 function SortableDoorCard(props: DoorCardProps) {
@@ -1165,10 +1196,32 @@ function DoorCard({
   onPhotoDeleted,
   onItemPhotoAdded,
   onItemPhotoDeleted,
+  isNewlyAdded,
+  onFocusedNewlyAdded,
   dragHandle,
 }: DoorCardProps & { dragHandle?: React.ReactNode }) {
   const expandKey = `hd:job:${job.id}:door:${door.id}`;
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(!!isNewlyAdded);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+
+  // For newly added doors: scroll into view and focus the name input
+  // exactly once, then tell the parent so it can reset the marker.
+  const [didFocus, setDidFocus] = useState(false);
+  useEffect(() => {
+    if (!isNewlyAdded || didFocus) return;
+    setDidFocus(true);
+    rootRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Slight delay so iOS Safari attributes the focus to the same
+    // gesture as the tap that created the door (otherwise the
+    // keyboard sometimes refuses to open).
+    const t = window.setTimeout(() => {
+      nameInputRef.current?.focus();
+      nameInputRef.current?.select();
+      onFocusedNewlyAdded?.();
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [isNewlyAdded, didFocus, onFocusedNewlyAdded]);
   const [expandSynced, setExpandSynced] = useState(false);
   if (typeof window !== "undefined" && !expandSynced) {
     setExpandSynced(true);
@@ -1304,7 +1357,10 @@ function DoorCard({
   const completedCount = items.filter((it) => it.completed_at).length;
 
   return (
-    <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
+    <div
+      ref={rootRef}
+      className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950"
+    >
       <div className="flex items-center gap-2">
         {dragHandle}
         <button
@@ -1327,6 +1383,7 @@ function DoorCard({
           </svg>
         </button>
         <input
+          ref={nameInputRef}
           className={inputClass + " flex-1"}
           value={nameDraft}
           onChange={(e) => setNameDraft(e.target.value)}

@@ -79,10 +79,10 @@ export type JobPanelPhoto = {
 export const CANONICAL_ITEM_ORDER: readonly string[] = [
   "HUGS 8 board",
   "5500 Exciter",
-  "Strobe",
   "5200 Exciter",
   "3220 Exciter",
   "4210 Antenna",
+  "Strobe",
   "Door contact",
   "REX",
 ];
