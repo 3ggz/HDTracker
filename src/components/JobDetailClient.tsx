@@ -1410,6 +1410,15 @@ function DoorCard({
             {completedCount}/{items.length}
           </span>
         )}
+        {door.tested_at && (
+          <span
+            className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+            aria-label="Tested"
+            title="Tested"
+          >
+            ✓ Tested
+          </span>
+        )}
         {confirmingDelete ? (
           <>
             <button
@@ -1560,6 +1569,44 @@ function DoorCard({
           </div>
 
           <div className="mt-3 border-t border-neutral-200 pt-2 dark:border-neutral-800">
+            <button
+              type="button"
+              onClick={async () => {
+                const next = door.tested_at ? null : new Date().toISOString();
+                await commitField({ tested_at: next });
+              }}
+              aria-pressed={!!door.tested_at}
+              className={
+                "mb-2 flex h-10 w-full items-center justify-center gap-2 rounded-lg border text-sm font-medium transition " +
+                (door.tested_at
+                  ? "border-emerald-500 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200"
+                  : "border-neutral-300 bg-white text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300")
+              }
+            >
+              <span
+                className={
+                  "flex h-5 w-5 items-center justify-center rounded border " +
+                  (door.tested_at
+                    ? "border-emerald-600 bg-emerald-600 text-white"
+                    : "border-neutral-400 bg-white dark:border-neutral-500 dark:bg-neutral-900")
+                }
+              >
+                {door.tested_at && (
+                  <svg
+                    className="h-3.5 w-3.5"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                )}
+              </span>
+              Tested
+            </button>
             <button
               type="button"
               onClick={saveAll}
