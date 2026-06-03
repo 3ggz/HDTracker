@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import type {
   PDFDocumentProxy,
@@ -81,6 +81,100 @@ export function PdfMapEditor({
   const [history, setHistory] = useState<
     { pageIndex: number; previous: Annotation[] }[]
   >([]);
+
+  // Pinch-to-zoom is handled here, at the container level, rather than
+  // letting the browser do it. Three problems with browser pinch zoom:
+  //   1. Fixed-position toolbar scrolls out of view (mobile fixed
+  //      anchors to the layout viewport, not the visual one).
+  //   2. The pen tool receives bogus pointermove events between the two
+  //      finger positions while pinching, producing scribbles.
+  //   3. Browser zoom is a CSS transform — the PDF canvas pixels stay
+  //      the same, so the map blurs.
+  // Our handler drives `scale` state, which re-renders the PDF at the
+  // new resolution via PDF.js. Stays sharp at any zoom.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
+  const pinchRef = useRef<{
+    active: boolean;
+    startDist: number;
+    startScale: number;
+  }>({ active: false, startDist: 0, startScale: 1 });
+  // Pages register their "abandon stroke" callback so we can cancel an
+  // in-progress pen line the moment a 2nd finger lands.
+  const abandonCallbacksRef = useRef<Set<() => void>>(new Set());
+  const registerAbandon = useCallback((cb: () => void) => {
+    abandonCallbacksRef.current.add(cb);
+    return () => {
+      abandonCallbacksRef.current.delete(cb);
+    };
+  }, []);
+  const pinchActiveRef = useRef(false);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    function onTouchStart(e: TouchEvent) {
+      if (e.touches.length >= 2) {
+        // Stop any in-progress pen stroke on every registered page.
+        pinchActiveRef.current = true;
+        abandonCallbacksRef.current.forEach((cb) => cb());
+        const t1 = e.touches[0];
+        const t2 = e.touches[1];
+        pinchRef.current = {
+          active: true,
+          startDist: Math.hypot(
+            t2.clientX - t1.clientX,
+            t2.clientY - t1.clientY,
+          ),
+          startScale: scaleRef.current,
+        };
+        e.preventDefault();
+      }
+    }
+
+    function onTouchMove(e: TouchEvent) {
+      if (pinchRef.current.active && e.touches.length >= 2) {
+        e.preventDefault();
+        const t1 = e.touches[0];
+        const t2 = e.touches[1];
+        const dist = Math.hypot(
+          t2.clientX - t1.clientX,
+          t2.clientY - t1.clientY,
+        );
+        const ratio = dist / pinchRef.current.startDist;
+        const next = Math.max(
+          0.5,
+          Math.min(4, pinchRef.current.startScale * ratio),
+        );
+        setScale(next);
+      }
+    }
+
+    function onTouchEnd(e: TouchEvent) {
+      if (e.touches.length < 2) {
+        pinchRef.current.active = false;
+        // Tiny delay before letting the canvas accept pointer input
+        // again so a finger that lifts last doesn't immediately register
+        // as a new stroke.
+        window.setTimeout(() => {
+          pinchActiveRef.current = false;
+        }, 100);
+      }
+    }
+
+    el.addEventListener("touchstart", onTouchStart, { passive: false });
+    el.addEventListener("touchmove", onTouchMove, { passive: false });
+    el.addEventListener("touchend", onTouchEnd);
+    el.addEventListener("touchcancel", onTouchEnd);
+    return () => {
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("touchend", onTouchEnd);
+      el.removeEventListener("touchcancel", onTouchEnd);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -335,8 +429,15 @@ export function PdfMapEditor({
       </div>
 
       <div
+        ref={scrollRef}
         className="flex-1 overflow-auto bg-neutral-100 p-2"
-        style={{ touchAction: tool === "view" ? "auto" : "none" }}
+        // pan-x pan-y allows scrolling but blocks browser pinch-zoom;
+        // we handle pinch ourselves above. None for pen/text/eraser so
+        // the canvas can capture single-finger drawing without the
+        // browser turning it into a scroll gesture.
+        style={{
+          touchAction: tool === "view" ? "pan-x pan-y" : "none",
+        }}
       >
         {loadError && (
           <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -365,6 +466,8 @@ export function PdfMapEditor({
                 updatePageAnnotations(pageIndex, updater)
               }
               onClear={() => clearPage(pageIndex)}
+              pinchActiveRef={pinchActiveRef}
+              registerAbandon={registerAbandon}
             />
           ))}
       </div>
@@ -425,6 +528,8 @@ function PdfPageView({
   annotations,
   onChange,
   onClear,
+  pinchActiveRef,
+  registerAbandon,
 }: {
   pdf: PDFDocumentProxy;
   pageIndex: number;
@@ -437,6 +542,8 @@ function PdfPageView({
   annotations: Annotation[];
   onChange: (updater: (current: Annotation[]) => Annotation[]) => void;
   onClear: () => void;
+  pinchActiveRef: React.RefObject<boolean>;
+  registerAbandon: (cb: () => void) => () => void;
 }) {
   const pageCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -452,6 +559,14 @@ function PdfPageView({
   } | null>(null);
   const drawingRef = useRef<Stroke | null>(null);
   const activePointersRef = useRef<Set<number>>(new Set());
+
+  // Keep a stable handle on the latest abandonStroke so the registry
+  // can call it without re-subscribing on every render.
+  const abandonStrokeRef = useRef<() => void>(() => {});
+
+  useEffect(() => {
+    return registerAbandon(() => abandonStrokeRef.current());
+  }, [registerAbandon]);
 
   // Load page once.
   useEffect(() => {
@@ -469,11 +584,14 @@ function PdfPageView({
     if (!page) return;
     const canvas = pageCanvasRef.current;
     if (!canvas) return;
-    // Render at 3x oversample regardless of dpr — keeps the page
-    // sharp at any pinch-zoom level up to 3x. PDF pages are vector
-    // sources so we're not amplifying any blur, just allocating
-    // more pixels for the rasterized image.
-    const OVERSAMPLE = 3;
+    // Render at 2x the device pixel ratio so the page stays sharp even
+    // when the user pinch-zooms our own scale all the way up. PDF pages
+    // are vector — we're not amplifying blur, just allocating more
+    // pixels for the rasterized image. Capped at 4 so a phone with
+    // dpr=3 doesn't allocate 36x memory.
+    const dpr =
+      typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+    const OVERSAMPLE = Math.min(4, Math.max(2, Math.ceil(dpr * 2)));
     const cssViewport = page.getViewport({ scale });
     const renderViewport = page.getViewport({ scale: scale * OVERSAMPLE });
     canvas.width = renderViewport.width;
@@ -500,7 +618,9 @@ function PdfPageView({
     const overlay = overlayCanvasRef.current;
     if (!overlay || !baseSize) return;
     // Match the PDF canvas's oversample so strokes stay sharp at zoom.
-    const OVERSAMPLE = 3;
+    const dpr =
+      typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+    const OVERSAMPLE = Math.min(4, Math.max(2, Math.ceil(dpr * 2)));
     overlay.width = baseSize.w * OVERSAMPLE;
     overlay.height = baseSize.h * OVERSAMPLE;
     overlay.style.width = `${baseSize.w}px`;
@@ -541,8 +661,10 @@ function PdfPageView({
     };
   }
 
+  abandonStrokeRef.current = abandonStroke;
   function abandonStroke() {
     drawingRef.current = null;
+    activePointersRef.current.clear();
     // Re-render the overlay from the saved state to clear any
     // in-progress line we'd drawn live.
     const overlay = overlayCanvasRef.current;
@@ -550,7 +672,9 @@ function PdfPageView({
     const ctx = overlay.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    const OVERSAMPLE = 3;
+    const dpr =
+      typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+    const OVERSAMPLE = Math.min(4, Math.max(2, Math.ceil(dpr * 2)));
     ctx.clearRect(0, 0, overlay.width, overlay.height);
     ctx.scale(OVERSAMPLE, OVERSAMPLE);
     if (!showEdits) return;
@@ -578,10 +702,13 @@ function PdfPageView({
   }
 
   function onPointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
+    // Pinch in progress (detected at container level via touch events,
+    // or signaled by a 2nd local pointer) — drop any stroke and bail.
+    if (pinchActiveRef.current) {
+      abandonStroke();
+      return;
+    }
     activePointersRef.current.add(e.pointerId);
-    // Second finger landed — user is pinch-zooming. Drop the
-    // in-progress stroke and stop intercepting so the browser can
-    // handle the gesture.
     if (activePointersRef.current.size > 1) {
       abandonStroke();
       return;
@@ -621,6 +748,10 @@ function PdfPageView({
 
   function onPointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
     if (tool !== "pen") return;
+    if (pinchActiveRef.current) {
+      if (drawingRef.current) abandonStroke();
+      return;
+    }
     if (activePointersRef.current.size > 1) return;
     const stroke = drawingRef.current;
     if (!stroke) return;
