@@ -49,7 +49,14 @@ export async function completePasswordReset(
     };
   }
 
-  const { data: approval, error: approvalError } = await supabase
+  // user_approvals has restrictive RLS — only the row's owner (matched
+  // via auth.uid()) or the admin can read it. The caller here is
+  // unauthenticated (they're trying to reset because they can't log
+  // in), so we read through the service-role client to bypass RLS.
+  // Safe because we already confirmed an approved, unfulfilled,
+  // unexpired reset request exists for this exact email above.
+  const admin = createAdminClient();
+  const { data: approval, error: approvalError } = await admin
     .from("user_approvals")
     .select("user_id")
     .eq("email", normalizedEmail)
@@ -59,7 +66,6 @@ export async function completePasswordReset(
     return { ok: false, error: "Account not found for this email." };
   }
 
-  const admin = createAdminClient();
   const { error: updateError } = await admin.auth.admin.updateUserById(
     approval.user_id,
     { password: newPassword },
