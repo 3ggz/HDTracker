@@ -2,7 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { isAdminEmail } from "@/lib/admin";
 
-const PUBLIC_PATH_PREFIXES = ["/signin", "/auth"];
+const PUBLIC_PATH_PREFIXES = ["/signin", "/auth", "/forgot-password"];
 const PENDING_PATH = "/pending-approval";
 
 export async function updateSession(request: NextRequest) {

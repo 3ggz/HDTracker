@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { ALLOWED_EMAIL_DOMAIN, isAllowedEmail } from "@/lib/email";
@@ -225,14 +226,24 @@ export default function SignInPage() {
           </button>
 
           {stage === "password" && (
-            <button
-              type="button"
-              onClick={onUseDifferentEmail}
-              disabled={pending}
-              className="block w-full text-center text-sm text-neutral-600 underline-offset-4 hover:underline disabled:opacity-60 dark:text-neutral-400"
-            >
-              Use a different email
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={onUseDifferentEmail}
+                disabled={pending}
+                className="block w-full text-center text-sm text-neutral-600 underline-offset-4 hover:underline disabled:opacity-60 dark:text-neutral-400"
+              >
+                Use a different email
+              </button>
+              {!isNewUser && (
+                <Link
+                  href="/forgot-password"
+                  className="block w-full text-center text-sm text-neutral-600 underline-offset-4 hover:underline dark:text-neutral-400"
+                >
+                  Forgot password?
+                </Link>
+              )}
+            </>
           )}
 
           <p className="pt-2 text-center text-xs text-neutral-500 dark:text-neutral-500">
