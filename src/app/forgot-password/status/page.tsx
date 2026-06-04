@@ -104,14 +104,21 @@ function ResetStatusInner() {
     }
     setPending(true);
     setError(null);
-    const result = await completePasswordReset(email, password);
-    setPending(false);
-    if (!result.ok) {
-      setError(result.error);
-      return;
+    try {
+      const result = await completePasswordReset(email, password);
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      setDone(true);
+      window.setTimeout(() => router.replace("/signin"), 1800);
+    } catch (err) {
+      // Action threw (network blip, server crash, env-var missing) —
+      // surface it instead of leaving the button spinning.
+      setError(err instanceof Error ? err.message : "Couldn't save.");
+    } finally {
+      setPending(false);
     }
-    setDone(true);
-    window.setTimeout(() => router.replace("/signin"), 1800);
   }
 
   return (
