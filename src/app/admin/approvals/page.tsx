@@ -3,12 +3,13 @@ import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { ApprovalRow } from "@/components/ApprovalRow";
 import { ResetRequestRow } from "@/components/ResetRequestRow";
+import { ClearExpiredResetsButton } from "@/components/ClearExpiredResetsButton";
 import { LiveUpdater } from "@/components/LiveUpdater";
 import { isAdminEmail } from "@/lib/admin";
-
-// Anything in pending state older than this is shelved under
-// "Expired" instead of sitting in the actionable queue forever.
-const RESET_EXPIRY_MS = 30 * 60 * 1000;
+import {
+  APPROVAL_EXPIRY_MS,
+  PENDING_EXPIRY_MS,
+} from "@/lib/admin-resets";
 
 export default async function ApprovalsPage() {
   const supabase = await createClient();
@@ -44,21 +45,34 @@ export default async function ApprovalsPage() {
 
   const resetRows = resets ?? [];
   const now = Date.now();
-  const isPendingAndFresh = (r: { approved_at: string | null; requested_at: string }) =>
+  const isFreshPending = (r: {
+    approved_at: string | null;
+    requested_at: string;
+  }) =>
     !r.approved_at &&
-    now - new Date(r.requested_at).getTime() <= RESET_EXPIRY_MS;
+    now - new Date(r.requested_at).getTime() <= PENDING_EXPIRY_MS;
+  const isFreshApproved = (r: {
+    approved_at: string | null;
+    fulfilled_at: string | null;
+  }) =>
+    !!r.approved_at &&
+    !r.fulfilled_at &&
+    now - new Date(r.approved_at).getTime() <= APPROVAL_EXPIRY_MS;
   const isExpired = (r: {
     approved_at: string | null;
     requested_at: string;
     fulfilled_at: string | null;
-  }) =>
-    !r.fulfilled_at &&
-    !r.approved_at &&
-    now - new Date(r.requested_at).getTime() > RESET_EXPIRY_MS;
-  const pendingResets = resetRows.filter(isPendingAndFresh);
-  const waitingResets = resetRows.filter(
-    (r) => r.approved_at && !r.fulfilled_at,
-  );
+  }) => {
+    if (r.fulfilled_at) return false;
+    if (!r.approved_at) {
+      return (
+        now - new Date(r.requested_at).getTime() > PENDING_EXPIRY_MS
+      );
+    }
+    return now - new Date(r.approved_at).getTime() > APPROVAL_EXPIRY_MS;
+  };
+  const pendingResets = resetRows.filter(isFreshPending);
+  const waitingResets = resetRows.filter(isFreshApproved);
   const fulfilledResets = resetRows.filter((r) => r.fulfilled_at);
   const expiredResets = resetRows.filter(isExpired);
 
@@ -170,15 +184,24 @@ export default async function ApprovalsPage() {
           </Section>
 
           {expiredResets.length > 0 && (
-            <Section
-              title={`Expired (${expiredResets.length})`}
-              empty="None."
-              hint="Requests over 30 minutes old that were never approved — safe to ignore."
-            >
-              {expiredResets.map((r) => (
-                <ResetRequestRow key={r.id} request={r} expired />
-              ))}
-            </Section>
+            <div>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h3 className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                  Expired ({expiredResets.length})
+                </h3>
+                <ClearExpiredResetsButton count={expiredResets.length} />
+              </div>
+              <p className="mb-2 text-[11px] italic text-neutral-500 dark:text-neutral-400">
+                Pending over 30 minutes, or approved but never used in
+                time. Voided automatically — Dismiss individually or
+                clear them all.
+              </p>
+              <ul className="space-y-2">
+                {expiredResets.map((r) => (
+                  <ResetRequestRow key={r.id} request={r} expired />
+                ))}
+              </ul>
+            </div>
           )}
         </div>
       </section>

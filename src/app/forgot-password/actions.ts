@@ -3,10 +3,11 @@
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { APPROVAL_EXPIRY_MS } from "@/lib/admin-resets";
 
-// Approvals time out after an hour so a stale row sitting in the
-// table doesn't quietly let someone reset later.
-const APPROVAL_TTL_MS = 60 * 60 * 1000;
+// Match the admin-page expiry exactly — what shows as "Expired" on
+// the page is what the server refuses to complete.
+const APPROVAL_TTL_MS = APPROVAL_EXPIRY_MS;
 
 export type CompleteResult =
   | { ok: true; email: string }
