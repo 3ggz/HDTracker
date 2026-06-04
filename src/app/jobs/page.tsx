@@ -17,7 +17,7 @@ export default async function JobsPage() {
   const [{ data: jobs, error }, pendingApprovals] = await Promise.all([
     supabase
       .from("jobs")
-      .select("id, name, number, address, updated_at")
+      .select("id, name, number, address, completed_at, updated_at")
       .order("updated_at", { ascending: false }),
     isAdmin
       ? supabase
@@ -30,6 +30,10 @@ export default async function JobsPage() {
   const pendingCount =
     isAdmin && "count" in pendingApprovals ? (pendingApprovals.count ?? 0) : 0;
 
+  const allJobs = jobs ?? [];
+  const openJobs = allJobs.filter((j) => !j.completed_at);
+  const completedJobs = allJobs.filter((j) => j.completed_at);
+
   return (
     <>
       <LiveUpdater channelName="jobs-list" table="jobs" />
@@ -41,35 +45,90 @@ export default async function JobsPage() {
           <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-300">
             Couldn&apos;t load jobs: {error.message}
           </p>
-        ) : !jobs || jobs.length === 0 ? (
+        ) : allJobs.length === 0 ? (
           <EmptyState />
         ) : (
-          <ul className="space-y-3">
-            {jobs.map((j) => (
-              <li key={j.id}>
-                <Link
-                  href={`/jobs/${j.id}`}
-                  className="block rounded-2xl border border-neutral-200 bg-white px-4 py-4 transition active:scale-[0.99] dark:border-neutral-800 dark:bg-neutral-900"
-                >
-                  <p className="text-base font-medium">{j.name}</p>
-                  {j.number && (
-                    <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
-                      #{j.number}
-                    </p>
-                  )}
-                  {j.address && (
-                    <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
-                      {j.address}
-                    </p>
-                  )}
-                </Link>
-              </li>
-            ))}
-          </ul>
+          <>
+            {openJobs.length === 0 ? (
+              <p className="rounded-lg border border-dashed border-neutral-300 px-4 py-6 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+                No open jobs. Everything below is done.
+              </p>
+            ) : (
+              <ul className="space-y-3">
+                {openJobs.map((j) => (
+                  <JobCard key={j.id} job={j} />
+                ))}
+              </ul>
+            )}
+            {completedJobs.length > 0 && (
+              <div className="mt-8 border-t-2 border-emerald-500 pt-4">
+                <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+                  Completed jobs ({completedJobs.length})
+                </h2>
+                <ul className="space-y-3">
+                  {completedJobs.map((j) => (
+                    <JobCard key={j.id} job={j} />
+                  ))}
+                </ul>
+              </div>
+            )}
+          </>
         )}
       </section>
       <AddJobFab />
     </>
+  );
+}
+
+function JobCard({
+  job,
+}: {
+  job: {
+    id: string;
+    name: string;
+    number: string | null;
+    address: string | null;
+    completed_at: string | null;
+  };
+}) {
+  return (
+    <li>
+      <Link
+        href={`/jobs/${job.id}`}
+        className="relative block rounded-2xl border border-neutral-200 bg-white px-4 py-4 pb-7 transition active:scale-[0.99] dark:border-neutral-800 dark:bg-neutral-900"
+      >
+        <p className="text-base font-medium">{job.name}</p>
+        {job.number && (
+          <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
+            #{job.number}
+          </p>
+        )}
+        {job.address && (
+          <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
+            {job.address}
+          </p>
+        )}
+        {job.completed_at && (
+          <span
+            className="absolute bottom-2 right-3 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400"
+            title={`Completed ${new Date(job.completed_at).toLocaleString()}`}
+          >
+            <svg
+              className="h-3 w-3"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+            Completed
+          </span>
+        )}
+      </Link>
+    </li>
   );
 }
 

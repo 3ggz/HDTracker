@@ -43,7 +43,7 @@ export default async function Home() {
   return (
     <>
       <LiveUpdater channelName="home-vehicles" table="vehicles" />
-      <AppHeader />
+      <AppHeader showQuickView />
       {isAdmin && <PendingApprovalsBanner initialCount={pendingCount} />}
       {isAdmin && (
         <PendingResetsBanner initialCount={pendingResetCount} />

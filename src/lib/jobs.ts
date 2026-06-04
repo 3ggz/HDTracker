@@ -6,6 +6,7 @@ export type Job = {
   notes: string | null;
   site_map_path: string | null;
   site_map_uploaded_at: string | null;
+  completed_at: string | null;
   created_at: string;
   updated_at: string;
 };

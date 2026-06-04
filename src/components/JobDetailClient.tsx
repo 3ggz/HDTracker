@@ -1114,6 +1114,54 @@ export function JobDetailClient({
         </div>
       </CollapsibleSection>
 
+      <button
+        type="button"
+        onClick={async () => {
+          const nextCompleted = job.completed_at
+            ? null
+            : new Date().toISOString();
+          const { data, error } = await withTrack(saveTracker, async () => {
+            const supabase = createClient();
+            return supabase
+              .from("jobs")
+              .update({ completed_at: nextCompleted })
+              .eq("id", job.id)
+              .select("*")
+              .single();
+          });
+          if (error || !data) {
+            alert(error?.message ?? "Couldn't update.");
+            return;
+          }
+          setJob(data as Job);
+        }}
+        className={
+          "flex h-12 w-full items-center justify-center gap-2 rounded-lg text-sm font-medium transition active:scale-[0.98] " +
+          (job.completed_at
+            ? "border border-emerald-500 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200"
+            : "bg-emerald-600 text-white dark:bg-emerald-500")
+        }
+      >
+        {job.completed_at ? (
+          <>
+            <svg
+              className="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+            Completed — tap to reopen
+          </>
+        ) : (
+          <>Mark job complete</>
+        )}
+      </button>
+
       <div className="pt-1 text-center">
         <a
           href={`/jobs/${job.id}/history`}

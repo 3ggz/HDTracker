@@ -5,7 +5,14 @@ import { getBuildVersion } from "@/lib/build-version";
 import { createClient } from "@/lib/supabase/server";
 import { isAdminEmail } from "@/lib/admin";
 
-export async function AppHeader() {
+export async function AppHeader({
+  showQuickView = false,
+}: {
+  // Quick view is fleet-wide vehicle inventory, so it only belongs
+  // on vehicle-related pages. Pass true from the home page; pages
+  // like /jobs and /faq get the default (off).
+  showQuickView?: boolean;
+} = {}) {
   const supabase = await createClient();
   const {
     data: { user },
@@ -34,12 +41,14 @@ export async function AppHeader() {
             Resets
           </Link>
         )}
-        <Link
-          href="/quickview"
-          className="text-sm font-medium text-neutral-600 underline-offset-4 active:text-neutral-900 hover:underline dark:text-neutral-400 dark:active:text-neutral-100"
-        >
-          Quick view
-        </Link>
+        {showQuickView && (
+          <Link
+            href="/quickview"
+            className="text-sm font-medium text-neutral-600 underline-offset-4 active:text-neutral-900 hover:underline dark:text-neutral-400 dark:active:text-neutral-100"
+          >
+            Quick view
+          </Link>
+        )}
         <ThemeToggle />
         <SignOutButton />
       </div>
