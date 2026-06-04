@@ -105,9 +105,13 @@ export function PdfMapEditor({
   //      finger positions while pinching, producing scribbles.
   //   3. Browser zoom is a CSS transform — the PDF canvas pixels stay
   //      the same, so the map blurs.
-  // Our handler drives `scale` state, which re-renders the PDF at the
-  // new resolution via PDF.js. Stays sharp at any zoom.
+  // During the gesture we ONLY mutate the DOM: a CSS transform on the
+  // content wrapper. No React state changes, no re-renders, GPU-
+  // accelerated. When the pinch ends we commit the new scale to React
+  // state, which (via the debounced renderScale) triggers PDF.js to
+  // re-rasterize at the new resolution for crispness.
   const scrollRef = useRef<HTMLDivElement>(null);
+  const transformRef = useRef<HTMLDivElement>(null);
   const scaleRef = useRef(scale);
   useEffect(() => {
     scaleRef.current = scale;
@@ -116,7 +120,28 @@ export function PdfMapEditor({
     active: boolean;
     startDist: number;
     startScale: number;
-  }>({ active: false, startDist: 0, startScale: 1 });
+    startScrollLeft: number;
+    startScrollTop: number;
+    midViewportX: number;
+    midViewportY: number;
+  }>({
+    active: false,
+    startDist: 0,
+    startScale: 1,
+    startScrollLeft: 0,
+    startScrollTop: 0,
+    midViewportX: 0,
+    midViewportY: 0,
+  });
+  const pinchTargetRef = useRef<number | null>(null);
+  // After the scale state commits, the scroll container needs to be
+  // re-positioned so the pinch midpoint stays at the same screen spot.
+  // We stash the target scroll position here and apply it in the
+  // post-scale effect (once the new layout exists).
+  const scrollAfterCommitRef = useRef<{
+    left: number;
+    top: number;
+  } | null>(null);
   // Pages register their "abandon stroke" callback so we can cancel an
   // in-progress pen line the moment a 2nd finger lands.
   const abandonCallbacksRef = useRef<Set<() => void>>(new Set());
@@ -139,14 +164,32 @@ export function PdfMapEditor({
         abandonCallbacksRef.current.forEach((cb) => cb());
         const t1 = e.touches[0];
         const t2 = e.touches[1];
+        const midX = (t1.clientX + t2.clientX) / 2;
+        const midY = (t1.clientY + t2.clientY) / 2;
+        const startDist = Math.hypot(
+          t2.clientX - t1.clientX,
+          t2.clientY - t1.clientY,
+        );
+        const containerRect = el!.getBoundingClientRect();
+        const midViewportX = midX - containerRect.left;
+        const midViewportY = midY - containerRect.top;
+        // Origin in scroll-content coords so the pinch midpoint stays
+        // visually fixed while the wrapper scales.
+        const originX = el!.scrollLeft + midViewportX;
+        const originY = el!.scrollTop + midViewportY;
+        if (transformRef.current) {
+          transformRef.current.style.transformOrigin = `${originX}px ${originY}px`;
+        }
         pinchRef.current = {
           active: true,
-          startDist: Math.hypot(
-            t2.clientX - t1.clientX,
-            t2.clientY - t1.clientY,
-          ),
+          startDist,
           startScale: scaleRef.current,
+          startScrollLeft: el!.scrollLeft,
+          startScrollTop: el!.scrollTop,
+          midViewportX,
+          midViewportY,
         };
+        pinchTargetRef.current = pinchRef.current.startScale;
         e.preventDefault();
       }
     }
@@ -160,18 +203,44 @@ export function PdfMapEditor({
           t2.clientX - t1.clientX,
           t2.clientY - t1.clientY,
         );
-        const ratio = dist / pinchRef.current.startDist;
-        const next = Math.max(
+        const rawRatio = dist / pinchRef.current.startDist;
+        const targetScale = Math.max(
           0.5,
-          Math.min(4, pinchRef.current.startScale * ratio),
+          Math.min(4, pinchRef.current.startScale * rawRatio),
         );
-        setScale(next);
+        const visualRatio = targetScale / pinchRef.current.startScale;
+        // The hot path: a single DOM write per frame, no React work.
+        if (transformRef.current) {
+          transformRef.current.style.transform = `scale(${visualRatio})`;
+        }
+        pinchTargetRef.current = targetScale;
       }
     }
 
     function onTouchEnd(e: TouchEvent) {
-      if (e.touches.length < 2) {
+      if (e.touches.length < 2 && pinchRef.current.active) {
         pinchRef.current.active = false;
+        const target = pinchTargetRef.current;
+        pinchTargetRef.current = null;
+        if (target !== null && target !== pinchRef.current.startScale) {
+          const ratio = target / pinchRef.current.startScale;
+          // Scroll math derived from "keep the pinch midpoint at the
+          // same screen position after the scale commits". The wrapper
+          // sits at scroll-content (0,0), so this collapses to:
+          //   S1 = S0 * R + m * (R - 1)
+          scrollAfterCommitRef.current = {
+            left:
+              pinchRef.current.startScrollLeft * ratio +
+              pinchRef.current.midViewportX * (ratio - 1),
+            top:
+              pinchRef.current.startScrollTop * ratio +
+              pinchRef.current.midViewportY * (ratio - 1),
+          };
+          setScale(target);
+        } else if (transformRef.current) {
+          // Pinch returned to the start scale — no commit needed.
+          transformRef.current.style.transform = "";
+        }
         // Tiny delay before letting the canvas accept pointer input
         // again so a finger that lifts last doesn't immediately register
         // as a new stroke.
@@ -192,6 +261,23 @@ export function PdfMapEditor({
       el.removeEventListener("touchcancel", onTouchEnd);
     };
   }, []);
+
+  // After a pinch commits, the new layout exists. Reset the transient
+  // CSS transform (the new scale is baked into the wrapper's natural
+  // size now) and snap the scroll position so the pinch midpoint stays
+  // where the user's fingers were.
+  useEffect(() => {
+    if (transformRef.current) {
+      transformRef.current.style.transform = "";
+    }
+    const pending = scrollAfterCommitRef.current;
+    scrollAfterCommitRef.current = null;
+    const scrollEl = scrollRef.current;
+    if (pending && scrollEl) {
+      scrollEl.scrollLeft = pending.left;
+      scrollEl.scrollTop = pending.top;
+    }
+  }, [scale]);
 
   useEffect(() => {
     let cancelled = false;
@@ -466,28 +552,31 @@ export function PdfMapEditor({
             Loading PDF…
           </p>
         )}
-        {pdf &&
-          Array.from({ length: numPages }, (_, i) => i).map((pageIndex) => (
-            <PdfPageView
-              key={pageIndex}
-              pdf={pdf}
-              pageIndex={pageIndex}
-              scale={scale}
-              renderScale={renderScale}
-              tool={tool}
-              color={color}
-              penWidth={penWidth}
-              textSize={textSize}
-              showEdits={showEdits}
-              annotations={annotationsByPage[pageIndex] ?? []}
-              onChange={(updater) =>
-                updatePageAnnotations(pageIndex, updater)
-              }
-              onClear={() => clearPage(pageIndex)}
-              pinchActiveRef={pinchActiveRef}
-              registerAbandon={registerAbandon}
-            />
-          ))}
+        {pdf && (
+          <div ref={transformRef}>
+            {Array.from({ length: numPages }, (_, i) => i).map((pageIndex) => (
+              <PdfPageView
+                key={pageIndex}
+                pdf={pdf}
+                pageIndex={pageIndex}
+                scale={scale}
+                renderScale={renderScale}
+                tool={tool}
+                color={color}
+                penWidth={penWidth}
+                textSize={textSize}
+                showEdits={showEdits}
+                annotations={annotationsByPage[pageIndex] ?? []}
+                onChange={(updater) =>
+                  updatePageAnnotations(pageIndex, updater)
+                }
+                onClear={() => clearPage(pageIndex)}
+                pinchActiveRef={pinchActiveRef}
+                registerAbandon={registerAbandon}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
