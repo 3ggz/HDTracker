@@ -3,6 +3,7 @@
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
 import { doorContactItemForName } from "@/lib/jobs";
+import { isAdminEmail } from "@/lib/admin";
 
 // Auto-detect itself runs as a Supabase Edge Function (Deno, 150s
 // timeout) at supabase/functions/auto-detect-doors. We can't run it
@@ -190,6 +191,35 @@ export async function deleteDoorAction(doorId: string): Promise<DeleteResult> {
       ok: false,
       error:
         "Database didn't report an error but no rows were affected — RLS may have filtered, or the row was already gone.",
+    };
+  }
+  return { ok: true };
+}
+
+// Admin-only — job deletion cascades through doors / items / photos
+// / panels / site map / annotations, which is destructive enough that
+// only the admin set should have the trigger. RLS on jobs is still
+// permissive (per the project's "leave RLS alone for now" rule), so
+// the gate is enforced here in the server action.
+export async function deleteJobAction(jobId: string): Promise<DeleteResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!isAdminEmail(user?.email)) {
+    return { ok: false, error: "Only admins can delete jobs." };
+  }
+  const { data, error } = await supabase
+    .from("jobs")
+    .delete()
+    .eq("id", jobId)
+    .select("id");
+  if (error) return { ok: false, error: error.message };
+  if (!data || data.length === 0) {
+    return {
+      ok: false,
+      error:
+        "Database didn't report an error but no rows were affected.",
     };
   }
   return { ok: true };

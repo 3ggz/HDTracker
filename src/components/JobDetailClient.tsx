@@ -45,6 +45,7 @@ import {
 import { HUGS_TEMPLATE } from "@/lib/job-templates";
 import {
   deleteDoorAction,
+  deleteJobAction,
   deleteDoorItemAction,
   restoreDoorAction,
   type RestoreDoorInput,
@@ -94,6 +95,7 @@ export function JobDetailClient({
   doorsLoadError,
   itemsLoadError,
   photosLoadError,
+  canDeleteJob,
 }: {
   initialJob: Job;
   initialDoors: JobDoor[];
@@ -106,6 +108,7 @@ export function JobDetailClient({
   doorsLoadError: string | null;
   itemsLoadError: string | null;
   photosLoadError: string | null;
+  canDeleteJob: boolean;
 }) {
   const router = useRouter();
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
@@ -1171,7 +1174,9 @@ export function JobDetailClient({
         </a>
       </div>
 
-      <DeleteJobSection jobId={job.id} jobName={job.name} />
+      {canDeleteJob && (
+        <DeleteJobSection jobId={job.id} jobName={job.name} />
+      )}
 
       <SaveStatusBar pending={pendingSaves > 0} flash={savedFlash} />
     </main>
@@ -3147,21 +3152,9 @@ function DeleteJobSection({
     )
       return;
     setPending(true);
-    const supabase = createClient();
-    const { data, error } = await supabase
-      .from("jobs")
-      .delete()
-      .eq("id", jobId)
-      .select("id");
-    if (error) {
-      alert(error.message);
-      setPending(false);
-      return;
-    }
-    if (!data || data.length === 0) {
-      alert(
-        "Couldn't delete the job — no rows affected. Try signing out and back in.",
-      );
+    const result = await deleteJobAction(jobId);
+    if (!result.ok) {
+      alert(result.error);
       setPending(false);
       return;
     }

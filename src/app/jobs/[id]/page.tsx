@@ -12,6 +12,7 @@ import type {
   JobPanelPhoto,
 } from "@/lib/jobs";
 import type { JobPhoto } from "@/lib/job-photos";
+import { isAdminEmail } from "@/lib/admin";
 
 // Auto-detect calls Claude vision with xhigh effort on multi-page PDFs;
 // allow up to 2 minutes so the server action doesn't time out at 10s/60s.
@@ -24,6 +25,10 @@ export default async function JobDetailPage({
 }) {
   const { id } = await params;
   const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  const isAdmin = isAdminEmail(user?.email);
 
   const [
     { data: job, error },
@@ -170,6 +175,7 @@ export default async function JobDetailPage({
         doorsLoadError={doorsError?.message ?? null}
         itemsLoadError={itemsError?.message ?? null}
         photosLoadError={photosError?.message ?? null}
+        canDeleteJob={isAdmin}
       />
     </>
   );
