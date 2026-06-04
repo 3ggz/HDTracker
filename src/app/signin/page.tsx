@@ -235,14 +235,12 @@ export default function SignInPage() {
               >
                 Use a different email
               </button>
-              {!isNewUser && (
-                <Link
-                  href="/forgot-password"
-                  className="block w-full text-center text-sm text-neutral-600 underline-offset-4 hover:underline dark:text-neutral-400"
-                >
-                  Forgot password?
-                </Link>
-              )}
+              <Link
+                href="/forgot-password"
+                className="block w-full text-center text-sm text-neutral-600 underline-offset-4 hover:underline dark:text-neutral-400"
+              >
+                Forgot password?
+              </Link>
             </>
           )}
 
