@@ -99,11 +99,11 @@ export default async function JobDetailPage({
 
   return (
     <>
-      <header className="sticky top-0 z-10 flex items-center gap-3 border-b border-neutral-200 bg-neutral-50/80 px-4 py-3 backdrop-blur dark:border-neutral-800 dark:bg-neutral-950/80 print:hidden">
+      <header className="sticky top-0 z-10 flex items-center gap-1.5 border-b border-neutral-200 bg-neutral-50/80 px-3 py-2 backdrop-blur dark:border-neutral-800 dark:bg-neutral-950/80 print:hidden">
         <Link
           href="/jobs"
           aria-label="Back"
-          className="-ml-2 flex h-10 w-10 items-center justify-center rounded-full active:bg-neutral-200/60 dark:active:bg-neutral-800/60"
+          className="-ml-1 flex h-10 w-10 items-center justify-center rounded-full active:bg-neutral-200/60 dark:active:bg-neutral-800/60"
         >
           <svg
             className="h-5 w-5"
@@ -120,15 +120,39 @@ export default async function JobDetailPage({
         <h1 className="truncate flex-1 text-base font-semibold tracking-tight">
           {job.name}
         </h1>
+        {job.site_map_path && (
+          <Link
+            href={`/jobs/${job.id}/map`}
+            aria-label="View site map"
+            className="flex h-8 items-center gap-1 rounded-md border border-neutral-200 bg-white px-2 text-xs font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300 dark:active:bg-neutral-800"
+          >
+            <svg
+              className="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M9 20l-5.4-2.7A2 2 0 0 1 2.5 15.5V5.2a1 1 0 0 1 1.5-.9L9 7" />
+              <path d="M9 7v13" />
+              <path d="M9 7l6-3 6 3" />
+              <path d="M21 4.2v10.3a2 2 0 0 1-1.1 1.8L15 19" />
+              <path d="M15 7v13" />
+            </svg>
+            Map
+          </Link>
+        )}
         <Link
           href={`/jobs/${job.id}/quickview`}
-          className="text-sm font-medium text-neutral-600 underline-offset-4 active:text-neutral-900 hover:underline dark:text-neutral-400 dark:active:text-neutral-100"
+          className="flex h-8 items-center rounded-md border border-neutral-200 bg-white px-2 text-xs font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300 dark:active:bg-neutral-800"
         >
           Quick view
         </Link>
         <Link
           href={`/jobs/${job.id}/print`}
-          className="text-sm font-medium text-neutral-600 underline-offset-4 active:text-neutral-900 hover:underline dark:text-neutral-400 dark:active:text-neutral-100"
+          className="flex h-8 items-center rounded-md border border-neutral-200 bg-white px-2 text-xs font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300 dark:active:bg-neutral-800"
         >
           PDF
         </Link>

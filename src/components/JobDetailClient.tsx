@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -57,6 +57,25 @@ import { AutoDetectModal } from "./AutoDetectModal";
 // and rendered as their own section below the floor groups.
 const STANDALONE_DOOR_NAME = "Standalone Equipment";
 
+// Shared save-tracker so the universal "saving / saved" bar at the
+// bottom of the page reflects activity from every child component
+// (door fields, panel fields, item toggles, photo uploads, etc.)
+// without having to plumb status props through every level.
+type SaveTracker = { begin: () => void; end: () => void };
+const noopTracker: SaveTracker = { begin: () => {}, end: () => {} };
+const SaveTrackerContext = createContext<SaveTracker>(noopTracker);
+async function withTrack<T>(
+  tracker: SaveTracker,
+  fn: () => Promise<T>,
+): Promise<T> {
+  tracker.begin();
+  try {
+    return await fn();
+  } finally {
+    tracker.end();
+  }
+}
+
 const inputClass =
   "block h-12 w-full rounded-lg border border-neutral-300 bg-white px-3 text-base text-neutral-900 outline-none transition focus:border-neutral-900 focus:ring-2 focus:ring-neutral-900/10 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50 dark:focus:border-neutral-100 dark:focus:ring-neutral-100/10";
 
@@ -112,6 +131,30 @@ export function JobDetailClient({
     payload: RestoreDoorInput;
   } | null>(null);
   const [restoringDoor, setRestoringDoor] = useState(false);
+
+  const [pendingSaves, setPendingSaves] = useState(0);
+  const [savedFlash, setSavedFlash] = useState(false);
+  const savedFlashTimer = useRef<number | null>(null);
+  const saveTracker = useMemo<SaveTracker>(
+    () => ({
+      begin: () => setPendingSaves((c) => c + 1),
+      end: () =>
+        setPendingSaves((c) => {
+          const next = Math.max(0, c - 1);
+          if (next === 0 && c > 0) {
+            if (savedFlashTimer.current)
+              window.clearTimeout(savedFlashTimer.current);
+            setSavedFlash(true);
+            savedFlashTimer.current = window.setTimeout(
+              () => setSavedFlash(false),
+              1600,
+            );
+          }
+          return next;
+        }),
+    }),
+    [],
+  );
 
   // Tracks door IDs belonging to this job. job_door_items has no job_id
   // column so we filter incoming item events client-side via this set.
@@ -283,19 +326,21 @@ export function JobDetailClient({
     }
     setHeaderSaving(true);
     setHeaderError(null);
-    const supabase = createClient();
     const patch = {
       name: trimmedName,
       number: headerDraft.number.trim() || null,
       address: headerDraft.address.trim() || null,
       notes: headerDraft.notes.trim() || null,
     };
-    const { data, error } = await supabase
-      .from("jobs")
-      .update(patch)
-      .eq("id", job.id)
-      .select("*")
-      .single();
+    const { data, error } = await withTrack(saveTracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("jobs")
+        .update(patch)
+        .eq("id", job.id)
+        .select("*")
+        .single();
+    });
     setHeaderSaving(false);
     if (error || !data) {
       setHeaderError(error?.message ?? "Couldn't save.");
@@ -340,7 +385,9 @@ export function JobDetailClient({
   async function undoLastDoorDelete() {
     if (!lastDeletedDoor || restoringDoor) return;
     setRestoringDoor(true);
-    const result = await restoreDoorAction(lastDeletedDoor.payload);
+    const result = await withTrack(saveTracker, () =>
+      restoreDoorAction(lastDeletedDoor.payload),
+    );
     setRestoringDoor(false);
     if (!result.ok) {
       alert(`Couldn't restore "${lastDeletedDoor.label}": ${result.error}`);
@@ -408,15 +455,88 @@ export function JobDetailClient({
   }
 
   async function persistDoorOrder(reordered: JobDoor[]) {
+    await withTrack(saveTracker, async () => {
+      const supabase = createClient();
+      const updates = reordered.map((d, idx) =>
+        supabase.from("job_doors").update({ position: idx }).eq("id", d.id),
+      );
+      const results = await Promise.all(updates);
+      const firstError = results.find((r) => r.error);
+      if (firstError?.error) {
+        alert(`Couldn't save door order: ${firstError.error.message}`);
+      }
+    });
+  }
+
+  async function createDoorsForPanel(
+    panelId: string,
+    names: string[],
+  ): Promise<boolean> {
+    if (names.length === 0) return true;
     const supabase = createClient();
-    const updates = reordered.map((d, idx) =>
-      supabase.from("job_doors").update({ position: idx }).eq("id", d.id),
-    );
-    const results = await Promise.all(updates);
-    const firstError = results.find((r) => r.error);
-    if (firstError?.error) {
-      alert(`Couldn't save door order: ${firstError.error.message}`);
-    }
+    const existingForPanel = panelDoors.filter(
+      (pd) => pd.panel_id === panelId,
+    ).length;
+    const baseDoorPosition = doors.length;
+    let ok = true;
+    await withTrack(saveTracker, async () => {
+      for (let i = 0; i < names.length; i++) {
+        const { data: door, error: doorError } = await supabase
+          .from("job_doors")
+          .insert({
+            job_id: job.id,
+            name: names[i],
+            position: baseDoorPosition + i,
+          })
+          .select("*")
+          .single();
+        if (doorError || !door) {
+          alert(doorError?.message ?? "Couldn't create door.");
+          ok = false;
+          return;
+        }
+        const itemRows = HUGS_TEMPLATE.requiredItems.map((n, idx) => ({
+          door_id: door.id,
+          name: n,
+          position: idx,
+        }));
+        const { data: insertedItems } = await supabase
+          .from("job_door_items")
+          .insert(itemRows)
+          .select("*");
+        const linkPosition = existingForPanel + i;
+        const { error: linkError } = await supabase
+          .from("job_panel_doors")
+          .insert({
+            panel_id: panelId,
+            door_id: door.id,
+            position: linkPosition,
+          });
+        if (linkError) {
+          alert(linkError.message);
+          ok = false;
+          return;
+        }
+        doorIdsRef.current.add((door as JobDoor).id);
+        setDoors((current) => [...current, door as JobDoor]);
+        if (insertedItems) {
+          setItems((current) => [
+            ...current,
+            ...(insertedItems as JobDoorItem[]),
+          ]);
+        }
+        setPanelDoors((current) => [
+          ...current,
+          {
+            panel_id: panelId,
+            door_id: (door as JobDoor).id,
+            position: linkPosition,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+      }
+    });
+    return ok;
   }
 
   function onDragEnd(event: DragEndEvent) {
@@ -442,6 +562,7 @@ export function JobDetailClient({
   }
 
   return (
+    <SaveTrackerContext.Provider value={saveTracker}>
     <main className="mx-auto w-full max-w-md flex-1 space-y-3 px-4 pb-32 pt-4">
       {lastDeletedDoor && (
         <div className="sticky top-14 z-40 -mx-4 mb-2 flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 shadow-sm dark:border-amber-900/50 dark:bg-amber-950/60">
@@ -489,30 +610,6 @@ export function JobDetailClient({
           </button>
         </div>
       )}
-      {job.site_map_path && (
-        <a
-          href={`/jobs/${job.id}/map`}
-          aria-label="View site map fullscreen"
-          className="fixed right-4 top-16 z-30 flex h-11 items-center gap-1.5 rounded-full bg-indigo-600 px-3 text-xs font-semibold text-white shadow-lg active:scale-95"
-        >
-          <svg
-            className="h-4 w-4"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M9 20l-5.4-2.7A2 2 0 0 1 2.5 15.5V5.2a1 1 0 0 1 1.5-.9L9 7" />
-            <path d="M9 7v13" />
-            <path d="M9 7l6-3 6 3" />
-            <path d="M21 4.2v10.3a2 2 0 0 1-1.1 1.8L15 19" />
-            <path d="M15 7v13" />
-          </svg>
-          View map
-        </a>
-      )}
       <JobSummaryCard
         job={job}
         completionStats={completionStats}
@@ -552,10 +649,11 @@ export function JobDetailClient({
             <AddDoorMenu
               jobId={job.id}
               existingCount={doors.length}
-              onAdded={(door, newItems) => {
+              onAdded={(door, newItems, options) => {
+                doorIdsRef.current.add(door.id);
                 setDoors((d) => [...d, door]);
                 if (newItems.length) setItems((i) => [...i, ...newItems]);
-                setNewDoorId(door.id);
+                if (options?.focus) setNewDoorId(door.id);
               }}
             />
           </div>
@@ -793,17 +891,19 @@ export function JobDetailClient({
             type="button"
             onClick={async (e) => {
               e.stopPropagation();
-              const supabase = createClient();
               const nextName = `Panel ${panels.length + 1}`;
-              const { data, error } = await supabase
-                .from("job_panels")
-                .insert({
-                  job_id: job.id,
-                  name: nextName,
-                  position: panels.length,
-                })
-                .select("*")
-                .single();
+              const { data, error } = await withTrack(saveTracker, async () => {
+                const supabase = createClient();
+                return supabase
+                  .from("job_panels")
+                  .insert({
+                    job_id: job.id,
+                    name: nextName,
+                    position: panels.length,
+                  })
+                  .select("*")
+                  .single();
+              });
               if (error || !data) {
                 alert(error?.message ?? "Couldn't add panel.");
                 return;
@@ -834,6 +934,12 @@ export function JobDetailClient({
                 panelDoorIds={panelDoors
                   .filter((pd) => pd.panel_id === panel.id)
                   .map((pd) => pd.door_id)}
+                allAssignedDoorIds={
+                  new Set(panelDoors.map((pd) => pd.door_id))
+                }
+                onCreateAndAddDoors={(names) =>
+                  createDoorsForPanel(panel.id, names)
+                }
                 photos={panelPhotos
                   .filter((p) => p.panel_id === panel.id)
                   .sort(
@@ -1018,7 +1124,92 @@ export function JobDetailClient({
       </div>
 
       <DeleteJobSection jobId={job.id} jobName={job.name} />
+
+      <SaveStatusBar pending={pendingSaves > 0} flash={savedFlash} />
     </main>
+    </SaveTrackerContext.Provider>
+  );
+}
+
+function SaveStatusBar({
+  pending,
+  flash,
+}: {
+  pending: boolean;
+  flash: boolean;
+}) {
+  return (
+    <div
+      aria-live="polite"
+      className="pointer-events-none fixed bottom-3 left-1/2 z-30 -translate-x-1/2 print:hidden"
+    >
+      <div
+        className={
+          "flex h-10 items-center gap-2 rounded-full border bg-white/95 px-4 text-xs font-medium shadow-md backdrop-blur transition-colors dark:bg-neutral-900/95 " +
+          (pending
+            ? "border-neutral-300 text-neutral-700 dark:border-neutral-700 dark:text-neutral-200"
+            : flash
+              ? "border-emerald-300 text-emerald-700 dark:border-emerald-800 dark:text-emerald-300"
+              : "border-neutral-200 text-neutral-500 dark:border-neutral-800 dark:text-neutral-400")
+        }
+      >
+        {pending ? (
+          <>
+            <svg
+              className="h-3.5 w-3.5 animate-spin"
+              viewBox="0 0 24 24"
+              fill="none"
+            >
+              <circle
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="3"
+                strokeOpacity="0.25"
+              />
+              <path
+                d="M22 12a10 10 0 0 0-10-10"
+                stroke="currentColor"
+                strokeWidth="3"
+                strokeLinecap="round"
+              />
+            </svg>
+            Saving…
+          </>
+        ) : flash ? (
+          <>
+            <svg
+              className="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+            Saved
+          </>
+        ) : (
+          <>
+            <svg
+              className="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+            All saved
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -1198,62 +1389,36 @@ function AddDoorMenu({
 }: {
   jobId: string;
   existingCount: number;
-  onAdded: (door: JobDoor, items: JobDoorItem[]) => void;
+  onAdded: (
+    door: JobDoor,
+    items: JobDoorItem[],
+    options?: { focus?: boolean },
+  ) => void;
 }) {
-  const storageKey = `hd:job:${jobId}:default_door_template`;
-  const [template, setTemplate] = useState<"hugs" | "blank">("hugs");
-  const [templateSynced, setTemplateSynced] = useState(false);
+  const tracker = useContext(SaveTrackerContext);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState("");
   const [pending, setPending] = useState(false);
 
-  // One-shot read from localStorage on first client render.
-  if (typeof window !== "undefined" && !templateSynced) {
-    setTemplateSynced(true);
-    try {
-      const stored = localStorage.getItem(storageKey);
-      if (stored === "hugs" || stored === "blank") setTemplate(stored);
-    } catch {
-      // ignore
-    }
-  }
-
-  function updateTemplate(next: "hugs" | "blank") {
-    setTemplate(next);
-    if (typeof window !== "undefined") {
-      try {
-        localStorage.setItem(storageKey, next);
-      } catch {
-        // ignore
+  async function createOne(
+    name: string,
+    position: number,
+    focus: boolean,
+  ): Promise<boolean> {
+    return withTrack(tracker, async () => {
+      const supabase = createClient();
+      const { data: door, error } = await supabase
+        .from("job_doors")
+        .insert({ job_id: jobId, name, position })
+        .select("*")
+        .single();
+      if (error || !door) {
+        alert(error?.message ?? "Couldn't add door.");
+        return false;
       }
-    }
-  }
-
-  async function addDoor() {
-    setPending(true);
-    const supabase = createClient();
-    const position = existingCount;
-    const defaultName =
-      template === "hugs"
-        ? `Door ${existingCount + 1} (HUGS)`
-        : `Door ${existingCount + 1}`;
-
-    const { data: door, error } = await supabase
-      .from("job_doors")
-      .insert({ job_id: jobId, name: defaultName, position })
-      .select("*")
-      .single();
-
-    if (error || !door) {
-      setPending(false);
-      alert(error?.message ?? "Couldn't add door.");
-      return;
-    }
-
-    let newItems: JobDoorItem[] = [];
-    if (template === "hugs") {
-      const names = [...HUGS_TEMPLATE.requiredItems, "Door contact"];
-      const itemRows = names.map((name, idx) => ({
+      const itemRows = HUGS_TEMPLATE.requiredItems.map((n, idx) => ({
         door_id: door.id,
-        name,
+        name: n,
         position: idx,
       }));
       const { data: insertedItems, error: itemsError } = await supabase
@@ -1262,33 +1427,114 @@ function AddDoorMenu({
         .select("*");
       if (itemsError) {
         alert(`Door added, but items failed: ${itemsError.message}`);
-      } else if (insertedItems) {
-        newItems = insertedItems as JobDoorItem[];
+        onAdded(door as JobDoor, [], { focus });
+      } else {
+        onAdded(
+          door as JobDoor,
+          (insertedItems ?? []) as JobDoorItem[],
+          { focus },
+        );
       }
-    }
+      return true;
+    });
+  }
 
+  async function addSingle() {
+    setPending(true);
+    await createOne("", existingCount, true);
     setPending(false);
-    onAdded(door as JobDoor, newItems);
+  }
+
+  async function addBulk() {
+    const names = bulkText
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (names.length === 0) return;
+    setPending(true);
+    for (let i = 0; i < names.length; i++) {
+      const ok = await createOne(names[i], existingCount + i, false);
+      if (!ok) break;
+    }
+    setPending(false);
+    setBulkText("");
+    setBulkOpen(false);
+  }
+
+  if (bulkOpen) {
+    return (
+      <div className="flex items-center gap-1">
+        <input
+          autoFocus
+          type="text"
+          placeholder="Door 101, Door 102…"
+          value={bulkText}
+          onChange={(e) => setBulkText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void addBulk();
+            }
+            if (e.key === "Escape") {
+              setBulkText("");
+              setBulkOpen(false);
+            }
+          }}
+          className="h-9 w-44 rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+        />
+        <button
+          type="button"
+          onClick={addBulk}
+          disabled={pending || !bulkText.trim()}
+          className="h-9 rounded-lg bg-neutral-900 px-2.5 text-xs font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+        >
+          {pending ? "Adding…" : "Add"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setBulkOpen(false);
+            setBulkText("");
+          }}
+          disabled={pending}
+          aria-label="Cancel bulk add"
+          className="flex h-9 w-9 items-center justify-center rounded-md text-neutral-500 active:bg-neutral-100 dark:text-neutral-400 dark:active:bg-neutral-800"
+        >
+          <svg
+            className="h-4 w-4"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+    );
   }
 
   return (
     <div className="flex items-center gap-1">
-      <select
-        aria-label="Door template"
-        value={template}
-        onChange={(e) => updateTemplate(e.target.value as "hugs" | "blank")}
-        className="h-9 rounded-md border border-neutral-300 bg-white px-2 text-[11px] font-medium text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
-      >
-        <option value="hugs">HUGS</option>
-        <option value="blank">Blank</option>
-      </select>
       <button
         type="button"
-        onClick={addDoor}
+        onClick={() => setBulkOpen(true)}
+        disabled={pending}
+        aria-label="Bulk add doors"
+        className="h-9 rounded-md border border-neutral-300 px-2 text-[11px] font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
+      >
+        Bulk
+      </button>
+      <button
+        type="button"
+        onClick={addSingle}
         disabled={pending}
         className="h-9 rounded-lg bg-neutral-900 px-3 text-xs font-medium text-white transition active:scale-95 disabled:opacity-60 dark:bg-neutral-100 dark:text-neutral-900"
       >
-        {pending ? "Adding..." : "+ Door"}
+        {pending ? "Adding…" : "+ Door"}
       </button>
     </div>
   );
@@ -1379,23 +1625,23 @@ function DoorCard({
   const rootRef = useRef<HTMLDivElement>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
 
-  // For newly added doors: scroll into view and focus the name input
-  // exactly once, then tell the parent so it can reset the marker.
-  const [didFocus, setDidFocus] = useState(false);
+  // For newly added doors: scroll into view (just below the sticky
+  // header) and focus the name input exactly once, then tell the parent
+  // so it can reset the marker. scrollMarginTop keeps the door's name
+  // row visible instead of tucked under the header. The latch is a ref
+  // so we don't trigger a re-render from inside the effect.
+  const didFocusRef = useRef(false);
   useEffect(() => {
-    if (!isNewlyAdded || didFocus) return;
-    setDidFocus(true);
-    rootRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-    // Slight delay so iOS Safari attributes the focus to the same
-    // gesture as the tap that created the door (otherwise the
-    // keyboard sometimes refuses to open).
+    if (!isNewlyAdded || didFocusRef.current) return;
+    didFocusRef.current = true;
+    rootRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     const t = window.setTimeout(() => {
       nameInputRef.current?.focus();
       nameInputRef.current?.select();
       onFocusedNewlyAdded?.();
     }, 80);
     return () => window.clearTimeout(t);
-  }, [isNewlyAdded, didFocus, onFocusedNewlyAdded]);
+  }, [isNewlyAdded, onFocusedNewlyAdded]);
   const [expandSynced, setExpandSynced] = useState(false);
   if (typeof window !== "undefined" && !expandSynced) {
     setExpandSynced(true);
@@ -1441,14 +1687,18 @@ function DoorCard({
     setSyncedFloor(door.floor ?? "");
   }
 
+  const tracker = useContext(SaveTrackerContext);
+
   async function commitField(patch: Partial<JobDoor>) {
-    const supabase = createClient();
-    const { data, error } = await supabase
-      .from("job_doors")
-      .update(patch)
-      .eq("id", door.id)
-      .select("*")
-      .single();
+    const { data, error } = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("job_doors")
+        .update(patch)
+        .eq("id", door.id)
+        .select("*")
+        .single();
+    });
     if (error || !data) {
       alert(error?.message ?? "Couldn't save door.");
       return;
@@ -1456,32 +1706,12 @@ function DoorCard({
     onDoorUpdate(data as JobDoor);
   }
 
-  const [savedFlash, setSavedFlash] = useState(false);
-  const doorDirty =
-    nameDraft.trim() !== door.name ||
-    (notesDraft.trim() || null) !== door.notes ||
-    (floorDraft.trim() || null) !== door.floor;
-  async function saveAll() {
-    const patch: Partial<JobDoor> = {};
-    const trimmedName = nameDraft.trim();
-    if (trimmedName && trimmedName !== door.name) patch.name = trimmedName;
-    const nextNotes = notesDraft.trim() || null;
-    if (nextNotes !== door.notes) patch.notes = nextNotes;
-    const nextFloor = floorDraft.trim() || null;
-    if (nextFloor !== door.floor) patch.floor = nextFloor;
-    if (Object.keys(patch).length > 0) {
-      await commitField(patch);
-    }
-    setSavedFlash(true);
-    window.setTimeout(() => setSavedFlash(false), 1500);
-  }
-
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   async function deleteDoor() {
     setDeleting(true);
-    const result = await deleteDoorAction(door.id);
+    const result = await withTrack(tracker, () => deleteDoorAction(door.id));
     setDeleting(false);
     setConfirmingDelete(false);
     if (!result.ok) {
@@ -1499,13 +1729,15 @@ function DoorCard({
   async function addItem(name: string) {
     const trimmed = name.trim();
     if (!trimmed) return;
-    const supabase = createClient();
     const position = items.length;
-    const { data, error } = await supabase
-      .from("job_door_items")
-      .insert({ door_id: door.id, name: trimmed, position })
-      .select("*")
-      .single();
+    const { data, error } = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("job_door_items")
+        .insert({ door_id: door.id, name: trimmed, position })
+        .select("*")
+        .single();
+    });
     if (error || !data) {
       alert(error?.message ?? "Couldn't add item.");
       return;
@@ -1514,7 +1746,7 @@ function DoorCard({
   }
 
   async function removeItem(id: string) {
-    const result = await deleteDoorItemAction(id);
+    const result = await withTrack(tracker, () => deleteDoorItemAction(id));
     if (!result.ok) {
       alert(`Couldn't remove: ${result.error}`);
       return;
@@ -1538,6 +1770,7 @@ function DoorCard({
   return (
     <div
       ref={rootRef}
+      style={{ scrollMarginTop: "100px" }}
       className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950"
     >
       <div className="flex items-center gap-2">
@@ -1778,61 +2011,6 @@ function DoorCard({
             />
           </div>
 
-          <div className="mt-3 border-t border-neutral-200 pt-2 dark:border-neutral-800">
-            <button
-              type="button"
-              onClick={() => void toggleTested()}
-              aria-pressed={!!door.tested_at}
-              className={
-                "mb-2 flex h-10 w-full items-center justify-center gap-2 rounded-lg border text-sm font-medium transition " +
-                (door.tested_at
-                  ? "border-emerald-500 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200"
-                  : "border-neutral-300 bg-white text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300")
-              }
-            >
-              <span
-                className={
-                  "flex h-5 w-5 items-center justify-center rounded border " +
-                  (door.tested_at
-                    ? "border-emerald-600 bg-emerald-600 text-white"
-                    : "border-neutral-400 bg-white dark:border-neutral-500 dark:bg-neutral-900")
-                }
-              >
-                {door.tested_at && (
-                  <svg
-                    className="h-3.5 w-3.5"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="3"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <polyline points="20 6 9 17 4 12" />
-                  </svg>
-                )}
-              </span>
-              Tested
-            </button>
-            <button
-              type="button"
-              onClick={saveAll}
-              className={
-                "h-10 w-full rounded-lg text-sm font-medium transition " +
-                (doorDirty
-                  ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
-                  : savedFlash
-                    ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200"
-                    : "border border-emerald-300 bg-emerald-50/60 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300")
-              }
-            >
-              {doorDirty
-                ? "Save changes"
-                : savedFlash
-                  ? "✓ Saved"
-                  : "✓ All saved"}
-            </button>
-          </div>
         </>
       )}
     </div>
@@ -1890,6 +2068,7 @@ function DoorItemRow({
   onPhotoAdded: (photo: JobDoorItemPhoto) => void;
   onPhotoDeleted: (id: string) => void;
 }) {
+  const tracker = useContext(SaveTrackerContext);
   const [noteEditing, setNoteEditing] = useState(false);
   const [noteDraft, setNoteDraft] = useState(item.note ?? "");
   const [syncedNote, setSyncedNote] = useState(item.note ?? "");
@@ -1903,13 +2082,15 @@ function DoorItemRow({
   }
 
   async function saveNote(next: string | null) {
-    const supabase = createClient();
-    const { data, error } = await supabase
-      .from("job_door_items")
-      .update({ note: next })
-      .eq("id", item.id)
-      .select("*")
-      .single();
+    const { data, error } = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("job_door_items")
+        .update({ note: next })
+        .eq("id", item.id)
+        .select("*")
+        .single();
+    });
     if (error || !data) {
       alert(error?.message ?? "Couldn't save note.");
       return;
@@ -1919,14 +2100,16 @@ function DoorItemRow({
 
   async function uploadPhoto(file: File) {
     setUploading(true);
-    const supabase = createClient();
-    const result = await uploadDoorItemPhoto({
-      supabase,
-      file,
-      jobId: job.id,
-      doorId: door.id,
-      itemId: item.id,
-      nextPosition: photos.length,
+    const result = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return uploadDoorItemPhoto({
+        supabase,
+        file,
+        jobId: job.id,
+        doorId: door.id,
+        itemId: item.id,
+        nextPosition: photos.length,
+      });
     });
     if (photoInput.current) photoInput.current.value = "";
     setUploading(false);
@@ -1938,8 +2121,10 @@ function DoorItemRow({
   }
 
   async function removePhoto(photo: JobDoorItemPhoto) {
-    const supabase = createClient();
-    const result = await deleteDoorItemPhoto(supabase, photo);
+    const result = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return deleteDoorItemPhoto(supabase, photo);
+    });
     if (!result.ok) {
       alert(result.error);
       return;
@@ -1949,13 +2134,15 @@ function DoorItemRow({
 
   async function toggleComplete() {
     const nextCompletedAt = item.completed_at ? null : new Date().toISOString();
-    const supabase = createClient();
-    const { data, error } = await supabase
-      .from("job_door_items")
-      .update({ completed_at: nextCompletedAt })
-      .eq("id", item.id)
-      .select("*")
-      .single();
+    const { data, error } = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("job_door_items")
+        .update({ completed_at: nextCompletedAt })
+        .eq("id", item.id)
+        .select("*")
+        .single();
+    });
     if (error || !data) {
       alert(error?.message ?? "Couldn't update item.");
       return;
@@ -2220,6 +2407,7 @@ function JobPhotoSection({
   onAdded: (photo: JobPhoto) => void;
   onDeleted: (id: string) => void;
 }) {
+  const tracker = useContext(SaveTrackerContext);
   const fileInput = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2233,8 +2421,10 @@ function JobPhotoSection({
     if (!file) return;
     setUploading(true);
     setError(null);
-    const supabase = createClient();
-    const result = await uploadJobPhoto({ supabase, file, jobId, doorId });
+    const result = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return uploadJobPhoto({ supabase, file, jobId, doorId });
+    });
     if (fileInput.current) fileInput.current.value = "";
     setUploading(false);
     if (!result.ok) {
@@ -2246,8 +2436,10 @@ function JobPhotoSection({
 
   async function remove(photo: JobPhoto) {
     if (!confirm("Delete this photo?")) return;
-    const supabase = createClient();
-    const result = await deleteJobPhoto(supabase, photo);
+    const result = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return deleteJobPhoto(supabase, photo);
+    });
     if (!result.ok) {
       setError(result.error);
       return;
@@ -2324,6 +2516,7 @@ function PanelCard({
   jobId,
   allDoors,
   panelDoorIds,
+  allAssignedDoorIds,
   photos,
   supabaseUrl,
   onPanelUpdate,
@@ -2331,11 +2524,13 @@ function PanelCard({
   onPanelDoorsChange,
   onPanelPhotoAdded,
   onPanelPhotoDeleted,
+  onCreateAndAddDoors,
 }: {
   panel: JobPanel;
   jobId: string;
   allDoors: JobDoor[];
   panelDoorIds: string[];
+  allAssignedDoorIds: Set<string>;
   photos: JobPanelPhoto[];
   supabaseUrl: string;
   onPanelUpdate: (panel: JobPanel) => void;
@@ -2343,7 +2538,9 @@ function PanelCard({
   onPanelDoorsChange: (panelId: string, doorIds: string[]) => void;
   onPanelPhotoAdded: (photo: JobPanelPhoto) => void;
   onPanelPhotoDeleted: (id: string) => void;
+  onCreateAndAddDoors: (names: string[]) => Promise<boolean>;
 }) {
+  const tracker = useContext(SaveTrackerContext);
   const [nameDraft, setNameDraft] = useState(panel.name);
   const [commDraft, setCommDraft] = useState(panel.comm_room ?? "");
   const [syncedName, setSyncedName] = useState(panel.name);
@@ -2352,12 +2549,9 @@ function PanelCard({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [pickingDoor, setPickingDoor] = useState(false);
-  const [savedFlash, setSavedFlash] = useState(false);
+  const [newDoorBulk, setNewDoorBulk] = useState("");
+  const [creatingNew, setCreatingNew] = useState(false);
   const photoInput = useRef<HTMLInputElement>(null);
-
-  const panelDirty =
-    nameDraft.trim() !== panel.name ||
-    (commDraft.trim() || null) !== panel.comm_room;
 
   if (panel.name !== syncedName) {
     if (nameDraft === syncedName) setNameDraft(panel.name);
@@ -2369,13 +2563,15 @@ function PanelCard({
   }
 
   async function commit(patch: Partial<JobPanel>) {
-    const supabase = createClient();
-    const { data, error } = await supabase
-      .from("job_panels")
-      .update(patch)
-      .eq("id", panel.id)
-      .select("*")
-      .single();
+    const { data, error } = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("job_panels")
+        .update(patch)
+        .eq("id", panel.id)
+        .select("*")
+        .single();
+    });
     if (error || !data) {
       alert(error?.message ?? "Couldn't save panel.");
       return;
@@ -2383,25 +2579,16 @@ function PanelCard({
     onPanelUpdate(data as JobPanel);
   }
 
-  async function savePanel() {
-    const patch: Partial<JobPanel> = {};
-    const trimmedName = nameDraft.trim();
-    if (trimmedName && trimmedName !== panel.name) patch.name = trimmedName;
-    const nextComm = commDraft.trim() || null;
-    if (nextComm !== panel.comm_room) patch.comm_room = nextComm;
-    if (Object.keys(patch).length > 0) await commit(patch);
-    setSavedFlash(true);
-    window.setTimeout(() => setSavedFlash(false), 1500);
-  }
-
   async function deletePanel() {
     setDeleting(true);
-    const supabase = createClient();
-    const { data, error } = await supabase
-      .from("job_panels")
-      .delete()
-      .eq("id", panel.id)
-      .select("id");
+    const { data, error } = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("job_panels")
+        .delete()
+        .eq("id", panel.id)
+        .select("id");
+    });
     setDeleting(false);
     setConfirmingDelete(false);
     if (error) {
@@ -2416,30 +2603,33 @@ function PanelCard({
   }
 
   async function addDoor(doorId: string) {
-    const supabase = createClient();
     const next = [...panelDoorIds, doorId];
-    const { error } = await supabase
-      .from("job_panel_doors")
-      .insert({
-        panel_id: panel.id,
-        door_id: doorId,
-        position: next.length - 1,
-      });
+    const { error } = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("job_panel_doors")
+        .insert({
+          panel_id: panel.id,
+          door_id: doorId,
+          position: next.length - 1,
+        });
+    });
     if (error) {
       alert(error.message);
       return;
     }
     onPanelDoorsChange(panel.id, next);
-    setPickingDoor(false);
   }
 
   async function removeDoor(doorId: string) {
-    const supabase = createClient();
-    const { error } = await supabase
-      .from("job_panel_doors")
-      .delete()
-      .eq("panel_id", panel.id)
-      .eq("door_id", doorId);
+    const { error } = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("job_panel_doors")
+        .delete()
+        .eq("panel_id", panel.id)
+        .eq("door_id", doorId);
+    });
     if (error) {
       alert(error.message);
       return;
@@ -2450,15 +2640,31 @@ function PanelCard({
     );
   }
 
+  async function createNewDoors() {
+    const names = newDoorBulk
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (names.length === 0) return;
+    setCreatingNew(true);
+    const ok = await onCreateAndAddDoors(names);
+    setCreatingNew(false);
+    if (ok) {
+      setNewDoorBulk("");
+    }
+  }
+
   async function uploadPhoto(file: File) {
     setUploading(true);
-    const supabase = createClient();
-    const result = await uploadPanelPhoto({
-      supabase,
-      file,
-      jobId,
-      panelId: panel.id,
-      nextPosition: photos.length,
+    const result = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return uploadPanelPhoto({
+        supabase,
+        file,
+        jobId,
+        panelId: panel.id,
+        nextPosition: photos.length,
+      });
     });
     if (photoInput.current) photoInput.current.value = "";
     setUploading(false);
@@ -2470,8 +2676,10 @@ function PanelCard({
   }
 
   async function removePhoto(photo: JobPanelPhoto) {
-    const supabase = createClient();
-    const result = await deletePanelPhoto(supabase, photo);
+    const result = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return deletePanelPhoto(supabase, photo);
+    });
     if (!result.ok) {
       alert(result.error);
       return;
@@ -2483,7 +2691,12 @@ function PanelCard({
   const linkedDoors = panelDoorIds
     .map((id) => doorMap.get(id))
     .filter((d): d is JobDoor => !!d);
-  const availableDoors = allDoors.filter((d) => !panelDoorIds.includes(d.id));
+  // Only show doors that aren't already linked to ANY panel. Doors
+  // attached to other panels are hidden so the user doesn't accidentally
+  // wire the same door to two panels.
+  const availableDoors = allDoors.filter(
+    (d) => !allAssignedDoorIds.has(d.id),
+  );
 
   return (
     <li className="rounded-xl border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
@@ -2585,7 +2798,7 @@ function PanelCard({
               </button>
             </span>
           ))}
-          {availableDoors.length > 0 && !pickingDoor && (
+          {!pickingDoor && (
             <button
               type="button"
               onClick={() => setPickingDoor(true)}
@@ -2599,7 +2812,9 @@ function PanelCard({
           <div className="mt-2 rounded-lg border border-neutral-200 bg-white p-2 dark:border-neutral-800 dark:bg-neutral-900">
             <div className="mb-1.5 flex items-center justify-between">
               <span className="text-[10px] font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-                Tap a door to add
+                {availableDoors.length > 0
+                  ? "Tap to assign or type new names"
+                  : "Type new door names"}
               </span>
               <button
                 type="button"
@@ -2609,17 +2824,43 @@ function PanelCard({
                 Close
               </button>
             </div>
-            <div className="flex flex-wrap gap-1.5">
-              {availableDoors.map((d) => (
-                <button
-                  key={d.id}
-                  type="button"
-                  onClick={() => addDoor(d.id)}
-                  className="rounded-full border border-neutral-300 bg-white px-2.5 py-1 text-xs font-medium text-neutral-700 active:scale-95 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
-                >
-                  + {d.name}
-                </button>
-              ))}
+            {availableDoors.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                {availableDoors.map((d) => (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => addDoor(d.id)}
+                    className="rounded-full border border-neutral-300 bg-white px-2.5 py-1 text-xs font-medium text-neutral-700 active:scale-95 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+                  >
+                    + {d.name}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-1.5">
+              <input
+                type="text"
+                placeholder="New: Door 101, Door 102…"
+                value={newDoorBulk}
+                onChange={(e) => setNewDoorBulk(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void createNewDoors();
+                  }
+                }}
+                disabled={creatingNew}
+                className="h-9 flex-1 rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+              />
+              <button
+                type="button"
+                onClick={createNewDoors}
+                disabled={creatingNew || !newDoorBulk.trim()}
+                className="h-9 rounded-md bg-neutral-900 px-2.5 text-xs font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+              >
+                {creatingNew ? "Adding…" : "Add"}
+              </button>
             </div>
           </div>
         )}
@@ -2691,26 +2932,6 @@ function PanelCard({
         </button>
       </div>
 
-      <div className="mt-3 border-t border-neutral-200 pt-2 dark:border-neutral-800">
-        <button
-          type="button"
-          onClick={savePanel}
-          className={
-            "h-10 w-full rounded-lg text-sm font-medium transition " +
-            (panelDirty
-              ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
-              : savedFlash
-                ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200"
-                : "border border-emerald-300 bg-emerald-50/60 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300")
-          }
-        >
-          {panelDirty
-            ? "Save changes"
-            : savedFlash
-              ? "✓ Saved"
-              : "✓ All saved"}
-        </button>
-      </div>
     </li>
   );
 }
