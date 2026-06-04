@@ -35,10 +35,10 @@ export async function AppHeader({
       <div className="flex items-center gap-3">
         {isAdmin && (
           <Link
-            href="/admin/resets"
+            href="/admin/approvals"
             className="text-sm font-medium text-neutral-600 underline-offset-4 active:text-neutral-900 hover:underline dark:text-neutral-400 dark:active:text-neutral-100"
           >
-            Resets
+            Approvals
           </Link>
         )}
         {showQuickView && (

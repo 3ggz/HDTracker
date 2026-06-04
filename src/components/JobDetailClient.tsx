@@ -1805,13 +1805,18 @@ function DoorCard({
     );
   }
 
+  // A door can be wired up with more than one 5200 / 3220 exciter,
+  // so the chip for those stays available even after one is added.
+  // Everything else hides once it's present so the chip row doesn't
+  // grow stale.
+  const REPEATABLE = new Set(["5200 Exciter", "3220 Exciter"]);
   const usedNames = new Set(items.map((it) => it.name));
   const quickAdds = [
     ...HUGS_TEMPLATE.requiredItems,
     ...HUGS_TEMPLATE.optionalItems,
     "Door contact",
     "REX",
-  ].filter((n) => !usedNames.has(n));
+  ].filter((n) => REPEATABLE.has(n) || !usedNames.has(n));
 
   const completedCount = items.filter((it) => it.completed_at).length;
 

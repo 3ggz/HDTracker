@@ -1,55 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-
-type Theme = "light" | "dark" | "system";
-
-const STORAGE_KEY = "hd-theme";
-// In-tab signal that something updated the theme — native storage
-// events only fire cross-tab, so we dispatch on this when the user
-// picks a new value to wake any subscribed components in the same tab.
-const IN_TAB_EVENT = "hd-theme-change";
-
-function readStoredTheme(): Theme {
-  try {
-    const v = localStorage.getItem(STORAGE_KEY);
-    if (v === "light" || v === "dark") return v;
-  } catch {
-    // localStorage unavailable (private mode etc) — fall through.
-  }
-  return "system";
-}
-
-function applyTheme(theme: Theme) {
-  const wantsDark =
-    theme === "dark" ||
-    (theme === "system" &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches);
-  document.documentElement.classList.toggle("dark", wantsDark);
-  // Keep the mobile browser chrome (iOS URL/tool bars, Android
-  // notification bar) in sync with the picked theme.
-  const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute("content", wantsDark ? "#0a0a0a" : "#fafafa");
-}
-
-function persistTheme(theme: Theme) {
-  try {
-    if (theme === "system") localStorage.removeItem(STORAGE_KEY);
-    else localStorage.setItem(STORAGE_KEY, theme);
-  } catch {
-    // ignore
-  }
-  window.dispatchEvent(new Event(IN_TAB_EVENT));
-}
-
-function subscribe(callback: () => void): () => void {
-  window.addEventListener("storage", callback);
-  window.addEventListener(IN_TAB_EVENT, callback);
-  return () => {
-    window.removeEventListener("storage", callback);
-    window.removeEventListener(IN_TAB_EVENT, callback);
-  };
-}
+import {
+  applyTheme,
+  persistTheme,
+  readStoredTheme,
+  subscribe,
+  type Theme,
+} from "@/lib/theme-utils";
 
 export function ThemeToggle() {
   // useSyncExternalStore is the React 19 pattern for "state lives
@@ -64,17 +22,6 @@ export function ThemeToggle() {
   );
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
-
-  // When the user picks "system", track OS theme changes live so
-  // toggling dark mode in macOS / Windows / Android settings flips
-  // the app without requiring a reload.
-  useEffect(() => {
-    if (theme !== "system") return;
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const handler = () => applyTheme("system");
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, [theme]);
 
   // Dismiss the popover on outside tap.
   useEffect(() => {

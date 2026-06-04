@@ -2,8 +2,11 @@ import Link from "next/link";
 
 type Tab = { href: string; label: string; key: "vehicles" | "jobs" | "faq" };
 
+// Labelled "Inventory" so it can later cover more than just vehicles
+// (Hangar / home-base equipment is on the table). The `key` stays
+// "vehicles" to avoid churning every page that opts into a tab.
 const TABS: readonly Tab[] = [
-  { href: "/", label: "Vehicles", key: "vehicles" },
+  { href: "/", label: "Inventory", key: "vehicles" },
   { href: "/jobs", label: "Jobs", key: "jobs" },
   { href: "/faq", label: "FAQ", key: "faq" },
 ];

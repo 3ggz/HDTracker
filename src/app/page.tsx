@@ -32,6 +32,10 @@ export default async function Home() {
             .from("password_reset_requests")
             .select("*", { count: "exact", head: true })
             .is("approved_at", null)
+            .gt(
+              "requested_at",
+              new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+            )
         : Promise.resolve({ count: 0 }),
     ]);
 

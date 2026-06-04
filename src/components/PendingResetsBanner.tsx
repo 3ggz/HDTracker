@@ -15,10 +15,15 @@ export function PendingResetsBanner({
     const supabase = createClient();
 
     async function refreshCount() {
+      // Mirror the page-level cutoff: only "fresh" pending requests
+      // (under 30 minutes old) count for the banner. Older ones are
+      // shown under Expired on the page and aren't actionable.
+      const since = new Date(Date.now() - 30 * 60 * 1000).toISOString();
       const { count: nextCount } = await supabase
         .from("password_reset_requests")
         .select("*", { count: "exact", head: true })
-        .is("approved_at", null);
+        .is("approved_at", null)
+        .gt("requested_at", since);
       setCount(nextCount ?? 0);
     }
 
@@ -46,7 +51,7 @@ export function PendingResetsBanner({
 
   return (
     <Link
-      href="/admin/resets"
+      href="/admin/approvals"
       className="block border-b border-sky-200 bg-sky-50 px-4 py-3 text-sm font-medium text-sky-900 transition active:bg-sky-100 dark:border-sky-900/40 dark:bg-sky-950/30 dark:text-sky-100 dark:active:bg-sky-950/50"
     >
       <strong>{count}</strong>{" "}
