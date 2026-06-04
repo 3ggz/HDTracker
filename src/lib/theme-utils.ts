@@ -32,8 +32,20 @@ export function applyTheme(theme: Theme) {
   // removed when switching to light. classList.add was leaving stale
   // .dark in place on some transitions.
   document.documentElement.classList.toggle("dark", wantsDark);
-  const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute("content", wantsDark ? DARK_META : LIGHT_META);
+
+  // iOS Safari and several Android browsers don't repaint the
+  // browser chrome when theme-color's content attribute is mutated
+  // in place — they only pick up a new value when the tag itself is
+  // (re-)inserted. So we wipe every existing tag and append a fresh
+  // one. Defensive against Next.js generating its own copy too.
+  const color = wantsDark ? DARK_META : LIGHT_META;
+  document
+    .querySelectorAll('meta[name="theme-color"]')
+    .forEach((m) => m.remove());
+  const meta = document.createElement("meta");
+  meta.setAttribute("name", "theme-color");
+  meta.setAttribute("content", color);
+  document.head.appendChild(meta);
 }
 
 export function persistTheme(theme: Theme) {

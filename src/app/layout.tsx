@@ -15,17 +15,16 @@ const geistMono = Geist_Mono({
 });
 
 // Inline blocking script — runs before <body> renders so the .dark
-// class is on <html> in time for the first paint. Also rewrites the
-// theme-color meta so the mobile browser chrome (URL bar + bottom
-// toolbar on iOS, notification bar on Android) matches the picked
-// theme, not just the OS media query.
+// class is on <html> in time for the first paint, and also (re)inserts
+// the theme-color meta tag so the mobile browser chrome (iOS URL +
+// toolbar, Android notification bar) matches the picked theme.
 //
-// Uses classList.toggle (not add) and always rewrites the meta —
-// previously we only mutated for the dark case, which meant a stale
-// .dark class or a stale meta from a prior session could survive a
-// switch to light. ThemeSync re-applies on mount as a belt-and-
-// suspenders against React hydration touching the html className.
-const themeBootstrap = `(function(){try{var s=localStorage.getItem('hd-theme');var d=s==='dark'||((s===null||s==='system')&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.toggle('dark',d);var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content',d?'#0a0a0a':'#fafafa');}catch(e){}})();`;
+// iOS Safari and several Android browsers don't repaint chrome when
+// theme-color's content attribute is mutated in place. The bootstrap
+// nukes any existing tags and appends a fresh one — the only way to
+// get a reliable re-read. ThemeSync runs the same remove-and-replace
+// on the React side whenever the user picks a different theme.
+const themeBootstrap = `(function(){try{var s=localStorage.getItem('hd-theme');var d=s==='dark'||((s===null||s==='system')&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.toggle('dark',d);var ex=document.querySelectorAll('meta[name="theme-color"]');for(var i=0;i<ex.length;i++)ex[i].parentNode.removeChild(ex[i]);var m=document.createElement('meta');m.setAttribute('name','theme-color');m.setAttribute('content',d?'#0a0a0a':'#fafafa');document.head.appendChild(m);}catch(e){}})();`;
 
 export const metadata: Metadata = {
   title: "HDTracker",
@@ -36,10 +35,11 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
-  // Static default; the inline bootstrap script and ThemeToggle
-  // override this at runtime so the iOS / Android browser chrome
-  // matches the *user-picked* theme, not the OS media query.
-  themeColor: "#fafafa",
+  // themeColor is intentionally omitted — the inline bootstrap below
+  // owns the meta tag at runtime (remove-and-re-add is the only way
+  // iOS / Android pick up a theme-color change). If we let Next.js
+  // generate one from this field too, we'd have a duplicate tag and
+  // some browsers race on which one wins.
 };
 
 export default function RootLayout({
