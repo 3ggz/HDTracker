@@ -26,6 +26,10 @@ function applyTheme(theme: Theme) {
     (theme === "system" &&
       window.matchMedia("(prefers-color-scheme: dark)").matches);
   document.documentElement.classList.toggle("dark", wantsDark);
+  // Keep the mobile browser chrome (iOS URL/tool bars, Android
+  // notification bar) in sync with the picked theme.
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", wantsDark ? "#0a0a0a" : "#fafafa");
 }
 
 function persistTheme(theme: Theme) {

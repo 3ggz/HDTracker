@@ -14,10 +14,12 @@ const geistMono = Geist_Mono({
 });
 
 // Inline blocking script — runs before <body> renders so .dark is
-// on <html> in time for the first paint. No flash of the wrong
-// theme on SSR'd pages. Mirrors the logic in ThemeToggle: stored
-// preference wins, otherwise follow the OS via prefers-color-scheme.
-const themeBootstrap = `(function(){try{var s=localStorage.getItem('hd-theme');var d=s==='dark'||((s===null||s==='system')&&window.matchMedia('(prefers-color-scheme: dark)').matches);if(d)document.documentElement.classList.add('dark');}catch(e){}})();`;
+// on <html> in time for the first paint. Also rewrites the
+// theme-color meta so the mobile browser chrome (URL bar + bottom
+// toolbar on iOS, notification bar on Android) matches the picked
+// theme, not just the OS media query. Mirrors the logic in
+// ThemeToggle: stored preference wins, otherwise follow the OS.
+const themeBootstrap = `(function(){try{var s=localStorage.getItem('hd-theme');var d=s==='dark'||((s===null||s==='system')&&window.matchMedia('(prefers-color-scheme: dark)').matches);if(d){document.documentElement.classList.add('dark');var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content','#0a0a0a');}}catch(e){}})();`;
 
 export const metadata: Metadata = {
   title: "HDTracker",
@@ -28,10 +30,10 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
-  themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#fafafa" },
-    { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" },
-  ],
+  // Static default; the inline bootstrap script and ThemeToggle
+  // override this at runtime so the iOS / Android browser chrome
+  // matches the *user-picked* theme, not the OS media query.
+  themeColor: "#fafafa",
 };
 
 export default function RootLayout({
