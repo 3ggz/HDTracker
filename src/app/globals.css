@@ -1,8 +1,21 @@
 @import "tailwindcss";
 
+/* Switch Tailwind's `dark:` variant from the default
+   prefers-color-scheme media query to a class-based strategy. We
+   toggle `.dark` on <html> ourselves (see the inline bootstrap
+   script in layout.tsx and the ThemeToggle component) so users can
+   pick light / dark / system explicitly instead of being stuck with
+   whatever their OS reports. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
+}
+
+html.dark {
+  --background: #0a0a0a;
+  --foreground: #ededed;
 }
 
 @theme inline {
@@ -10,13 +23,6 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {

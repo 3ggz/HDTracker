@@ -238,7 +238,7 @@ export default async function JobQuickViewPage({
                 return (
                   <li
                     key={door.id}
-                    className="rounded-xl border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900"
+                    className="relative rounded-xl border border-neutral-200 bg-white p-3 pb-7 dark:border-neutral-800 dark:bg-neutral-900"
                   >
                     <div className="flex items-center justify-between gap-2">
                       <h3 className="text-sm font-semibold">{door.name}</h3>
@@ -279,6 +279,25 @@ export default async function JobQuickViewPage({
                       <p className="mt-2 whitespace-pre-wrap text-xs text-neutral-600 dark:text-neutral-400">
                         {door.notes}
                       </p>
+                    )}
+                    {door.tested_at && (
+                      <span
+                        className="absolute bottom-1.5 right-2 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400"
+                        title={`Tested ${new Date(door.tested_at).toLocaleString()}`}
+                      >
+                        <svg
+                          className="h-3 w-3"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="3"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                        Tested
+                      </span>
                     )}
                   </li>
                 );

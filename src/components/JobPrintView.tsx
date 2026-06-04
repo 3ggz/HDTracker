@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { publicJobFileUrl, type JobPhoto } from "@/lib/job-photos";
 import {
@@ -38,10 +38,13 @@ export function JobPrintView({
     };
   }, [job.name, job.number]);
 
-  useEffect(() => {
-    const t = setTimeout(() => window.print(), 600);
-    return () => clearTimeout(t);
-  }, []);
+  // Default the map toggle on only when the job actually has one
+  // uploaded — otherwise the checkbox is a no-op.
+  const [includeMap, setIncludeMap] = useState<boolean>(!!job.site_map_path);
+
+  // No auto-print: the user picks include-map first, then taps Print
+  // when they're ready. Previously this fired window.print() on mount
+  // which left no chance to change the toggle.
 
   const jobPhotos = photos.filter((p) => !p.door_id);
   const itemsByDoor = new Map<string, JobDoorItem[]>();
@@ -67,17 +70,24 @@ export function JobPrintView({
         body { background: white; }
       `}</style>
 
-      <div className="print-toolbar sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-neutral-200 bg-neutral-50 px-4 py-3">
+      <div className="print-toolbar sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-neutral-200 bg-neutral-50 px-4 py-3">
         <Link
           href={`/jobs/${job.id}`}
           className="text-sm font-medium text-neutral-600 active:text-neutral-900"
         >
           ← Back
         </Link>
-        <p className="text-xs text-neutral-500">
-          Tap <span className="font-medium">Print</span> when the dialog opens, then choose
-          <span className="font-medium"> Save as PDF</span>.
-        </p>
+        {job.site_map_path && (
+          <label className="flex cursor-pointer items-center gap-2 text-xs text-neutral-700">
+            <input
+              type="checkbox"
+              checked={includeMap}
+              onChange={(e) => setIncludeMap(e.target.checked)}
+              className="h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-2 focus:ring-neutral-900/10"
+            />
+            Include site map
+          </label>
+        )}
         <button
           type="button"
           onClick={() => window.print()}
@@ -233,30 +243,15 @@ export function JobPrintView({
           </section>
         )}
 
-        {job.site_map_path && (
+        {job.site_map_path && includeMap && (
           <section className="page-break">
             <h2 className="mb-3 text-lg font-bold">Site map</h2>
-            <p className="mb-2 text-xs text-neutral-500">
-              If the embedded PDF doesn&apos;t appear in the print, save the
-              site map separately:{" "}
-              <a
-                href={publicJobFileUrl(supabaseUrl, job.site_map_path)}
-                className="underline"
-              >
-                open site-map PDF
-              </a>
-              .
-            </p>
             <object
               data={publicJobFileUrl(supabaseUrl, job.site_map_path)}
               type="application/pdf"
               className="h-[9in] w-full border border-neutral-300"
-            >
-              <p className="p-4 text-sm">
-                Your browser couldn&apos;t render the embedded PDF. Use the
-                link above to view the site map directly.
-              </p>
-            </object>
+              aria-label="Site map PDF"
+            />
           </section>
         )}
 

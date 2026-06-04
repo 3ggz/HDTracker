@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { ALLOWED_EMAIL_DOMAIN, isAllowedEmail } from "@/lib/email";
 import { getBuildVersion } from "@/lib/build-version";
+import { FEATURES } from "@/lib/features";
 
 type Stage = "email" | "password";
 
@@ -235,12 +236,14 @@ export default function SignInPage() {
               >
                 Use a different email
               </button>
-              <Link
-                href="/forgot-password"
-                className="block w-full text-center text-sm text-neutral-600 underline-offset-4 hover:underline dark:text-neutral-400"
-              >
-                Forgot password?
-              </Link>
+              {FEATURES.showForgotPasswordLink && (
+                <Link
+                  href="/forgot-password"
+                  className="block w-full text-center text-sm text-neutral-600 underline-offset-4 hover:underline dark:text-neutral-400"
+                >
+                  Forgot password?
+                </Link>
+              )}
             </>
           )}
 

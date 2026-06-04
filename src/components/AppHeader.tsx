@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { SignOutButton } from "./SignOutButton";
+import { ThemeToggle } from "./ThemeToggle";
 import { getBuildVersion } from "@/lib/build-version";
 import { createClient } from "@/lib/supabase/server";
 import { isAdminEmail } from "@/lib/admin";
@@ -39,6 +40,7 @@ export async function AppHeader() {
         >
           Quick view
         </Link>
+        <ThemeToggle />
         <SignOutButton />
       </div>
     </header>

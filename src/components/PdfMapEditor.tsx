@@ -745,28 +745,44 @@ function PdfPageView({
   // Rasterize the PDF page. Only fires when:
   //   • the page has scrolled into view at least once, AND
   //   • renderScale changes (debounced from `scale` in the parent).
-  // OVERSAMPLE=2 gives us crisp output at device pixels and leaves a
-  // bit of headroom for moderate pinch-zoom before re-render kicks in.
+  // We render into an offscreen canvas first and only swap pixels
+  // into the visible one when the render completes. Writing to
+  // canvas.width / canvas.height clears existing pixels, so doing
+  // that on the visible canvas left a multi-second blank gap after
+  // a pinch — which read on screen as "the map disappeared".
+  // OVERSAMPLE=2 gives crisp output at device pixels with a bit of
+  // headroom for moderate pinch-zoom before re-render kicks in.
   useEffect(() => {
     if (!page || !hasBeenVisible) return;
     const canvas = pageCanvasRef.current;
     if (!canvas) return;
+    let cancelled = false;
     const OVERSAMPLE = 2;
     const renderViewport = page.getViewport({
       scale: renderScale * OVERSAMPLE,
     });
-    canvas.width = renderViewport.width;
-    canvas.height = renderViewport.height;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    const offscreen = document.createElement("canvas");
+    offscreen.width = renderViewport.width;
+    offscreen.height = renderViewport.height;
+    const offCtx = offscreen.getContext("2d");
+    if (!offCtx) return;
     const renderTask = page.render({
-      canvasContext: ctx,
+      canvasContext: offCtx,
       viewport: renderViewport,
     });
-    renderTask.promise.catch(() => {
-      // Render can be cancelled by a re-render — swallow.
-    });
+    renderTask.promise
+      .then(() => {
+        if (cancelled) return;
+        canvas.width = renderViewport.width;
+        canvas.height = renderViewport.height;
+        const visibleCtx = canvas.getContext("2d");
+        if (visibleCtx) visibleCtx.drawImage(offscreen, 0, 0);
+      })
+      .catch(() => {
+        // Render cancelled by a re-render — swallow.
+      });
     return () => {
+      cancelled = true;
       renderTask.cancel();
     };
   }, [page, hasBeenVisible, renderScale]);
