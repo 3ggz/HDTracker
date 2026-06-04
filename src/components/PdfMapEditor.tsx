@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import type {
   PDFDocumentProxy,
@@ -65,7 +65,22 @@ export function PdfMapEditor({
   const [penWidth, setPenWidth] = useState(3);
   const [textSize, setTextSize] = useState(18);
   const [showEdits, setShowEdits] = useState(true);
+  // Two scales:
+  //   • `scale` is what's on screen (CSS size). Pinch and the +/- buttons
+  //     write here every frame so the view feels instant — the page
+  //     canvas just stretches its existing bitmap, which the browser
+  //     does on the GPU.
+  //   • `renderScale` is what PDF.js actually rasterized at. It catches
+  //     up to `scale` ~200ms after the gesture settles. The re-render
+  //     is what makes the page crisp again at the new zoom; doing it
+  //     on every pinch frame is what was making the editor feel laggy.
   const [scale, setScale] = useState(1);
+  const [renderScale, setRenderScale] = useState(1);
+  useEffect(() => {
+    if (scale === renderScale) return;
+    const t = window.setTimeout(() => setRenderScale(scale), 220);
+    return () => window.clearTimeout(t);
+  }, [scale, renderScale]);
 
   const [annotationsByPage, setAnnotationsByPage] = useState(
     initialAnnotationsByPage,
@@ -94,7 +109,9 @@ export function PdfMapEditor({
   // new resolution via PDF.js. Stays sharp at any zoom.
   const scrollRef = useRef<HTMLDivElement>(null);
   const scaleRef = useRef(scale);
-  scaleRef.current = scale;
+  useEffect(() => {
+    scaleRef.current = scale;
+  }, [scale]);
   const pinchRef = useRef<{
     active: boolean;
     startDist: number;
@@ -456,6 +473,7 @@ export function PdfMapEditor({
               pdf={pdf}
               pageIndex={pageIndex}
               scale={scale}
+              renderScale={renderScale}
               tool={tool}
               color={color}
               penWidth={penWidth}
@@ -520,6 +538,7 @@ function PdfPageView({
   pdf,
   pageIndex,
   scale,
+  renderScale,
   tool,
   color,
   penWidth,
@@ -534,6 +553,7 @@ function PdfPageView({
   pdf: PDFDocumentProxy;
   pageIndex: number;
   scale: number;
+  renderScale: number;
   tool: Tool;
   color: string;
   penWidth: number;
@@ -549,9 +569,24 @@ function PdfPageView({
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [page, setPage] = useState<PDFPageProxy | null>(null);
-  const [baseSize, setBaseSize] = useState<{ w: number; h: number } | null>(
-    null,
+  const [naturalSize, setNaturalSize] = useState<{
+    w: number;
+    h: number;
+  } | null>(null);
+  // baseSize is derived from naturalSize × scale — no need for state.
+  // useMemo keeps a stable reference between renders so the effects
+  // that depend on it (overlay redraw, etc.) don't churn.
+  const baseSize = useMemo(
+    () =>
+      naturalSize
+        ? { w: naturalSize.w * scale, h: naturalSize.h * scale }
+        : null,
+    [naturalSize, scale],
   );
+  // Lazy-render: pages start hidden and only rasterize once they get
+  // close to the viewport. For a 10-page PDF this means the editor
+  // opens after one page render instead of ten.
+  const [hasBeenVisible, setHasBeenVisible] = useState(false);
   const [textInput, setTextInput] = useState<{
     x: number;
     y: number;
@@ -568,37 +603,72 @@ function PdfPageView({
     return registerAbandon(() => abandonStrokeRef.current());
   }, [registerAbandon]);
 
-  // Load page once.
+  // Load page metadata. This is cheap (no rasterization) and gives us
+  // the natural size so the placeholder occupies the right space in
+  // the scroll list before the page itself renders.
   useEffect(() => {
     let cancelled = false;
     pdf.getPage(pageIndex + 1).then((p) => {
-      if (!cancelled) setPage(p);
+      if (cancelled) return;
+      setPage(p);
+      const vp = p.getViewport({ scale: 1 });
+      setNaturalSize({ w: vp.width, h: vp.height });
     });
     return () => {
       cancelled = true;
     };
   }, [pdf, pageIndex]);
 
-  // Render PDF page to canvas whenever scale or page changes.
+  // Watch the wrapper; flip hasBeenVisible the first time the page
+  // gets within 600px of the viewport so the user almost never sees
+  // a blank page while scrolling.
   useEffect(() => {
-    if (!page) return;
+    if (!naturalSize || hasBeenVisible) return;
+    const el = wrapperRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setHasBeenVisible(true);
+            obs.disconnect();
+            return;
+          }
+        }
+      },
+      { root: null, rootMargin: "600px" },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [naturalSize, hasBeenVisible]);
+
+  // Sync the PDF canvas's CSS size to the current display scale.
+  // Pinch-zoom flows through here and through baseSize → overlay
+  // re-render — no PDF rasterization, just a GPU resize of the
+  // existing bitmap.
+  useEffect(() => {
+    if (!baseSize) return;
     const canvas = pageCanvasRef.current;
     if (!canvas) return;
-    // Render at 2x the device pixel ratio so the page stays sharp even
-    // when the user pinch-zooms our own scale all the way up. PDF pages
-    // are vector — we're not amplifying blur, just allocating more
-    // pixels for the rasterized image. Capped at 4 so a phone with
-    // dpr=3 doesn't allocate 36x memory.
-    const dpr =
-      typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
-    const OVERSAMPLE = Math.min(4, Math.max(2, Math.ceil(dpr * 2)));
-    const cssViewport = page.getViewport({ scale });
-    const renderViewport = page.getViewport({ scale: scale * OVERSAMPLE });
+    canvas.style.width = `${baseSize.w}px`;
+    canvas.style.height = `${baseSize.h}px`;
+  }, [baseSize]);
+
+  // Rasterize the PDF page. Only fires when:
+  //   • the page has scrolled into view at least once, AND
+  //   • renderScale changes (debounced from `scale` in the parent).
+  // OVERSAMPLE=2 gives us crisp output at device pixels and leaves a
+  // bit of headroom for moderate pinch-zoom before re-render kicks in.
+  useEffect(() => {
+    if (!page || !hasBeenVisible) return;
+    const canvas = pageCanvasRef.current;
+    if (!canvas) return;
+    const OVERSAMPLE = 2;
+    const renderViewport = page.getViewport({
+      scale: renderScale * OVERSAMPLE,
+    });
     canvas.width = renderViewport.width;
     canvas.height = renderViewport.height;
-    canvas.style.width = `${cssViewport.width}px`;
-    canvas.style.height = `${cssViewport.height}px`;
-    setBaseSize({ w: cssViewport.width, h: cssViewport.height });
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     const renderTask = page.render({
@@ -611,23 +681,23 @@ function PdfPageView({
     return () => {
       renderTask.cancel();
     };
-  }, [page, scale]);
+  }, [page, hasBeenVisible, renderScale]);
 
-  // Redraw annotation overlay.
+  // Redraw annotation overlay. Always crisp at device pixels — the
+  // overlay is cheap compared to the PDF, so no need to oversample.
   useEffect(() => {
     const overlay = overlayCanvasRef.current;
     if (!overlay || !baseSize) return;
-    // Match the PDF canvas's oversample so strokes stay sharp at zoom.
     const dpr =
       typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
-    const OVERSAMPLE = Math.min(4, Math.max(2, Math.ceil(dpr * 2)));
-    overlay.width = baseSize.w * OVERSAMPLE;
-    overlay.height = baseSize.h * OVERSAMPLE;
+    overlay.width = baseSize.w * dpr;
+    overlay.height = baseSize.h * dpr;
     overlay.style.width = `${baseSize.w}px`;
     overlay.style.height = `${baseSize.h}px`;
     const ctx = overlay.getContext("2d");
     if (!ctx) return;
-    ctx.scale(OVERSAMPLE, OVERSAMPLE);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, baseSize.w, baseSize.h);
     if (!showEdits) return;
     for (const a of annotations) {
@@ -671,12 +741,11 @@ function PdfPageView({
     if (!overlay || !baseSize) return;
     const ctx = overlay.getContext("2d");
     if (!ctx) return;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
     const dpr =
       typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
-    const OVERSAMPLE = Math.min(4, Math.max(2, Math.ceil(dpr * 2)));
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, overlay.width, overlay.height);
-    ctx.scale(OVERSAMPLE, OVERSAMPLE);
+    ctx.scale(dpr, dpr);
     if (!showEdits) return;
     for (const a of annotations) {
       if (a.kind === "pen") {
@@ -801,6 +870,13 @@ function PdfPageView({
     setTextInput(null);
   }
 
+  // Wrapper dims (in CSS px) come from the natural page size scaled
+  // by `scale`. Setting them explicitly means the page slot occupies
+  // the right space in the scroll list even before the PDF renders —
+  // which is what lets IntersectionObserver work correctly.
+  const wrapperW = naturalSize ? naturalSize.w * scale : null;
+  const wrapperH = naturalSize ? naturalSize.h * scale : null;
+
   return (
     <div className="mb-3 flex flex-col items-center">
       <div className="mb-1 flex w-full items-center justify-between px-1">
@@ -819,6 +895,11 @@ function PdfPageView({
       <div
         ref={wrapperRef}
         className="relative inline-block bg-white shadow"
+        style={
+          wrapperW !== null && wrapperH !== null
+            ? { width: `${wrapperW}px`, height: `${wrapperH}px` }
+            : undefined
+        }
       >
         <canvas ref={pageCanvasRef} className="block" />
         <canvas
@@ -830,6 +911,11 @@ function PdfPageView({
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
         />
+        {!hasBeenVisible && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-neutral-400">
+            Page {pageIndex + 1}
+          </div>
+        )}
         {textInput && baseSize && (
           <div
             className="absolute"
