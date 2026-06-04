@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -17,7 +17,24 @@ type ResetRequest = {
 const inputClass =
   "block h-14 w-full rounded-xl border border-neutral-300 bg-white px-4 text-base text-neutral-900 outline-none transition focus:border-neutral-900 focus:ring-2 focus:ring-neutral-900/10 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50 dark:focus:border-neutral-100 dark:focus:ring-neutral-100/10";
 
+// Next.js requires every useSearchParams() consumer to live inside a
+// Suspense boundary so static prerender can bail out cleanly. Wrap
+// the real component and provide a minimal fallback.
 export default function ResetStatusPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="flex min-h-dvh items-center justify-center bg-neutral-50 px-6 py-12 text-sm text-neutral-500 dark:bg-neutral-950 dark:text-neutral-400">
+          Loading…
+        </main>
+      }
+    >
+      <ResetStatusInner />
+    </Suspense>
+  );
+}
+
+function ResetStatusInner() {
   const params = useSearchParams();
   const router = useRouter();
   const email = (params.get("email") ?? "").trim().toLowerCase();
