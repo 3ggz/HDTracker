@@ -44,9 +44,15 @@ export default async function ApprovalsPage() {
             <polyline points="15 18 9 12 15 6" />
           </svg>
         </Link>
-        <h1 className="text-base font-semibold tracking-tight">
+        <h1 className="flex-1 truncate text-base font-semibold tracking-tight">
           Account approvals
         </h1>
+        <Link
+          href="/admin/resets"
+          className="flex h-8 items-center rounded-md border border-neutral-200 bg-white px-2 text-xs font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300 dark:active:bg-neutral-800"
+        >
+          Password resets
+        </Link>
       </header>
 
       <section className="mx-auto w-full max-w-md flex-1 space-y-6 px-4 py-6">
