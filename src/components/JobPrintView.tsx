@@ -25,6 +25,19 @@ export function JobPrintView({
 }) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 
+  // The browser's "Save as PDF" defaults its filename to document.title.
+  // Set it to the job name (sanitized for filesystem-friendliness) so
+  // the saved file lands as "Acme HQ.pdf" instead of "localhost-3000.pdf".
+  useEffect(() => {
+    const prior = document.title;
+    const safeName =
+      job.name.replace(/[\\/:*?"<>|]+/g, "-").trim() || "Job report";
+    document.title = job.number ? `${safeName} (${job.number})` : safeName;
+    return () => {
+      document.title = prior;
+    };
+  }, [job.name, job.number]);
+
   useEffect(() => {
     const t = setTimeout(() => window.print(), 600);
     return () => clearTimeout(t);

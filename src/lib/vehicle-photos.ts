@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { downscaleImageIfNeeded } from "./image-downscale";
 
 export const PHOTO_BUCKET = "vehicle-photos";
 
@@ -90,6 +91,7 @@ export async function uploadVehiclePhoto({
 }: UploadOptions): Promise<UploadResult> {
   const validation = validatePhotoFile(file);
   if (!validation.ok) return validation;
+  file = await downscaleImageIfNeeded(file);
 
   const photoId = crypto.randomUUID();
   const ext = guessExtension(file);
@@ -182,6 +184,7 @@ export async function uploadItemPhoto({
 }: UploadItemPhotoOptions): Promise<UploadItemPhotoResult> {
   const validation = validatePhotoFile(file);
   if (!validation.ok) return validation;
+  file = await downscaleImageIfNeeded(file);
 
   const photoId = crypto.randomUUID();
   const ext = guessExtension(file);

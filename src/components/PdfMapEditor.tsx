@@ -9,12 +9,11 @@ import type {
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 
-// Configure the worker — using a CDN URL keeps the bundle slim and
-// works in production without needing to host the worker file
-// ourselves. The version is pinned to whatever's installed.
+// Worker is committed to /public so we don't depend on a CDN being
+// reachable from every customer's network. When bumping pdfjs-dist,
+// re-copy node_modules/pdfjs-dist/build/pdf.worker.min.mjs into public/.
 if (typeof window !== "undefined") {
-  // pdfjs-dist@4 ships an ESM worker. The matching CDN path:
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 }
 
 type Color = "#dc2626" | "#2563eb" | "#16a34a" | "#facc15" | "#111827";
