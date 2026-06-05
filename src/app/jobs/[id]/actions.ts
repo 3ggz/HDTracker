@@ -202,27 +202,35 @@ export async function deleteDoorAction(doorId: string): Promise<DeleteResult> {
 // permissive (per the project's "leave RLS alone for now" rule), so
 // the gate is enforced here in the server action.
 export async function deleteJobAction(jobId: string): Promise<DeleteResult> {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!isAdminEmail(user?.email)) {
-    return { ok: false, error: "Only admins can delete jobs." };
-  }
-  const { data, error } = await supabase
-    .from("jobs")
-    .delete()
-    .eq("id", jobId)
-    .select("id");
-  if (error) return { ok: false, error: error.message };
-  if (!data || data.length === 0) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!isAdminEmail(user?.email)) {
+      return { ok: false, error: "Only admins can delete jobs." };
+    }
+    const { data, error } = await supabase
+      .from("jobs")
+      .delete()
+      .eq("id", jobId)
+      .select("id");
+    if (error) return { ok: false, error: error.message };
+    if (!data || data.length === 0) {
+      return {
+        ok: false,
+        error:
+          "Database didn't report an error but no rows were affected. Try signing out and back in.",
+      };
+    }
+    return { ok: true };
+  } catch (err) {
+    console.error("deleteJobAction failed", err);
     return {
       ok: false,
-      error:
-        "Database didn't report an error but no rows were affected.",
+      error: err instanceof Error ? err.message : "Unexpected server error.",
     };
   }
-  return { ok: true };
 }
 
 export async function deleteDoorItemAction(

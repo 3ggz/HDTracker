@@ -784,10 +784,19 @@ export function JobDetailClient({
 
         const standaloneSection = standaloneDoor ? (
           <CollapsibleSection
-            title={`Standalone equipment — ${standaloneItems.length} ${standaloneItems.length === 1 ? "item" : "items"}${standaloneItems.length ? ` · ${standaloneDone}/${standaloneItems.length}` : ""}`}
+            title={`Miscellaneous — ${standaloneItems.length} ${standaloneItems.length === 1 ? "item" : "items"}${standaloneItems.length ? ` · ${standaloneDone}/${standaloneItems.length}` : ""}`}
             storageKey={`hd:job:${initialJob.id}:standalone`}
           >
-            <ul className="space-y-3">{renderDoor(standaloneDoor)}</ul>
+            <MiscellaneousSection
+              door={standaloneDoor}
+              items={standaloneItems}
+              onItemsChange={(next) => {
+                setItems((current) => [
+                  ...current.filter((it) => it.door_id !== standaloneDoor.id),
+                  ...next,
+                ]);
+              }}
+            />
           </CollapsibleSection>
         ) : null;
 
@@ -2075,6 +2084,248 @@ function DoorCard({
   );
 }
 
+// Lightweight rendering for the synthetic "Miscellaneous" door that
+// the auto-detect import uses for gateways and other unlabeled
+// standalone equipment. Skipping the full DoorCard (drag handles,
+// photo strips, item-detail rows, etc) keeps opening the section
+// instant even with dozens of items, and avoids labelling it as a
+// "door" in the UI when it isn't one.
+function MiscellaneousSection({
+  door,
+  items,
+  onItemsChange,
+}: {
+  door: JobDoor;
+  items: JobDoorItem[];
+  onItemsChange: (items: JobDoorItem[]) => void;
+}) {
+  const tracker = useContext(SaveTrackerContext);
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState("");
+
+  // Items get grouped by name so a "Gateway × 4" pile shows as a
+  // single labelled group rather than four loose check rows.
+  const groups = useMemo(() => {
+    const map = new Map<string, JobDoorItem[]>();
+    for (const it of items) {
+      const key = it.name;
+      const list = map.get(key) ?? [];
+      list.push(it);
+      map.set(key, list);
+    }
+    return Array.from(map.entries()).sort((a, b) =>
+      a[0].localeCompare(b[0], undefined, { numeric: true }),
+    );
+  }, [items]);
+
+  async function toggleItem(item: JobDoorItem) {
+    const nextCompletedAt = item.completed_at
+      ? null
+      : new Date().toISOString();
+    const { data, error } = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("job_door_items")
+        .update({ completed_at: nextCompletedAt })
+        .eq("id", item.id)
+        .select("*")
+        .single();
+    });
+    if (error || !data) {
+      alert(error?.message ?? "Couldn't update item.");
+      return;
+    }
+    onItemsChange(items.map((it) => (it.id === item.id ? (data as JobDoorItem) : it)));
+  }
+
+  async function addItem(name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const position = items.length;
+    const { data, error } = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("job_door_items")
+        .insert({ door_id: door.id, name: trimmed, position })
+        .select("*")
+        .single();
+    });
+    if (error || !data) {
+      alert(error?.message ?? "Couldn't add item.");
+      return;
+    }
+    onItemsChange([...items, data as JobDoorItem]);
+    setNewName("");
+    setAdding(false);
+  }
+
+  async function removeItem(itemId: string) {
+    const result = await withTrack(tracker, () =>
+      deleteDoorItemAction(itemId),
+    );
+    if (!result.ok) {
+      alert(`Couldn't remove: ${result.error}`);
+      return;
+    }
+    onItemsChange(items.filter((it) => it.id !== itemId));
+  }
+
+  return (
+    <div className="space-y-3">
+      {groups.length === 0 && !adding && (
+        <p className="rounded-lg border border-dashed border-neutral-300 px-4 py-4 text-center text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+          No miscellaneous equipment yet.
+        </p>
+      )}
+
+      {groups.map(([name, groupItems]) => {
+        const done = groupItems.filter((it) => it.completed_at).length;
+        return (
+          <div
+            key={name}
+            className="rounded-xl border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900"
+          >
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold">{name}</h3>
+              <span
+                className={
+                  "rounded-full px-2 py-0.5 text-[10px] font-medium " +
+                  (done === groupItems.length
+                    ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400"
+                    : "bg-neutral-200 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400")
+                }
+              >
+                {done}/{groupItems.length}
+              </span>
+            </div>
+            <ul className="space-y-1">
+              {groupItems.map((it, idx) => {
+                const isDone = !!it.completed_at;
+                return (
+                  <li
+                    key={it.id}
+                    className="flex items-center gap-2 text-sm"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => toggleItem(it)}
+                      aria-label={
+                        isDone
+                          ? `Mark ${name} #${idx + 1} not done`
+                          : `Mark ${name} #${idx + 1} done`
+                      }
+                      className={
+                        "flex h-5 w-5 flex-shrink-0 items-center justify-center rounded border " +
+                        (isDone
+                          ? "border-emerald-600 bg-emerald-600 text-white"
+                          : "border-neutral-300 bg-white dark:border-neutral-600 dark:bg-neutral-900")
+                      }
+                    >
+                      {isDone && (
+                        <svg
+                          className="h-3 w-3"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="3"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      )}
+                    </button>
+                    <span
+                      className={
+                        "flex-1 " +
+                        (isDone
+                          ? "text-neutral-400 line-through dark:text-neutral-500"
+                          : "")
+                      }
+                    >
+                      #{idx + 1}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeItem(it.id)}
+                      aria-label={`Remove ${name} #${idx + 1}`}
+                      className="flex h-7 w-7 items-center justify-center rounded text-neutral-400 active:text-red-600 dark:active:text-red-400"
+                    >
+                      <svg
+                        className="h-3.5 w-3.5"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                      </svg>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+            <button
+              type="button"
+              onClick={() => addItem(name)}
+              className="mt-2 h-8 w-full rounded-md border border-dashed border-neutral-300 text-xs font-medium text-neutral-600 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800"
+            >
+              + Another {name}
+            </button>
+          </div>
+        );
+      })}
+
+      {adding ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void addItem(newName);
+          }}
+          className="flex gap-2"
+        >
+          <input
+            autoFocus
+            type="text"
+            placeholder="Category name (e.g. Gateways)"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            className="h-10 flex-1 rounded-lg border border-neutral-300 bg-white px-3 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+          />
+          <button
+            type="submit"
+            disabled={!newName.trim()}
+            className="h-10 rounded-lg bg-neutral-900 px-3 text-xs font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+          >
+            Add
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setAdding(false);
+              setNewName("");
+            }}
+            className="h-10 rounded-lg border border-neutral-300 px-3 text-xs font-medium dark:border-neutral-700"
+          >
+            Cancel
+          </button>
+        </form>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          className="h-10 w-full rounded-lg border border-dashed border-neutral-300 text-sm font-medium text-neutral-600 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800"
+        >
+          + New category
+        </button>
+      )}
+    </div>
+  );
+}
+
 function CustomItemAdd({ onAdd }: { onAdd: (name: string) => void }) {
   const [value, setValue] = useState("");
   return (
@@ -3143,34 +3394,74 @@ function DeleteJobSection({
 }) {
   const router = useRouter();
   const [pending, setPending] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  async function onDelete() {
-    if (
-      !confirm(
-        `Delete "${jobName}"? This removes all doors, items, photos, and the site map.`,
-      )
-    )
-      return;
+  async function onConfirm() {
     setPending(true);
-    const result = await deleteJobAction(jobId);
-    if (!result.ok) {
-      alert(result.error);
+    setError(null);
+    try {
+      const result = await deleteJobAction(jobId);
+      if (!result.ok) {
+        setError(result.error);
+        setPending(false);
+        return;
+      }
+      router.push("/jobs");
+      router.refresh();
+    } catch (err) {
+      // Action threw (timeout, server crash) — surface it instead of
+      // leaving the button in an indeterminate state.
+      setError(err instanceof Error ? err.message : "Couldn't delete.");
       setPending(false);
-      return;
     }
-    router.push("/jobs");
-    router.refresh();
+  }
+
+  if (confirming) {
+    return (
+      <section className="space-y-2 rounded-lg border border-red-300 bg-red-50 p-3 dark:border-red-900 dark:bg-red-950/30">
+        <p className="text-sm text-red-900 dark:text-red-100">
+          Delete <strong>{jobName}</strong>? This removes every door,
+          item, photo, panel, and the site map.
+        </p>
+        {error && (
+          <p className="rounded bg-white/70 px-2 py-1 text-xs text-red-700 dark:bg-red-950 dark:text-red-300">
+            {error}
+          </p>
+        )}
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setConfirming(false);
+              setError(null);
+            }}
+            disabled={pending}
+            className="h-10 flex-1 rounded-lg border border-neutral-300 bg-white text-sm font-medium dark:border-neutral-700 dark:bg-neutral-900"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={pending}
+            className="h-10 flex-1 rounded-lg bg-red-600 text-sm font-medium text-white disabled:opacity-60"
+          >
+            {pending ? "Deleting..." : "Yes, delete"}
+          </button>
+        </div>
+      </section>
+    );
   }
 
   return (
     <section className="pt-2">
       <button
         type="button"
-        onClick={onDelete}
-        disabled={pending}
-        className="h-12 w-full rounded-lg border border-red-300 text-sm font-medium text-red-600 transition active:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:active:bg-red-950/40"
+        onClick={() => setConfirming(true)}
+        className="h-12 w-full rounded-lg border border-red-300 text-sm font-medium text-red-600 transition active:bg-red-50 dark:border-red-900 dark:text-red-400 dark:active:bg-red-950/40"
       >
-        {pending ? "Deleting..." : "Delete job"}
+        Delete job
       </button>
     </section>
   );

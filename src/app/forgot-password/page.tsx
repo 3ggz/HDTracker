@@ -73,9 +73,9 @@ export default function ForgotPasswordPage() {
             Reset password
           </h1>
           <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-400">
-            Enter your email and Mark will get a notification to approve
-            the reset. Once approved, you&apos;ll be able to set a new
-            password right here.
+            Enter your email and an admin will get a notification to
+            approve the reset. Once authorized, you&apos;ll be able to set
+            a new password right here.
           </p>
         </header>
 
