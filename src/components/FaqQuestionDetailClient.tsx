@@ -83,24 +83,37 @@ export function FaqQuestionDetailClient({
     }
   }
 
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
   async function deleteQuestion() {
-    if (!confirm("Delete this question and all its answers?")) return;
-    const supabase = createClient();
-    const { data, error } = await supabase
-      .from("faq_questions")
-      .delete()
-      .eq("id", question.id)
-      .select("id");
-    if (error) {
-      alert(error.message);
-      return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from("faq_questions")
+        .delete()
+        .eq("id", question.id)
+        .select("id");
+      if (error) {
+        setDeleteError(error.message);
+        setDeleting(false);
+        return;
+      }
+      if (!data || data.length === 0) {
+        setDeleteError("No rows affected. Try signing out and back in.");
+        setDeleting(false);
+        return;
+      }
+      // replace, not push+refresh — same fix as the job-delete flow.
+      router.replace("/faq/q");
+      window.setTimeout(() => setDeleting(false), 1500);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Couldn't delete.");
+      setDeleting(false);
     }
-    if (!data || data.length === 0) {
-      alert("No rows affected.");
-      return;
-    }
-    router.push("/faq/q");
-    router.refresh();
   }
 
   return (
@@ -139,13 +152,49 @@ export function FaqQuestionDetailClient({
         />
         {(question.created_by_id == null ||
           question.created_by_id === currentUserId) && (
-          <button
-            type="button"
-            onClick={deleteQuestion}
-            className="h-9 rounded-md border border-red-300 px-3 text-xs font-medium text-red-600 dark:border-red-900 dark:text-red-400"
-          >
-            Delete question
-          </button>
+          <>
+            {confirmingDelete ? (
+              <div className="space-y-2 rounded-lg border border-red-300 bg-red-50 p-3 dark:border-red-900 dark:bg-red-950/30">
+                <p className="text-xs text-red-900 dark:text-red-100">
+                  Delete this question and all its answers?
+                </p>
+                {deleteError && (
+                  <p className="rounded bg-white/70 px-2 py-1 text-[11px] text-red-700 dark:bg-red-950 dark:text-red-300">
+                    {deleteError}
+                  </p>
+                )}
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConfirmingDelete(false);
+                      setDeleteError(null);
+                    }}
+                    disabled={deleting}
+                    className="h-9 flex-1 rounded-md border border-neutral-300 bg-white text-xs font-medium dark:border-neutral-700 dark:bg-neutral-900"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={deleteQuestion}
+                    disabled={deleting}
+                    className="h-9 flex-1 rounded-md bg-red-600 text-xs font-medium text-white disabled:opacity-60"
+                  >
+                    {deleting ? "Deleting…" : "Yes, delete"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmingDelete(true)}
+                className="h-9 rounded-md border border-red-300 px-3 text-xs font-medium text-red-600 dark:border-red-900 dark:text-red-400"
+              >
+                Delete question
+              </button>
+            )}
+          </>
         )}
       </section>
 

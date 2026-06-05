@@ -84,8 +84,11 @@ export function FaqDetailClient({
       alert("No rows affected. Try signing out and back in.");
       return;
     }
-    router.push("/faq");
-    router.refresh();
+    // replace, not push+refresh — refreshing this route right after
+    // pushing makes the now-404 server component re-fetch and stalls
+    // the navigation, leaving the button stuck on "Deleting…".
+    router.replace("/faq");
+    window.setTimeout(() => setDeletingEntry(false), 1500);
   }
 
   return (

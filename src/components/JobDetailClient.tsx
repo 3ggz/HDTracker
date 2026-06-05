@@ -3407,11 +3407,20 @@ function DeleteJobSection({
         setPending(false);
         return;
       }
-      router.push("/jobs");
-      router.refresh();
+      // replace, not push — the current /jobs/[id] URL is now a 404
+      // and we don't want it sitting in the back stack. Skipping
+      // router.refresh() too: replacing routes already runs a fresh
+      // server render of /jobs, and pairing it with refresh() was
+      // racing the navigation (the refresh would re-render the
+      // current page's server component, hit notFound() on the
+      // deleted row, and the resulting transition stalled — which is
+      // why the button visibly stuck on "Deleting…").
+      router.replace("/jobs");
+      // Belt-and-suspenders: if for any reason the route transition
+      // doesn't unmount us within a moment, drop pending so the
+      // button isn't permanently stuck.
+      window.setTimeout(() => setPending(false), 1500);
     } catch (err) {
-      // Action threw (timeout, server crash) — surface it instead of
-      // leaving the button in an indeterminate state.
       setError(err instanceof Error ? err.message : "Couldn't delete.");
       setPending(false);
     }
