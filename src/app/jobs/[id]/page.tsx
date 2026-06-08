@@ -125,30 +125,43 @@ export default async function JobDetailPage({
         <h1 className="truncate flex-1 text-base font-semibold tracking-tight">
           {job.name}
         </h1>
-        {job.site_map_path && (
-          <Link
-            href={`/jobs/${job.id}/map`}
-            aria-label="View site map"
-            className="flex h-8 items-center gap-1 rounded-md border border-neutral-200 bg-white px-2 text-xs font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300 dark:active:bg-neutral-800"
-          >
-            <svg
-              className="h-3.5 w-3.5"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M9 20l-5.4-2.7A2 2 0 0 1 2.5 15.5V5.2a1 1 0 0 1 1.5-.9L9 7" />
-              <path d="M9 7v13" />
-              <path d="M9 7l6-3 6 3" />
-              <path d="M21 4.2v10.3a2 2 0 0 1-1.1 1.8L15 19" />
-              <path d="M15 7v13" />
-            </svg>
-            Map
-          </Link>
-        )}
+        {(job.site_map_path || job.site_map_url) &&
+          (() => {
+            // Prefer the in-app editor when there's an uploaded PDF
+            // (annotation tools, page nav, the works). Fall back to
+            // opening the external link when that's all we have.
+            const isExternal = !job.site_map_path && !!job.site_map_url;
+            const href = job.site_map_path
+              ? `/jobs/${job.id}/map`
+              : (job.site_map_url as string);
+            return (
+              <a
+                href={href}
+                {...(isExternal
+                  ? { target: "_blank", rel: "noopener noreferrer" }
+                  : {})}
+                aria-label="View site map"
+                className="flex h-8 items-center gap-1 rounded-md border border-neutral-200 bg-white px-2 text-xs font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300 dark:active:bg-neutral-800"
+              >
+                <svg
+                  className="h-3.5 w-3.5"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M9 20l-5.4-2.7A2 2 0 0 1 2.5 15.5V5.2a1 1 0 0 1 1.5-.9L9 7" />
+                  <path d="M9 7v13" />
+                  <path d="M9 7l6-3 6 3" />
+                  <path d="M21 4.2v10.3a2 2 0 0 1-1.1 1.8L15 19" />
+                  <path d="M15 7v13" />
+                </svg>
+                Map
+              </a>
+            );
+          })()}
         <Link
           href={`/jobs/${job.id}/quickview`}
           className="flex h-8 items-center rounded-md border border-neutral-200 bg-white px-2 text-xs font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-300 dark:active:bg-neutral-800"

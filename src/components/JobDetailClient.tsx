@@ -323,15 +323,20 @@ export function JobDetailClient({
 
   async function saveHeader() {
     const trimmedName = headerDraft.name.trim();
+    const trimmedNumber = headerDraft.number.trim();
     if (!trimmedName) {
       setHeaderError("Job needs a name.");
+      return;
+    }
+    if (!trimmedNumber) {
+      setHeaderError("Job number is required.");
       return;
     }
     setHeaderSaving(true);
     setHeaderError(null);
     const patch = {
       name: trimmedName,
-      number: headerDraft.number.trim() || null,
+      number: trimmedNumber,
       address: headerDraft.address.trim() || null,
       notes: headerDraft.notes.trim() || null,
     };
@@ -1070,13 +1075,14 @@ export function JobDetailClient({
             }
           />
         </Field>
-        <Field label="Job number" hint="Optional">
+        <Field label="Job number" required>
           <input
             className={inputClass}
             value={headerDraft.number}
             onChange={(e) =>
               setHeaderDraft((d) => ({ ...d, number: e.target.value }))
             }
+            required
           />
         </Field>
         <Field label="Address" hint="Optional">
@@ -1412,16 +1418,23 @@ function CollapsibleSection({
 function Field({
   label,
   hint,
+  required,
   children,
 }: {
   label: string;
   hint?: string;
+  required?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <label className="block">
       <span className="mb-1.5 flex items-baseline justify-between text-xs font-medium">
-        <span>{label}</span>
+        <span>
+          {label}
+          {required && (
+            <span className="text-red-600 dark:text-red-400"> *</span>
+          )}
+        </span>
         {hint && (
           <span className="font-normal text-neutral-400 dark:text-neutral-500">
             {hint}
@@ -3256,9 +3269,36 @@ function SiteMapBody({
   supabaseUrl: string;
   onOpenAutoDetect: () => void;
 }) {
+  const tracker = useContext(SaveTrackerContext);
   const fileInput = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // External link (OneDrive / Google Drive / Dropbox / etc) for the
+  // case where the PDF is too large to upload. Editable draft +
+  // synced value pattern so the input doesn't fight realtime updates.
+  const [urlDraft, setUrlDraft] = useState(job.site_map_url ?? "");
+  const [syncedUrl, setSyncedUrl] = useState(job.site_map_url ?? "");
+  if ((job.site_map_url ?? "") !== syncedUrl) {
+    if (urlDraft === syncedUrl) setUrlDraft(job.site_map_url ?? "");
+    setSyncedUrl(job.site_map_url ?? "");
+  }
+
+  async function commitUrl(value: string | null) {
+    const { data, error: dbError } = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("jobs")
+        .update({ site_map_url: value })
+        .eq("id", job.id)
+        .select("*")
+        .single();
+    });
+    if (dbError || !data) {
+      setError(dbError?.message ?? "Couldn't save link.");
+      return;
+    }
+    onJobUpdate(data as Job);
+  }
 
   async function onChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -3374,6 +3414,53 @@ function SiteMapBody({
           {uploading ? "Uploading..." : "+ Upload site map PDF"}
         </button>
       )}
+
+      <div className="mt-1 rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
+        <label className="block">
+          <span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+            External link
+          </span>
+          <span className="mb-2 block text-[11px] text-neutral-500 dark:text-neutral-400">
+            For maps too large to upload. Paste a OneDrive / Google
+            Drive / Dropbox share link — opens in a new tab.
+          </span>
+          <input
+            type="url"
+            inputMode="url"
+            placeholder="https://…"
+            value={urlDraft}
+            onChange={(e) => setUrlDraft(e.target.value)}
+            onBlur={() => {
+              const next = urlDraft.trim() || null;
+              if (next !== job.site_map_url) void commitUrl(next);
+            }}
+            className="block h-10 w-full rounded-md border border-neutral-300 bg-white px-3 text-sm text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50"
+          />
+        </label>
+        {job.site_map_url && (
+          <a
+            href={job.site_map_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-2 flex h-9 items-center justify-center gap-1 rounded-md bg-neutral-900 text-xs font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
+          >
+            <svg
+              className="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              <polyline points="15 3 21 3 21 9" />
+              <line x1="10" y1="14" x2="21" y2="3" />
+            </svg>
+            Open link
+          </a>
+        )}
+      </div>
       <input
         ref={fileInput}
         type="file"
