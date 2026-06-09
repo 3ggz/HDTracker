@@ -14,6 +14,16 @@ export const ALLOWED_SITE_MAP_MIME_TYPES: readonly string[] = [
   "application/pdf",
 ];
 
+export type JobSiteMap = {
+  id: string;
+  job_id: string;
+  label: string | null;
+  storage_path: string;
+  uploaded_at: string;
+  position: number;
+  created_at: string;
+};
+
 export type JobPhoto = {
   id: string;
   job_id: string;
@@ -288,6 +298,86 @@ export async function deleteSiteMap(
     .update({ site_map_path: null, site_map_uploaded_at: null })
     .eq("id", jobId);
 
+  if (dbError) return { ok: false, error: dbError.message };
+  return { ok: true };
+}
+
+// Additional site maps beyond the primary one — stored in
+// job_site_maps so each can carry an optional label. Same bucket as
+// the primary map; we use a different path prefix so the storage
+// listing reads cleanly.
+
+type UploadExtraSiteMapOptions = {
+  supabase: SupabaseClient;
+  file: File;
+  jobId: string;
+  nextPosition: number;
+  label?: string | null;
+};
+
+export type UploadExtraSiteMapResult =
+  | { ok: true; siteMap: JobSiteMap }
+  | { ok: false; error: string };
+
+export async function uploadExtraSiteMap({
+  supabase,
+  file,
+  jobId,
+  nextPosition,
+  label,
+}: UploadExtraSiteMapOptions): Promise<UploadExtraSiteMapResult> {
+  const validation = validateSiteMapFile(file);
+  if (!validation.ok) return validation;
+
+  const fileId = crypto.randomUUID();
+  const storagePath = `${jobId}/site-maps/${fileId}.pdf`;
+
+  const { error: uploadError } = await supabase.storage
+    .from(JOB_BUCKET)
+    .upload(storagePath, file, {
+      upsert: false,
+      contentType: "application/pdf",
+    });
+  if (uploadError) return { ok: false, error: uploadError.message };
+
+  const { data, error: dbError } = await supabase
+    .from("job_site_maps")
+    .insert({
+      job_id: jobId,
+      label: label?.trim() || null,
+      storage_path: storagePath,
+      position: nextPosition,
+    })
+    .select("*")
+    .single();
+
+  if (dbError || !data) {
+    await supabase.storage.from(JOB_BUCKET).remove([storagePath]);
+    return {
+      ok: false,
+      error: dbError?.message ?? "Couldn't save the map.",
+    };
+  }
+  return { ok: true, siteMap: data as JobSiteMap };
+}
+
+export async function deleteExtraSiteMap(
+  supabase: SupabaseClient,
+  siteMap: JobSiteMap,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { error: storageError } = await supabase.storage
+    .from(JOB_BUCKET)
+    .remove([siteMap.storage_path]);
+  if (
+    storageError &&
+    !storageError.message.toLowerCase().includes("not found")
+  ) {
+    return { ok: false, error: storageError.message };
+  }
+  const { error: dbError } = await supabase
+    .from("job_site_maps")
+    .delete()
+    .eq("id", siteMap.id);
   if (dbError) return { ok: false, error: dbError.message };
   return { ok: true };
 }

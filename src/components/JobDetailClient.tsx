@@ -32,15 +32,18 @@ import {
 } from "@/lib/jobs";
 import {
   deleteDoorItemPhoto,
+  deleteExtraSiteMap,
   deleteJobPhoto,
   deletePanelPhoto,
   deleteSiteMap,
   publicJobFileUrl,
   uploadDoorItemPhoto,
+  uploadExtraSiteMap,
   uploadJobPhoto,
   uploadPanelPhoto,
   uploadSiteMap,
   type JobPhoto,
+  type JobSiteMap,
 } from "@/lib/job-photos";
 import { HUGS_TEMPLATE } from "@/lib/job-templates";
 import {
@@ -96,6 +99,7 @@ export function JobDetailClient({
   itemsLoadError,
   photosLoadError,
   canDeleteJob,
+  initialExtraSiteMaps,
 }: {
   initialJob: Job;
   initialDoors: JobDoor[];
@@ -109,6 +113,7 @@ export function JobDetailClient({
   itemsLoadError: string | null;
   photosLoadError: string | null;
   canDeleteJob: boolean;
+  initialExtraSiteMaps: JobSiteMap[];
 }) {
   const router = useRouter();
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
@@ -121,6 +126,7 @@ export function JobDetailClient({
   const [panelDoors, setPanelDoors] = useState(initialPanelDoors);
   const [itemPhotos, setItemPhotos] = useState(initialItemPhotos);
   const [panelPhotos, setPanelPhotos] = useState(initialPanelPhotos);
+  const [extraSiteMaps, setExtraSiteMaps] = useState(initialExtraSiteMaps);
   const [autoDetectOpen, setAutoDetectOpen] = useState(false);
   const [newDoorId, setNewDoorId] = useState<string | null>(null);
 
@@ -1014,6 +1020,13 @@ export function JobDetailClient({
           onJobUpdate={(j) => setJob(j)}
           supabaseUrl={supabaseUrl}
           onOpenAutoDetect={() => setAutoDetectOpen(true)}
+          extras={extraSiteMaps}
+          onExtraAdded={(map) =>
+            setExtraSiteMaps((cur) => [...cur, map])
+          }
+          onExtraRemoved={(id) =>
+            setExtraSiteMaps((cur) => cur.filter((m) => m.id !== id))
+          }
         />
       </CollapsibleSection>
 
@@ -3263,11 +3276,17 @@ function SiteMapBody({
   onJobUpdate,
   supabaseUrl,
   onOpenAutoDetect,
+  extras,
+  onExtraAdded,
+  onExtraRemoved,
 }: {
   job: Job;
   onJobUpdate: (job: Job) => void;
   supabaseUrl: string;
   onOpenAutoDetect: () => void;
+  extras: JobSiteMap[];
+  onExtraAdded: (map: JobSiteMap) => void;
+  onExtraRemoved: (id: string) => void;
 }) {
   const tracker = useContext(SaveTrackerContext);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -3461,6 +3480,15 @@ function SiteMapBody({
           </a>
         )}
       </div>
+
+      <ExtraSiteMaps
+        jobId={job.id}
+        supabaseUrl={supabaseUrl}
+        extras={extras}
+        onAdded={onExtraAdded}
+        onRemoved={onExtraRemoved}
+      />
+
       <input
         ref={fileInput}
         type="file"
@@ -3469,6 +3497,183 @@ function SiteMapBody({
         onChange={onChange}
       />
     </>
+  );
+}
+
+function ExtraSiteMaps({
+  jobId,
+  supabaseUrl,
+  extras,
+  onAdded,
+  onRemoved,
+}: {
+  jobId: string;
+  supabaseUrl: string;
+  extras: JobSiteMap[];
+  onAdded: (map: JobSiteMap) => void;
+  onRemoved: (id: string) => void;
+}) {
+  const tracker = useContext(SaveTrackerContext);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [pendingLabel, setPendingLabel] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function pickFile() {
+    fileInput.current?.click();
+  }
+
+  async function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (fileInput.current) fileInput.current.value = "";
+    if (!file) return;
+    setUploading(true);
+    setError(null);
+    const result = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return uploadExtraSiteMap({
+        supabase,
+        file,
+        jobId,
+        nextPosition: extras.length,
+        label: pendingLabel,
+      });
+    });
+    setUploading(false);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    onAdded(result.siteMap);
+    setPendingLabel("");
+    setAdding(false);
+  }
+
+  async function remove(map: JobSiteMap) {
+    if (!confirm(`Remove "${map.label || "this map"}"?`)) return;
+    const result = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return deleteExtraSiteMap(supabase, map);
+    });
+    if (!result.ok) {
+      alert(result.error);
+      return;
+    }
+    onRemoved(map.id);
+  }
+
+  return (
+    <div className="mt-1 rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
+      <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+        Additional PDFs ({extras.length})
+      </p>
+      <p className="mb-2 text-[11px] text-neutral-500 dark:text-neutral-400">
+        Riser diagrams, extra floor plans, etc. Open in a new tab —
+        annotations only work on the primary map above.
+      </p>
+      {error && <ErrorBanner message={error} />}
+      {extras.length > 0 && (
+        <ul className="mb-2 space-y-1.5">
+          {extras.map((m) => (
+            <li
+              key={m.id}
+              className="flex items-center gap-2 rounded-md border border-neutral-200 bg-white px-2 py-1.5 dark:border-neutral-700 dark:bg-neutral-900"
+            >
+              <a
+                href={publicJobFileUrl(supabaseUrl, m.storage_path)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex flex-1 items-center gap-1.5 truncate text-xs font-medium text-neutral-700 dark:text-neutral-300"
+              >
+                <svg
+                  className="h-3.5 w-3.5 flex-shrink-0 text-neutral-400"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <polyline points="14 2 14 8 20 8" />
+                </svg>
+                <span className="truncate">
+                  {m.label?.trim() || "Untitled PDF"}
+                </span>
+              </a>
+              <button
+                type="button"
+                onClick={() => remove(m)}
+                aria-label="Remove"
+                className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded text-neutral-400 active:text-red-600 dark:active:text-red-400"
+              >
+                <svg
+                  className="h-3.5 w-3.5"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {adding ? (
+        <div className="space-y-2">
+          <input
+            type="text"
+            placeholder="Label (optional, e.g. Riser diagram)"
+            value={pendingLabel}
+            onChange={(e) => setPendingLabel(e.target.value)}
+            className="block h-9 w-full rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50"
+          />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={pickFile}
+              disabled={uploading}
+              className="h-9 flex-1 rounded-md bg-neutral-900 text-xs font-medium text-white disabled:opacity-60 dark:bg-neutral-100 dark:text-neutral-900"
+            >
+              {uploading ? "Uploading…" : "Choose PDF"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAdding(false);
+                setPendingLabel("");
+                setError(null);
+              }}
+              disabled={uploading}
+              className="h-9 rounded-md border border-neutral-300 px-3 text-xs font-medium dark:border-neutral-700"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          className="h-9 w-full rounded-md border border-dashed border-neutral-300 text-xs font-medium text-neutral-600 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800"
+        >
+          + Add another PDF
+        </button>
+      )}
+      <input
+        ref={fileInput}
+        type="file"
+        accept="application/pdf"
+        className="hidden"
+        onChange={onFileChange}
+      />
+    </div>
   );
 }
 

@@ -11,7 +11,7 @@ import type {
   JobPanelDoor,
   JobPanelPhoto,
 } from "@/lib/jobs";
-import type { JobPhoto } from "@/lib/job-photos";
+import type { JobPhoto, JobSiteMap } from "@/lib/job-photos";
 import { isAdminEmail } from "@/lib/admin";
 
 // Auto-detect calls Claude vision with xhigh effort on multi-page PDFs;
@@ -102,6 +102,13 @@ export default async function JobDetailPage({
           .order("position", { ascending: true })
           .order("created_at", { ascending: true });
 
+  const { data: extraSiteMaps } = await supabase
+    .from("job_site_maps")
+    .select("*")
+    .eq("job_id", id)
+    .order("position", { ascending: true })
+    .order("created_at", { ascending: true });
+
   return (
     <>
       <header className="sticky top-0 z-10 flex items-center gap-1.5 border-b border-neutral-200 bg-neutral-50/80 px-3 py-2 backdrop-blur dark:border-neutral-800 dark:bg-neutral-950/80 print:hidden">
@@ -185,6 +192,7 @@ export default async function JobDetailPage({
         initialPanelDoors={(panelDoors ?? []) as JobPanelDoor[]}
         initialItemPhotos={(itemPhotos ?? []) as JobDoorItemPhoto[]}
         initialPanelPhotos={(panelPhotos ?? []) as JobPanelPhoto[]}
+        initialExtraSiteMaps={(extraSiteMaps ?? []) as JobSiteMap[]}
         doorsLoadError={doorsError?.message ?? null}
         itemsLoadError={itemsError?.message ?? null}
         photosLoadError={photosError?.message ?? null}
