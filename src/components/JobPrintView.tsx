@@ -132,8 +132,21 @@ export function JobPrintView({
           {doors.length === 0 ? (
             <p className="text-sm text-neutral-500">No doors recorded.</p>
           ) : (
-            <ul className="space-y-4">
-              {doors.map((door) => {
+            (() => {
+              // Group by floor when any door has one set. Floors sort
+              // naturally (1, 2, 10, B, etc) with null/Unassigned last.
+              const STANDALONE = "Standalone Equipment";
+              const printableDoors = doors.filter(
+                (d) => d.name !== STANDALONE,
+              );
+              const distinctFloors = Array.from(
+                new Set(printableDoors.map((d) => d.floor ?? null)),
+              );
+              const useFloorGroups =
+                distinctFloors.length > 1 ||
+                (distinctFloors.length === 1 && distinctFloors[0] !== null);
+
+              const renderDoor = (door: JobDoor) => {
                 const doorItems = itemsByDoor.get(door.id) ?? [];
                 const doorPhotos = photos.filter((p) => p.door_id === door.id);
                 return (
@@ -219,8 +232,43 @@ export function JobPrintView({
                     )}
                   </li>
                 );
-              })}
-            </ul>
+              };
+
+              if (!useFloorGroups) {
+                return (
+                  <ul className="space-y-4">
+                    {printableDoors.map(renderDoor)}
+                  </ul>
+                );
+              }
+
+              const floorOrder = distinctFloors.sort((a, b) => {
+                if (a === null) return 1;
+                if (b === null) return -1;
+                return a.localeCompare(b, undefined, { numeric: true });
+              });
+
+              return (
+                <div className="space-y-6">
+                  {floorOrder.map((floor) => {
+                    const floorDoors = printableDoors.filter(
+                      (d) => (d.floor ?? null) === floor,
+                    );
+                    return (
+                      <div key={floor ?? "__unassigned"}>
+                        <h3 className="mb-2 border-b border-neutral-300 pb-1 text-sm font-bold uppercase tracking-wide text-neutral-700">
+                          {floor ?? "Unassigned"} — {floorDoors.length}{" "}
+                          {floorDoors.length === 1 ? "door" : "doors"}
+                        </h3>
+                        <ul className="space-y-4">
+                          {floorDoors.map(renderDoor)}
+                        </ul>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()
           )}
         </section>
 
