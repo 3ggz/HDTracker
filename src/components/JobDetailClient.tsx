@@ -61,6 +61,11 @@ import { AutoDetectModal } from "./AutoDetectModal";
 // and rendered as their own section below the floor groups.
 const STANDALONE_DOOR_NAME = "Standalone Equipment";
 
+// A door can be wired up with more than one 5200 / 3220 exciter, so
+// the quick-add chip for those stays available even after one is
+// added. Everything else hides once present.
+const REPEATABLE_ITEMS = new Set(["5200 Exciter", "3220 Exciter"]);
+
 // Shared save-tracker so the universal "saving / saved" bar at the
 // bottom of the page reflects activity from every child component
 // (door fields, panel fields, item toggles, photo uploads, etc.)
@@ -389,6 +394,13 @@ export function JobDetailClient({
     return { total, done };
   }, [items]);
 
+  // One Set shared by every PanelCard instead of building a fresh
+  // one per panel per render.
+  const allAssignedDoorIds = useMemo(
+    () => new Set(panelDoors.map((pd) => pd.door_id)),
+    [panelDoors],
+  );
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(TouchSensor, {
@@ -398,74 +410,86 @@ export function JobDetailClient({
 
   async function undoLastDoorDelete() {
     if (!lastDeletedDoor || restoringDoor) return;
+    // Snapshot before the first await. A newer delete can overwrite
+    // lastDeletedDoor mid-flight; without the capture we'd restore
+    // the wrong door (and label the alert with the wrong name).
+    const { payload, label } = lastDeletedDoor;
     setRestoringDoor(true);
-    const result = await withTrack(saveTracker, () =>
-      restoreDoorAction(lastDeletedDoor.payload),
-    );
-    setRestoringDoor(false);
-    if (!result.ok) {
-      alert(`Couldn't restore "${lastDeletedDoor.label}": ${result.error}`);
-      return;
-    }
-    // Pull fresh rows for the recreated door so local state matches
-    // the DB (new IDs, server-set timestamps, etc).
-    const supabase = createClient();
-    const [
-      { data: doorRow },
-      { data: itemRows },
-      { data: photoRows },
-      { data: itemPhotoRows },
-      { data: panelDoorRows },
-    ] = await Promise.all([
-      supabase
-        .from("job_doors")
-        .select("*")
-        .eq("id", result.doorId)
-        .single(),
-      supabase
-        .from("job_door_items")
-        .select("*")
-        .eq("door_id", result.doorId),
-      supabase
-        .from("job_photos")
-        .select("*")
-        .eq("door_id", result.doorId),
-      supabase
-        .from("job_door_item_photos")
-        .select("*")
-        .in("item_id", Object.values(result.itemIdMap)),
-      supabase
-        .from("job_panel_doors")
-        .select("*")
-        .eq("door_id", result.doorId),
-    ]);
-    if (doorRow) {
-      doorIdsRef.current.add((doorRow as JobDoor).id);
-      setDoors((current) =>
-        current.some((d) => d.id === (doorRow as JobDoor).id)
-          ? current
-          : [...current, doorRow as JobDoor],
+    try {
+      const result = await withTrack(saveTracker, () =>
+        restoreDoorAction(payload),
       );
-    }
-    if (itemRows) {
-      setItems((current) => [...current, ...(itemRows as JobDoorItem[])]);
-    }
-    if (photoRows) {
-      setPhotos((current) => [...(photoRows as JobPhoto[]), ...current]);
-    }
-    if (itemPhotoRows) {
-      setItemPhotos((current) => [
-        ...current,
-        ...(itemPhotoRows as JobDoorItemPhoto[]),
+      if (!result.ok) {
+        alert(`Couldn't restore "${label}": ${result.error}`);
+        return;
+      }
+      // Pull fresh rows for the recreated door so local state matches
+      // the DB (new IDs, server-set timestamps, etc).
+      const supabase = createClient();
+      const [
+        { data: doorRow },
+        { data: itemRows },
+        { data: photoRows },
+        { data: itemPhotoRows },
+        { data: panelDoorRows },
+      ] = await Promise.all([
+        supabase
+          .from("job_doors")
+          .select("*")
+          .eq("id", result.doorId)
+          .single(),
+        supabase
+          .from("job_door_items")
+          .select("*")
+          .eq("door_id", result.doorId),
+        supabase
+          .from("job_photos")
+          .select("*")
+          .eq("door_id", result.doorId),
+        supabase
+          .from("job_door_item_photos")
+          .select("*")
+          .in("item_id", Object.values(result.itemIdMap)),
+        supabase
+          .from("job_panel_doors")
+          .select("*")
+          .eq("door_id", result.doorId),
       ]);
+      if (doorRow) {
+        doorIdsRef.current.add((doorRow as JobDoor).id);
+        setDoors((current) =>
+          current.some((d) => d.id === (doorRow as JobDoor).id)
+            ? current
+            : [...current, doorRow as JobDoor],
+        );
+      }
+      if (itemRows) {
+        setItems((current) => [...current, ...(itemRows as JobDoorItem[])]);
+      }
+      if (photoRows) {
+        setPhotos((current) => [...(photoRows as JobPhoto[]), ...current]);
+      }
+      if (itemPhotoRows) {
+        setItemPhotos((current) => [
+          ...current,
+          ...(itemPhotoRows as JobDoorItemPhoto[]),
+        ]);
+      }
+      if (panelDoorRows) {
+        setPanelDoors((current) => [
+          ...current,
+          ...(panelDoorRows as JobPanelDoor[]),
+        ]);
+      }
+      // Only clear the undo slot if it still refers to the door we
+      // restored — a fresh delete that landed mid-restore keeps its
+      // own undo available.
+      setLastDeletedDoor((current) =>
+        current?.payload === payload ? null : current,
+      );
+    } finally {
+      setRestoringDoor(false);
     }
-    if (panelDoorRows) {
-      setPanelDoors((current) => [
-        ...current,
-        ...(panelDoorRows as JobPanelDoor[]),
-      ]);
-    }
-    setLastDeletedDoor(null);
   }
 
   async function persistDoorOrder(reordered: JobDoor[]) {
@@ -957,9 +981,7 @@ export function JobDetailClient({
                 panelDoorIds={panelDoors
                   .filter((pd) => pd.panel_id === panel.id)
                   .map((pd) => pd.door_id)}
-                allAssignedDoorIds={
-                  new Set(panelDoors.map((pd) => pd.door_id))
-                }
+                allAssignedDoorIds={allAssignedDoorIds}
                 onCreateAndAddDoors={(names) =>
                   createDoorsForPanel(panel.id, names)
                 }
@@ -1845,18 +1867,13 @@ function DoorCard({
     );
   }
 
-  // A door can be wired up with more than one 5200 / 3220 exciter,
-  // so the chip for those stays available even after one is added.
-  // Everything else hides once it's present so the chip row doesn't
-  // grow stale.
-  const REPEATABLE = new Set(["5200 Exciter", "3220 Exciter"]);
   const usedNames = new Set(items.map((it) => it.name));
   const quickAdds = [
     ...HUGS_TEMPLATE.requiredItems,
     ...HUGS_TEMPLATE.optionalItems,
     "Door contact",
     "REX",
-  ].filter((n) => REPEATABLE.has(n) || !usedNames.has(n));
+  ].filter((n) => REPEATABLE_ITEMS.has(n) || !usedNames.has(n));
 
   const completedCount = items.filter((it) => it.completed_at).length;
 

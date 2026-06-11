@@ -30,11 +30,16 @@ export default async function JobDetailPage({
   } = await supabase.auth.getUser();
   const isAdmin = isAdminEmail(user?.email);
 
+  // Three batches, each as parallel as the data dependencies allow:
+  //   1. Everything keyed by job id alone.
+  //   2. Everything that needs door / panel ids from batch 1.
+  //   3. Item photos, which need item ids from batch 2.
   const [
     { data: job, error },
     { data: doors, error: doorsError },
     { data: photos, error: photosError },
     { data: panels },
+    { data: extraSiteMaps },
   ] = await Promise.all([
     supabase.from("jobs").select("*").eq("id", id).single(),
     supabase
@@ -55,31 +60,46 @@ export default async function JobDetailPage({
       .eq("job_id", id)
       .order("position", { ascending: true })
       .order("created_at", { ascending: true }),
+    supabase
+      .from("job_site_maps")
+      .select("*")
+      .eq("job_id", id)
+      .order("position", { ascending: true })
+      .order("created_at", { ascending: true }),
   ]);
 
   if (error || !job) notFound();
 
   const doorIds = (doors ?? []).map((d) => d.id);
-  const { data: items, error: itemsError } =
+  const panelIds = (panels ?? []).map((p) => p.id);
+
+  const [
+    { data: items, error: itemsError },
+    { data: panelDoors },
+    { data: panelPhotos },
+  ] = await Promise.all([
     doorIds.length === 0
-      ? { data: [] as JobDoorItem[], error: null }
-      : await supabase
+      ? Promise.resolve({ data: [] as JobDoorItem[], error: null })
+      : supabase
           .from("job_door_items")
           .select(
             "id, door_id, name, note, photo_storage_path, photo_uploaded_at, completed_at, position, created_at",
           )
           .in("door_id", doorIds)
           .order("position", { ascending: true })
-          .order("created_at", { ascending: true });
-
-  const panelIds = (panels ?? []).map((p) => p.id);
-  const { data: panelDoors } =
+          .order("created_at", { ascending: true }),
     panelIds.length === 0
-      ? { data: [] as JobPanelDoor[] }
-      : await supabase
-          .from("job_panel_doors")
+      ? Promise.resolve({ data: [] as JobPanelDoor[] })
+      : supabase.from("job_panel_doors").select("*").in("panel_id", panelIds),
+    panelIds.length === 0
+      ? Promise.resolve({ data: [] as JobPanelPhoto[] })
+      : supabase
+          .from("job_panel_photos")
           .select("*")
-          .in("panel_id", panelIds);
+          .in("panel_id", panelIds)
+          .order("position", { ascending: true })
+          .order("created_at", { ascending: true }),
+  ]);
 
   const itemIds = (items ?? []).map((it) => it.id);
   const { data: itemPhotos } =
@@ -91,23 +111,6 @@ export default async function JobDetailPage({
           .in("item_id", itemIds)
           .order("position", { ascending: true })
           .order("created_at", { ascending: true });
-
-  const { data: panelPhotos } =
-    panelIds.length === 0
-      ? { data: [] as JobPanelPhoto[] }
-      : await supabase
-          .from("job_panel_photos")
-          .select("*")
-          .in("panel_id", panelIds)
-          .order("position", { ascending: true })
-          .order("created_at", { ascending: true });
-
-  const { data: extraSiteMaps } = await supabase
-    .from("job_site_maps")
-    .select("*")
-    .eq("job_id", id)
-    .order("position", { ascending: true })
-    .order("created_at", { ascending: true });
 
   return (
     <>

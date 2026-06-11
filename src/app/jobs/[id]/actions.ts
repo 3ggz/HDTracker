@@ -344,6 +344,11 @@ export async function restoreDoorAction(
     });
   }
 
+  // The three follow-up inserts are independent of each other —
+  // run them in parallel and surface the first failure instead of
+  // silently returning ok with a partial restore.
+  const followUps: PromiseLike<{ error: { message: string } | null }>[] = [];
+
   if (input.itemPhotos.length > 0) {
     const photoRows = input.itemPhotos
       .map((p) => ({
@@ -354,7 +359,9 @@ export async function restoreDoorAction(
       }))
       .filter((r) => r.item_id);
     if (photoRows.length > 0) {
-      await supabase.from("job_door_item_photos").insert(photoRows);
+      followUps.push(
+        supabase.from("job_door_item_photos").insert(photoRows),
+      );
     }
   }
 
@@ -365,7 +372,7 @@ export async function restoreDoorAction(
       storage_path: p.storage_path,
       caption: p.caption,
     }));
-    await supabase.from("job_photos").insert(photoRows);
+    followUps.push(supabase.from("job_photos").insert(photoRows));
   }
 
   if (input.panelIds.length > 0) {
@@ -374,7 +381,18 @@ export async function restoreDoorAction(
       door_id: newDoor.id,
       position: idx,
     }));
-    await supabase.from("job_panel_doors").insert(linkRows);
+    followUps.push(supabase.from("job_panel_doors").insert(linkRows));
+  }
+
+  if (followUps.length > 0) {
+    const results = await Promise.all(followUps);
+    const firstError = results.find((r) => r.error)?.error;
+    if (firstError) {
+      return {
+        ok: false,
+        error: `Door and items restored, but some photos or panel links failed: ${firstError.message}`,
+      };
+    }
   }
 
   return { ok: true, doorId: newDoor.id, itemIdMap };
