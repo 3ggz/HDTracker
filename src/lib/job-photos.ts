@@ -382,6 +382,27 @@ export async function deleteExtraSiteMap(
   return { ok: true };
 }
 
+export type RenameExtraSiteMapResult =
+  | { ok: true; siteMap: JobSiteMap }
+  | { ok: false; error: string };
+
+export async function renameExtraSiteMap(
+  supabase: SupabaseClient,
+  id: string,
+  label: string | null,
+): Promise<RenameExtraSiteMapResult> {
+  const { data, error } = await supabase
+    .from("job_site_maps")
+    .update({ label })
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error || !data) {
+    return { ok: false, error: error?.message ?? "Couldn't rename." };
+  }
+  return { ok: true, siteMap: data as JobSiteMap };
+}
+
 // Append a photo to a panel. Multiple per panel supported.
 type UploadPanelPhotoOptions = {
   supabase: SupabaseClient;

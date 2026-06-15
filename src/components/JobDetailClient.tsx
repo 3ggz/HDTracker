@@ -37,6 +37,7 @@ import {
   deletePanelPhoto,
   deleteSiteMap,
   publicJobFileUrl,
+  renameExtraSiteMap,
   uploadDoorItemPhoto,
   uploadExtraSiteMap,
   uploadJobPhoto,
@@ -1048,6 +1049,11 @@ export function JobDetailClient({
           }
           onExtraRemoved={(id) =>
             setExtraSiteMaps((cur) => cur.filter((m) => m.id !== id))
+          }
+          onExtraRenamed={(map) =>
+            setExtraSiteMaps((cur) =>
+              cur.map((m) => (m.id === map.id ? map : m)),
+            )
           }
         />
       </CollapsibleSection>
@@ -3296,6 +3302,7 @@ function SiteMapBody({
   extras,
   onExtraAdded,
   onExtraRemoved,
+  onExtraRenamed,
 }: {
   job: Job;
   onJobUpdate: (job: Job) => void;
@@ -3304,6 +3311,7 @@ function SiteMapBody({
   extras: JobSiteMap[];
   onExtraAdded: (map: JobSiteMap) => void;
   onExtraRemoved: (id: string) => void;
+  onExtraRenamed: (map: JobSiteMap) => void;
 }) {
   const tracker = useContext(SaveTrackerContext);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -3358,6 +3366,37 @@ function SiteMapBody({
   const selectedExtra = selected?.isPrimary
     ? null
     : extras.find((m) => m.id === selected?.key) ?? null;
+
+  // Editable label for the selected extra. Synced-draft pattern so
+  // the input doesn't fight realtime updates from another tab.
+  const [labelDraft, setLabelDraft] = useState(selectedExtra?.label ?? "");
+  const [labelSyncId, setLabelSyncId] = useState<string | null>(
+    selectedExtra?.id ?? null,
+  );
+  // When the user switches selection — or a realtime update changes
+  // the stored label — reset the draft. Render-time setState guarded
+  // by a sentinel so we don't loop.
+  const incomingId = selectedExtra?.id ?? null;
+  const incomingLabel = selectedExtra?.label ?? "";
+  if (incomingId !== labelSyncId) {
+    setLabelSyncId(incomingId);
+    setLabelDraft(incomingLabel);
+  }
+
+  async function commitLabel() {
+    if (!selectedExtra) return;
+    const next = labelDraft.trim() || null;
+    if (next === (selectedExtra.label ?? null)) return;
+    const result = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return renameExtraSiteMap(supabase, selectedExtra.id, next);
+    });
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    onExtraRenamed(result.siteMap);
+  }
 
   async function commitUrl(value: string | null) {
     const { data, error: dbError } = await withTrack(tracker, async () => {
@@ -3548,6 +3587,28 @@ function SiteMapBody({
               {allPdfs.length} {allPdfs.length === 1 ? "PDF" : "PDFs"}
             </span>
           </div>
+
+          {selectedExtra && (
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-medium text-neutral-500 dark:text-neutral-400">
+                Name
+              </span>
+              <input
+                type="text"
+                placeholder="e.g. Riser diagram, Floor 2 plan"
+                value={labelDraft}
+                onChange={(e) => setLabelDraft(e.target.value)}
+                onBlur={() => void commitLabel()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    (e.target as HTMLInputElement).blur();
+                  }
+                }}
+                className="block h-9 w-full rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50"
+              />
+            </label>
+          )}
 
           {selected && (
             <>
