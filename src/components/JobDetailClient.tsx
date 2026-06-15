@@ -3319,6 +3319,46 @@ function SiteMapBody({
     setSyncedUrl(job.site_map_url ?? "");
   }
 
+  // Combine the primary map and the extras into one list. The primary
+  // is the one bound to the annotation editor; everything else is
+  // view-only. Using a synthetic id "__primary" so the dropdown's
+  // value attribute can survive primary uploads with new storage_paths.
+  type ActivePdf = {
+    key: string;
+    label: string;
+    storagePath: string;
+    isPrimary: boolean;
+  };
+  const allPdfs = useMemo<ActivePdf[]>(() => {
+    const list: ActivePdf[] = [];
+    if (job.site_map_path) {
+      list.push({
+        key: "__primary",
+        label: "Primary (annotatable)",
+        storagePath: job.site_map_path,
+        isPrimary: true,
+      });
+    }
+    for (const m of extras) {
+      list.push({
+        key: m.id,
+        label: m.label?.trim() || "Untitled PDF",
+        storagePath: m.storage_path,
+        isPrimary: false,
+      });
+    }
+    return list;
+  }, [job.site_map_path, extras]);
+
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  // Resolve the active PDF — fall back to the first one if the saved
+  // selection went away (e.g. an extra got deleted).
+  const selected =
+    allPdfs.find((p) => p.key === selectedKey) ?? allPdfs[0] ?? null;
+  const selectedExtra = selected?.isPrimary
+    ? null
+    : extras.find((m) => m.id === selected?.key) ?? null;
+
   async function commitUrl(value: string | null) {
     const { data, error: dbError } = await withTrack(tracker, async () => {
       const supabase = createClient();
@@ -3338,7 +3378,64 @@ function SiteMapBody({
 
   async function onChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
+    if (fileInput.current) fileInput.current.value = "";
     if (!file) return;
+    setUploading(true);
+    setError(null);
+    // First upload becomes the primary so the editor has something to
+    // anchor to. Subsequent uploads go straight to extras and never
+    // overwrite the primary by surprise.
+    if (!job.site_map_path) {
+      const supabase = createClient();
+      const result = await uploadSiteMap({
+        supabase,
+        file,
+        jobId: job.id,
+        oldStoragePath: null,
+      });
+      setUploading(false);
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      onJobUpdate({
+        ...job,
+        site_map_path: result.storage_path,
+        site_map_uploaded_at: result.uploaded_at,
+      });
+      setSelectedKey("__primary");
+      return;
+    }
+    // Has primary already — anything else becomes an extra.
+    const result = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return uploadExtraSiteMap({
+        supabase,
+        file,
+        jobId: job.id,
+        nextPosition: extras.length,
+      });
+    });
+    setUploading(false);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    onExtraAdded(result.siteMap);
+    setSelectedKey(result.siteMap.id);
+  }
+
+  async function replaceSelected() {
+    fileInput.current?.click();
+  }
+
+  async function replacePrimary(e: React.ChangeEvent<HTMLInputElement>) {
+    // Used by the Replace button when the primary is the active map —
+    // bypasses the "becomes an extra" branch in onChange by feeding a
+    // dedicated input.
+    const file = e.target.files?.[0];
+    if (replaceInput.current) replaceInput.current.value = "";
+    if (!file || !job.site_map_path) return;
     setUploading(true);
     setError(null);
     const supabase = createClient();
@@ -3348,7 +3445,6 @@ function SiteMapBody({
       jobId: job.id,
       oldStoragePath: job.site_map_path,
     });
-    if (fileInput.current) fileInput.current.value = "";
     setUploading(false);
     if (!result.ok) {
       setError(result.error);
@@ -3361,86 +3457,53 @@ function SiteMapBody({
     });
   }
 
-  async function remove() {
-    if (!job.site_map_path) return;
-    if (!confirm("Remove the site map PDF?")) return;
-    const supabase = createClient();
-    const result = await deleteSiteMap(supabase, job.id, job.site_map_path);
-    if (!result.ok) {
-      setError(result.error);
+  async function removeSelected() {
+    if (!selected) return;
+    if (
+      !confirm(
+        selected.isPrimary
+          ? "Remove the primary site map?"
+          : `Remove "${selected.label}"?`,
+      )
+    )
       return;
+    if (selected.isPrimary) {
+      const supabase = createClient();
+      const result = await deleteSiteMap(
+        supabase,
+        job.id,
+        selected.storagePath,
+      );
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      onJobUpdate({
+        ...job,
+        site_map_path: null,
+        site_map_uploaded_at: null,
+      });
+    } else if (selectedExtra) {
+      const result = await withTrack(tracker, async () => {
+        const supabase = createClient();
+        return deleteExtraSiteMap(supabase, selectedExtra);
+      });
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      onExtraRemoved(selectedExtra.id);
     }
-    onJobUpdate({ ...job, site_map_path: null, site_map_uploaded_at: null });
+    setSelectedKey(null);
   }
+
+  const replaceInput = useRef<HTMLInputElement>(null);
 
   return (
     <>
       {error && <ErrorBanner message={error} />}
-      {job.site_map_path ? (
-        <div className="space-y-2">
-          <object
-            data={publicJobFileUrl(supabaseUrl, job.site_map_path) + "#view=FitH"}
-            type="application/pdf"
-            className="h-[65vh] w-full rounded-lg border border-neutral-200 bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-950"
-            aria-label="Site map PDF"
-          >
-            <a
-              href={publicJobFileUrl(supabaseUrl, job.site_map_path)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex h-full w-full items-center justify-center p-6 text-center text-sm text-neutral-600 dark:text-neutral-400"
-            >
-              Your browser can&apos;t render PDFs inline. Tap to open.
-            </a>
-          </object>
-          <a
-            href={publicJobFileUrl(supabaseUrl, job.site_map_path)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="block text-center text-[11px] font-medium text-neutral-500 underline-offset-2 active:text-neutral-900 hover:underline dark:text-neutral-400 dark:active:text-neutral-100"
-          >
-            Open fullscreen
-          </a>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              disabled={uploading}
-              onClick={() => fileInput.current?.click()}
-              className="h-10 flex-1 rounded-lg border border-neutral-300 text-sm font-medium text-neutral-700 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300"
-            >
-              {uploading ? "Uploading..." : "Replace PDF"}
-            </button>
-            <button
-              type="button"
-              onClick={remove}
-              className="h-10 rounded-lg border border-red-300 px-3 text-sm font-medium text-red-600 dark:border-red-900 dark:text-red-400"
-            >
-              Remove
-            </button>
-          </div>
-          <button
-            type="button"
-            onClick={onOpenAutoDetect}
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 text-sm font-medium text-white active:scale-[0.98] dark:bg-indigo-500"
-          >
-            <svg
-              className="h-4 w-4"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" />
-            </svg>
-            Auto-detect doors from PDF
-            <span className="ml-1 text-[10px] font-normal italic opacity-80">
-              Beta
-            </span>
-          </button>
-        </div>
-      ) : (
+
+      {allPdfs.length === 0 ? (
         <button
           type="button"
           disabled={uploading}
@@ -3449,6 +3512,138 @@ function SiteMapBody({
         >
           {uploading ? "Uploading..." : "+ Upload site map PDF"}
         </button>
+      ) : (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <label className="sr-only" htmlFor="active-pdf-select">
+              Active PDF
+            </label>
+            <div className="relative flex-1">
+              <select
+                id="active-pdf-select"
+                value={selected?.key ?? ""}
+                onChange={(e) => setSelectedKey(e.target.value)}
+                className="block h-10 w-full appearance-none rounded-lg border border-neutral-300 bg-white pl-3 pr-8 text-sm font-medium text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50"
+              >
+                {allPdfs.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+              <svg
+                className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-500"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </div>
+            <span className="rounded-full bg-neutral-100 px-2 py-1 text-[10px] font-medium text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400">
+              {allPdfs.length} {allPdfs.length === 1 ? "PDF" : "PDFs"}
+            </span>
+          </div>
+
+          {selected && (
+            <>
+              <object
+                key={selected.storagePath}
+                data={
+                  publicJobFileUrl(supabaseUrl, selected.storagePath) +
+                  "#view=FitH"
+                }
+                type="application/pdf"
+                className="h-[65vh] w-full rounded-lg border border-neutral-200 bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-950"
+                aria-label={`Site map: ${selected.label}`}
+              >
+                <a
+                  href={publicJobFileUrl(supabaseUrl, selected.storagePath)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex h-full w-full items-center justify-center p-6 text-center text-sm text-neutral-600 dark:text-neutral-400"
+                >
+                  Your browser can&apos;t render PDFs inline. Tap to open.
+                </a>
+              </object>
+              <a
+                href={publicJobFileUrl(supabaseUrl, selected.storagePath)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block text-center text-[11px] font-medium text-neutral-500 underline-offset-2 active:text-neutral-900 hover:underline dark:text-neutral-400 dark:active:text-neutral-100"
+              >
+                Open fullscreen
+              </a>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={uploading}
+                  onClick={() => {
+                    if (selected.isPrimary) replaceInput.current?.click();
+                    else void replaceSelected();
+                  }}
+                  className="h-10 flex-1 rounded-lg border border-neutral-300 text-sm font-medium text-neutral-700 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300"
+                >
+                  {uploading
+                    ? "Uploading..."
+                    : selected.isPrimary
+                      ? "Replace PDF"
+                      : "Add new PDF"}
+                </button>
+                <button
+                  type="button"
+                  onClick={removeSelected}
+                  className="h-10 rounded-lg border border-red-300 px-3 text-sm font-medium text-red-600 dark:border-red-900 dark:text-red-400"
+                >
+                  Remove
+                </button>
+              </div>
+              {selected.isPrimary && (
+                <button
+                  type="button"
+                  onClick={onOpenAutoDetect}
+                  className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 text-sm font-medium text-white active:scale-[0.98] dark:bg-indigo-500"
+                >
+                  <svg
+                    className="h-4 w-4"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" />
+                  </svg>
+                  Auto-detect doors from PDF
+                  <span className="ml-1 text-[10px] font-normal italic opacity-80">
+                    Beta
+                  </span>
+                </button>
+              )}
+              {!selected.isPrimary && (
+                <p className="text-center text-[11px] italic text-neutral-500 dark:text-neutral-400">
+                  Annotation editor is scoped to the primary PDF.
+                </p>
+              )}
+            </>
+          )}
+
+          {/* Always-visible "Add another PDF" handle so multi-map jobs
+              don't have to switch views to add a third sheet. */}
+          <button
+            type="button"
+            disabled={uploading}
+            onClick={() => fileInput.current?.click()}
+            className="h-10 w-full rounded-lg border border-dashed border-neutral-300 text-xs font-medium text-neutral-600 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-400"
+          >
+            {uploading ? "Uploading..." : "+ Add another PDF"}
+          </button>
+        </div>
       )}
 
       <div className="mt-1 rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
@@ -3498,14 +3693,6 @@ function SiteMapBody({
         )}
       </div>
 
-      <ExtraSiteMaps
-        jobId={job.id}
-        supabaseUrl={supabaseUrl}
-        extras={extras}
-        onAdded={onExtraAdded}
-        onRemoved={onExtraRemoved}
-      />
-
       <input
         ref={fileInput}
         type="file"
@@ -3513,184 +3700,14 @@ function SiteMapBody({
         className="hidden"
         onChange={onChange}
       />
-    </>
-  );
-}
-
-function ExtraSiteMaps({
-  jobId,
-  supabaseUrl,
-  extras,
-  onAdded,
-  onRemoved,
-}: {
-  jobId: string;
-  supabaseUrl: string;
-  extras: JobSiteMap[];
-  onAdded: (map: JobSiteMap) => void;
-  onRemoved: (id: string) => void;
-}) {
-  const tracker = useContext(SaveTrackerContext);
-  const fileInput = useRef<HTMLInputElement>(null);
-  const [pendingLabel, setPendingLabel] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  function pickFile() {
-    fileInput.current?.click();
-  }
-
-  async function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (fileInput.current) fileInput.current.value = "";
-    if (!file) return;
-    setUploading(true);
-    setError(null);
-    const result = await withTrack(tracker, async () => {
-      const supabase = createClient();
-      return uploadExtraSiteMap({
-        supabase,
-        file,
-        jobId,
-        nextPosition: extras.length,
-        label: pendingLabel,
-      });
-    });
-    setUploading(false);
-    if (!result.ok) {
-      setError(result.error);
-      return;
-    }
-    onAdded(result.siteMap);
-    setPendingLabel("");
-    setAdding(false);
-  }
-
-  async function remove(map: JobSiteMap) {
-    if (!confirm(`Remove "${map.label || "this map"}"?`)) return;
-    const result = await withTrack(tracker, async () => {
-      const supabase = createClient();
-      return deleteExtraSiteMap(supabase, map);
-    });
-    if (!result.ok) {
-      alert(result.error);
-      return;
-    }
-    onRemoved(map.id);
-  }
-
-  return (
-    <div className="mt-1 rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
-      <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-        Additional PDFs ({extras.length})
-      </p>
-      <p className="mb-2 text-[11px] text-neutral-500 dark:text-neutral-400">
-        Riser diagrams, extra floor plans, etc. Open in a new tab —
-        annotations only work on the primary map above.
-      </p>
-      {error && <ErrorBanner message={error} />}
-      {extras.length > 0 && (
-        <ul className="mb-2 space-y-1.5">
-          {extras.map((m) => (
-            <li
-              key={m.id}
-              className="flex items-center gap-2 rounded-md border border-neutral-200 bg-white px-2 py-1.5 dark:border-neutral-700 dark:bg-neutral-900"
-            >
-              <a
-                href={publicJobFileUrl(supabaseUrl, m.storage_path)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex flex-1 items-center gap-1.5 truncate text-xs font-medium text-neutral-700 dark:text-neutral-300"
-              >
-                <svg
-                  className="h-3.5 w-3.5 flex-shrink-0 text-neutral-400"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                  <polyline points="14 2 14 8 20 8" />
-                </svg>
-                <span className="truncate">
-                  {m.label?.trim() || "Untitled PDF"}
-                </span>
-              </a>
-              <button
-                type="button"
-                onClick={() => remove(m)}
-                aria-label="Remove"
-                className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded text-neutral-400 active:text-red-600 dark:active:text-red-400"
-              >
-                <svg
-                  className="h-3.5 w-3.5"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      {adding ? (
-        <div className="space-y-2">
-          <input
-            type="text"
-            placeholder="Label (optional, e.g. Riser diagram)"
-            value={pendingLabel}
-            onChange={(e) => setPendingLabel(e.target.value)}
-            className="block h-9 w-full rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50"
-          />
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={pickFile}
-              disabled={uploading}
-              className="h-9 flex-1 rounded-md bg-neutral-900 text-xs font-medium text-white disabled:opacity-60 dark:bg-neutral-100 dark:text-neutral-900"
-            >
-              {uploading ? "Uploading…" : "Choose PDF"}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setAdding(false);
-                setPendingLabel("");
-                setError(null);
-              }}
-              disabled={uploading}
-              className="h-9 rounded-md border border-neutral-300 px-3 text-xs font-medium dark:border-neutral-700"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={() => setAdding(true)}
-          className="h-9 w-full rounded-md border border-dashed border-neutral-300 text-xs font-medium text-neutral-600 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800"
-        >
-          + Add another PDF
-        </button>
-      )}
       <input
-        ref={fileInput}
+        ref={replaceInput}
         type="file"
         accept="application/pdf"
         className="hidden"
-        onChange={onFileChange}
+        onChange={replacePrimary}
       />
-    </div>
+    </>
   );
 }
 
