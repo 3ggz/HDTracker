@@ -40,6 +40,7 @@ export default async function JobDetailPage({
     { data: photos, error: photosError },
     { data: panels },
     { data: extraSiteMaps },
+    { data: activityEmails },
   ] = await Promise.all([
     supabase.from("jobs").select("*").eq("id", id).single(),
     supabase
@@ -66,7 +67,33 @@ export default async function JobDetailPage({
       .eq("job_id", id)
       .order("position", { ascending: true })
       .order("created_at", { ascending: true }),
+    // Every email that touched this job in any way. Distinct() isn't
+    // available on the JS client; the dedupe + sort happens in JS
+    // below. The full activity log is small per-job (one row per
+    // edit) so pulling the column is cheap.
+    supabase
+      .from("job_activity")
+      .select("user_email, created_at")
+      .eq("job_id", id)
+      .not("user_email", "is", null)
+      .order("created_at", { ascending: true }),
   ]);
+
+  // Derived "worked on" — first-seen-first order so the original
+  // author leads the list. Lowercased for dedupe; we keep the
+  // first-seen casing for display via firstNameFromEmail downstream.
+  const derivedWorkers: string[] = [];
+  {
+    const seen = new Set<string>();
+    for (const row of activityEmails ?? []) {
+      const email = (row.user_email as string | null)?.trim();
+      if (!email) continue;
+      const key = email.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      derivedWorkers.push(email);
+    }
+  }
 
   if (error || !job) notFound();
 
@@ -196,6 +223,7 @@ export default async function JobDetailPage({
         initialItemPhotos={(itemPhotos ?? []) as JobDoorItemPhoto[]}
         initialPanelPhotos={(panelPhotos ?? []) as JobPanelPhoto[]}
         initialExtraSiteMaps={(extraSiteMaps ?? []) as JobSiteMap[]}
+        initialDerivedWorkers={derivedWorkers}
         doorsLoadError={doorsError?.message ?? null}
         itemsLoadError={itemsError?.message ?? null}
         photosLoadError={photosError?.message ?? null}

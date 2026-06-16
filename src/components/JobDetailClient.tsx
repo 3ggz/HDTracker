@@ -47,6 +47,7 @@ import {
   type JobSiteMap,
 } from "@/lib/job-photos";
 import { HUGS_TEMPLATE } from "@/lib/job-templates";
+import { firstNameFromEmail } from "@/lib/email";
 import {
   deleteDoorAction,
   deleteJobAction,
@@ -106,6 +107,7 @@ export function JobDetailClient({
   photosLoadError,
   canDeleteJob,
   initialExtraSiteMaps,
+  initialDerivedWorkers,
 }: {
   initialJob: Job;
   initialDoors: JobDoor[];
@@ -120,6 +122,11 @@ export function JobDetailClient({
   photosLoadError: string | null;
   canDeleteJob: boolean;
   initialExtraSiteMaps: JobSiteMap[];
+  // Distinct user emails pulled from job_activity at SSR. Live updates
+  // here would require a separate channel; for now the list rehydrates
+  // on navigation, which is fine — the manual list IS realtime via
+  // the existing job UPDATE subscription.
+  initialDerivedWorkers: string[];
 }) {
   const router = useRouter();
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
@@ -1100,6 +1107,22 @@ export function JobDetailClient({
           onDeleted={(id) =>
             setPhotos((current) => current.filter((p) => p.id !== id))
           }
+        />
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        title={`Worked on (${
+          new Set([
+            ...initialDerivedWorkers.map((e) => e.toLowerCase()),
+            ...(job.manual_workers ?? []),
+          ]).size
+        })`}
+        storageKey={`hd:job:${initialJob.id}:workers`}
+      >
+        <WorkedOnSection
+          job={job}
+          derivedWorkers={initialDerivedWorkers}
+          onJobUpdate={(j) => setJob(j)}
         />
       </CollapsibleSection>
 
@@ -3769,6 +3792,198 @@ function SiteMapBody({
         onChange={replacePrimary}
       />
     </>
+  );
+}
+
+function WorkedOnSection({
+  job,
+  derivedWorkers,
+  onJobUpdate,
+}: {
+  job: Job;
+  derivedWorkers: string[];
+  onJobUpdate: (job: Job) => void;
+}) {
+  const tracker = useContext(SaveTrackerContext);
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const manual = job.manual_workers ?? [];
+  // Suppress a derived entry when the same person is also in the
+  // manual list (case-insensitive on the email local-part vs the
+  // typed name) so we don't list "Mark" twice for someone who got
+  // re-added by hand.
+  const manualLower = new Set(manual.map((n) => n.trim().toLowerCase()));
+  const visibleDerived = derivedWorkers.filter((email) => {
+    const local = email.split("@")[0]?.trim().toLowerCase() ?? "";
+    return !manualLower.has(local) && !manualLower.has(email.toLowerCase());
+  });
+
+  async function commitWorkers(next: string[]) {
+    setPending(true);
+    setError(null);
+    const { data, error: dbError } = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("jobs")
+        .update({ manual_workers: next })
+        .eq("id", job.id)
+        .select("*")
+        .single();
+    });
+    setPending(false);
+    if (dbError || !data) {
+      setError(dbError?.message ?? "Couldn't save.");
+      return;
+    }
+    onJobUpdate(data as Job);
+  }
+
+  async function addWorker() {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    const lower = trimmed.toLowerCase();
+    if (manual.some((n) => n.trim().toLowerCase() === lower)) {
+      setError(`${trimmed} is already on the list.`);
+      return;
+    }
+    await commitWorkers([...manual, trimmed]);
+    setNewName("");
+    setAdding(false);
+  }
+
+  async function removeWorker(name: string) {
+    await commitWorkers(manual.filter((n) => n !== name));
+  }
+
+  if (
+    visibleDerived.length === 0 &&
+    manual.length === 0 &&
+    !adding
+  ) {
+    return (
+      <div className="space-y-2">
+        <p className="text-xs italic text-neutral-500 dark:text-neutral-400">
+          Whoever edits this job will appear here automatically. Add
+          helpers who don&apos;t have accounts with the button below.
+        </p>
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          className="h-10 w-full rounded-lg border border-dashed border-neutral-300 text-sm font-medium text-neutral-600 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800"
+        >
+          + Add a name
+        </button>
+        {error && <ErrorBanner message={error} />}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <ul className="space-y-1.5">
+        {visibleDerived.map((email) => (
+          <li
+            key={`derived:${email}`}
+            className="flex items-center gap-2 rounded-md border border-neutral-200 bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+          >
+            <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-neutral-100 text-[10px] font-semibold uppercase text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+              {firstNameFromEmail(email).slice(0, 2)}
+            </span>
+            <span className="flex-1 truncate text-sm font-medium">
+              {firstNameFromEmail(email)}
+            </span>
+            <span
+              className="text-[10px] font-medium uppercase tracking-wide text-neutral-400 dark:text-neutral-500"
+              title="Picked up from the job activity log"
+            >
+              from activity
+            </span>
+          </li>
+        ))}
+        {manual.map((name) => (
+          <li
+            key={`manual:${name}`}
+            className="flex items-center gap-2 rounded-md border border-neutral-200 bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+          >
+            <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-neutral-100 text-[10px] font-semibold uppercase text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+              {name.trim().slice(0, 2)}
+            </span>
+            <span className="flex-1 truncate text-sm font-medium">{name}</span>
+            <button
+              type="button"
+              onClick={() => void removeWorker(name)}
+              disabled={pending}
+              aria-label={`Remove ${name}`}
+              className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded text-neutral-400 active:text-red-600 disabled:opacity-50 dark:active:text-red-400"
+            >
+              <svg
+                className="h-3.5 w-3.5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      {adding ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void addWorker();
+          }}
+          className="flex gap-2"
+        >
+          <input
+            autoFocus
+            type="text"
+            placeholder="Name"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            className="block h-10 flex-1 rounded-md border border-neutral-300 bg-white px-3 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+          />
+          <button
+            type="submit"
+            disabled={pending || !newName.trim()}
+            className="h-10 rounded-md bg-neutral-900 px-3 text-xs font-medium text-white disabled:opacity-60 dark:bg-neutral-100 dark:text-neutral-900"
+          >
+            {pending ? "…" : "Add"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setAdding(false);
+              setNewName("");
+              setError(null);
+            }}
+            disabled={pending}
+            className="h-10 rounded-md border border-neutral-300 px-3 text-xs font-medium dark:border-neutral-700"
+          >
+            Cancel
+          </button>
+        </form>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          className="h-9 w-full rounded-md border border-dashed border-neutral-300 text-xs font-medium text-neutral-600 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800"
+        >
+          + Add a name
+        </button>
+      )}
+
+      {error && <ErrorBanner message={error} />}
+    </div>
   );
 }
 
