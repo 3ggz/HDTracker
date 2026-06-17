@@ -7,6 +7,7 @@ export type Job = {
   site_map_path: string | null;
   site_map_uploaded_at: string | null;
   site_map_url: string | null;
+  site_map_label: string | null;
   completed_at: string | null;
   manual_workers: string[];
   created_at: string;

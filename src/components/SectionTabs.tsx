@@ -2,12 +2,12 @@ import Link from "next/link";
 
 type Tab = { href: string; label: string; key: "vehicles" | "jobs" | "faq" };
 
-// Labelled "Inventory" so it can later cover more than just vehicles
-// (Hangar / home-base equipment is on the table). The `key` stays
-// "vehicles" to avoid churning every page that opts into a tab.
+// Tab order: Jobs first since it's the day-to-day work surface.
+// Inventory and FAQ live behind it. Keys remain stable so existing
+// `active="vehicles"` / `active="jobs"` calls don't churn.
 const TABS: readonly Tab[] = [
-  { href: "/", label: "Inventory", key: "vehicles" },
   { href: "/jobs", label: "Jobs", key: "jobs" },
+  { href: "/", label: "Inventory", key: "vehicles" },
   { href: "/faq", label: "FAQ", key: "faq" },
 ];
 

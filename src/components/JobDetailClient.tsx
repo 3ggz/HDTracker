@@ -48,6 +48,7 @@ import {
 } from "@/lib/job-photos";
 import { HUGS_TEMPLATE } from "@/lib/job-templates";
 import { firstNameFromEmail } from "@/lib/email";
+import { PdfFullscreenModal } from "./PdfFullscreenModal";
 import {
   deleteDoorAction,
   deleteJobAction,
@@ -3380,6 +3381,9 @@ function SiteMapBody({
   const fileInput = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Holds the storage path of whichever PDF the user opened
+  // fullscreen, or null when the modal is closed.
+  const [fullscreenSrc, setFullscreenSrc] = useState<string | null>(null);
   // External link (OneDrive / Google Drive / Dropbox / etc) for the
   // case where the PDF is too large to upload. Editable draft +
   // synced value pattern so the input doesn't fight realtime updates.
@@ -3405,7 +3409,10 @@ function SiteMapBody({
     if (job.site_map_path) {
       list.push({
         key: "__primary",
-        label: "Primary (annotatable)",
+        // Primary takes its label from jobs.site_map_label, falling
+        // back to a hint about its editor role so the dropdown row
+        // still reads as something.
+        label: job.site_map_label?.trim() || "Primary (annotatable)",
         storagePath: job.site_map_path,
         isPrimary: true,
       });
@@ -3419,7 +3426,7 @@ function SiteMapBody({
       });
     }
     return list;
-  }, [job.site_map_path, extras]);
+  }, [job.site_map_path, job.site_map_label, extras]);
 
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   // Resolve the active PDF — fall back to the first one if the saved
@@ -3429,26 +3436,47 @@ function SiteMapBody({
   const selectedExtra = selected?.isPrimary
     ? null
     : extras.find((m) => m.id === selected?.key) ?? null;
+  // The "renameable target": either the primary (label lives on
+  // jobs.site_map_label) or an extra (label lives on job_site_maps.label).
+  // Used to drive the same input for both cases.
+  const renameTargetId = selected?.isPrimary ? "__primary" : selectedExtra?.id ?? null;
+  const renameTargetCurrentLabel = selected?.isPrimary
+    ? job.site_map_label ?? ""
+    : selectedExtra?.label ?? "";
 
-  // Editable label for the selected extra. Synced-draft pattern so
-  // the input doesn't fight realtime updates from another tab.
-  const [labelDraft, setLabelDraft] = useState(selectedExtra?.label ?? "");
+  // Editable label for the selected PDF. Synced-draft pattern so the
+  // input doesn't fight realtime updates from another tab.
+  const [labelDraft, setLabelDraft] = useState(renameTargetCurrentLabel);
   const [labelSyncId, setLabelSyncId] = useState<string | null>(
-    selectedExtra?.id ?? null,
+    renameTargetId,
   );
-  // When the user switches selection — or a realtime update changes
-  // the stored label — reset the draft. Render-time setState guarded
-  // by a sentinel so we don't loop.
-  const incomingId = selectedExtra?.id ?? null;
-  const incomingLabel = selectedExtra?.label ?? "";
-  if (incomingId !== labelSyncId) {
-    setLabelSyncId(incomingId);
-    setLabelDraft(incomingLabel);
+  if (renameTargetId !== labelSyncId) {
+    setLabelSyncId(renameTargetId);
+    setLabelDraft(renameTargetCurrentLabel);
   }
 
   async function commitLabel() {
-    if (!selectedExtra) return;
+    if (!selected) return;
     const next = labelDraft.trim() || null;
+    if (selected.isPrimary) {
+      if (next === (job.site_map_label ?? null)) return;
+      const { data, error: dbError } = await withTrack(tracker, async () => {
+        const supabase = createClient();
+        return supabase
+          .from("jobs")
+          .update({ site_map_label: next })
+          .eq("id", job.id)
+          .select("*")
+          .single();
+      });
+      if (dbError || !data) {
+        setError(dbError?.message ?? "Couldn't rename.");
+        return;
+      }
+      onJobUpdate(data as Job);
+      return;
+    }
+    if (!selectedExtra) return;
     if (next === (selectedExtra.label ?? null)) return;
     const result = await withTrack(tracker, async () => {
       const supabase = createClient();
@@ -3651,14 +3679,24 @@ function SiteMapBody({
             </span>
           </div>
 
-          {selectedExtra && (
+          {selected && (
             <label className="block">
               <span className="mb-1 block text-[11px] font-medium text-neutral-500 dark:text-neutral-400">
                 Name
               </span>
               <input
                 type="text"
-                placeholder="e.g. Riser diagram, Floor 2 plan"
+                id={`pdf-label-${renameTargetId ?? "none"}`}
+                name={`pdf-label-${renameTargetId ?? "none"}`}
+                autoComplete="off"
+                autoCorrect="off"
+                spellCheck={false}
+                enterKeyHint="done"
+                placeholder={
+                  selected.isPrimary
+                    ? "e.g. Floor 1 plan (leave blank to keep default)"
+                    : "e.g. Riser diagram, Floor 2 plan"
+                }
                 value={labelDraft}
                 onChange={(e) => setLabelDraft(e.target.value)}
                 onBlur={() => void commitLabel()}
@@ -3694,14 +3732,13 @@ function SiteMapBody({
                   Your browser can&apos;t render PDFs inline. Tap to open.
                 </a>
               </object>
-              <a
-                href={publicJobFileUrl(supabaseUrl, selected.storagePath)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="block text-center text-[11px] font-medium text-neutral-500 underline-offset-2 active:text-neutral-900 hover:underline dark:text-neutral-400 dark:active:text-neutral-100"
+              <button
+                type="button"
+                onClick={() => setFullscreenSrc(selected.storagePath)}
+                className="block w-full text-center text-[11px] font-medium text-neutral-500 underline-offset-2 active:text-neutral-900 hover:underline dark:text-neutral-400 dark:active:text-neutral-100"
               >
                 Open fullscreen
-              </a>
+              </button>
               <div className="flex gap-2">
                 <button
                   type="button"
@@ -3831,6 +3868,17 @@ function SiteMapBody({
         className="hidden"
         onChange={replacePrimary}
       />
+
+      {fullscreenSrc && (
+        <PdfFullscreenModal
+          src={publicJobFileUrl(supabaseUrl, fullscreenSrc)}
+          label={
+            allPdfs.find((p) => p.storagePath === fullscreenSrc)?.label ??
+            "Site map"
+          }
+          onClose={() => setFullscreenSrc(null)}
+        />
+      )}
     </>
   );
 }
