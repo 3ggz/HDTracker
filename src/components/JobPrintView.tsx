@@ -106,7 +106,15 @@ export function JobPrintView({
         </div>
         <button
           type="button"
-          onClick={() => window.print()}
+          onClick={(e) => {
+            // iOS Safari (and a couple of Android Chrome builds)
+            // refuse a second window.print() call when focus is still
+            // on the button that initiated the first one. Drop focus
+            // and defer to the next tick — works the first time too,
+            // costs nothing.
+            (e.currentTarget as HTMLButtonElement).blur();
+            setTimeout(() => window.print(), 0);
+          }}
           // window.print() is the export path on every modern browser —
           // it opens the system Save-as-PDF dialog on iOS/Android/macOS/
           // Windows so the user always gets a file, never a paper job.
@@ -190,24 +198,56 @@ export function JobPrintView({
                     key={door.id}
                     className="avoid-break rounded border border-neutral-300 p-3"
                   >
-                    <h3 className="text-base font-semibold">{door.name}</h3>
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="text-base font-semibold">{door.name}</h3>
+                      {door.tested_at && (
+                        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
+                          ✓ Tested
+                        </span>
+                      )}
+                    </div>
                     {doorItems.length > 0 && (
                       <div className="mt-2">
                         <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
                           Equipment
                         </p>
-                        <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm">
-                          {doorItems.map((it) => (
-                            <li key={it.id}>
-                              {it.name}
-                              {it.note && (
-                                <span className="text-neutral-600">
-                                  {" "}
-                                  — {it.note}
+                        {/* Equipment list distinguishes completed items
+                            with a green ✓ glyph + slightly muted text.
+                            Intentionally no strikethrough — coworker
+                            noted on the quick view that striking the
+                            whole line was too noisy. */}
+                        <ul className="mt-1 space-y-0.5 text-sm">
+                          {doorItems.map((it) => {
+                            const done = !!it.completed_at;
+                            return (
+                              <li
+                                key={it.id}
+                                className={
+                                  "flex items-baseline gap-2 " +
+                                  (done ? "text-neutral-500" : "text-neutral-900")
+                                }
+                              >
+                                <span
+                                  aria-hidden
+                                  className={
+                                    "w-3 flex-shrink-0 text-[12px] font-semibold leading-none " +
+                                    (done ? "text-emerald-600" : "text-neutral-300")
+                                  }
+                                >
+                                  {done ? "✓" : "○"}
                                 </span>
-                              )}
-                            </li>
-                          ))}
+                                <span>
+                                  {it.name}
+                                  {it.note && (
+                                    <span className="text-neutral-500">
+                                      {" "}
+                                      — {it.note}
+                                    </span>
+                                  )}
+                                </span>
+                              </li>
+                            );
+                          })}
                         </ul>
                       </div>
                     )}
