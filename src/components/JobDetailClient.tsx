@@ -39,6 +39,9 @@ import {
   publicJobFileUrl,
   renameExtraSiteMap,
   restoreDoorItemPhoto,
+  restoreExtraSiteMap,
+  restoreJobPhoto,
+  restorePanelPhoto,
   uploadDoorItemPhoto,
   uploadExtraSiteMap,
   uploadJobPhoto,
@@ -49,10 +52,13 @@ import {
 } from "@/lib/job-photos";
 import { HUGS_TEMPLATE } from "@/lib/job-templates";
 import { firstNameFromEmail } from "@/lib/email";
+import { useSoftDelete } from "@/lib/use-soft-delete";
 import { PdfFullscreenModal } from "./PdfFullscreenModal";
+import { UndoBanner } from "./UndoBanner";
 import {
   deleteDoorAction,
   deleteJobAction,
+  restoreDoorItemAction,
   deleteDoorItemAction,
   restoreDoorAction,
   type RestoreDoorInput,
@@ -1886,16 +1892,53 @@ function DoorCard({
     onItemsChange(door.id, [...items, data as JobDoorItem]);
   }
 
-  async function removeItem(id: string) {
-    const result = await withTrack(tracker, () => deleteDoorItemAction(id));
-    if (!result.ok) {
-      alert(`Couldn't remove: ${result.error}`);
-      return;
+  const itemSoftDelete = useSoftDelete<JobDoorItem>({
+    delete: async (item) => {
+      const result = await withTrack(tracker, () =>
+        deleteDoorItemAction(item.id),
+      );
+      return result;
+    },
+    restore: async (snapshot) => {
+      const result = await withTrack(tracker, () =>
+        restoreDoorItemAction({
+          door_id: snapshot.door_id,
+          name: snapshot.name,
+          note: snapshot.note,
+          position: snapshot.position,
+          completed_at: snapshot.completed_at,
+          photo_storage_path: snapshot.photo_storage_path,
+          photo_uploaded_at: snapshot.photo_uploaded_at,
+        }),
+      );
+      if (!result.ok) return { ok: false, error: result.error };
+      const restored: JobDoorItem = {
+        ...snapshot,
+        id: result.itemId,
+        created_at: new Date().toISOString(),
+      };
+      return { ok: true, restored };
+    },
+    // Use latest items closure via the parent setter — onItemsChange
+    // replaces the whole list for the door, so we read the current
+    // items via the prop each call.
+    onOptimisticRemove: (id) =>
+      onItemsChange(
+        door.id,
+        items.filter((it) => it.id !== id),
+      ),
+    onRestore: (item) => onItemsChange(door.id, [...items, item]),
+  });
+
+  function requestRemoveItem(id: string) {
+    // The X next to an item is small; one tap arms, the same X turns
+    // into a Confirm pill. Mirrors the photo X flow.
+    if (itemSoftDelete.confirmingId === id) {
+      const target = items.find((it) => it.id === id);
+      if (target) void itemSoftDelete.confirm(target);
+    } else {
+      itemSoftDelete.arm(id);
     }
-    onItemsChange(
-      door.id,
-      items.filter((it) => it.id !== id),
-    );
   }
 
   const usedNames = new Set(items.map((it) => it.name));
@@ -2132,12 +2175,19 @@ function DoorCard({
                       items.map((x) => (x.id === updated.id ? updated : x)),
                     )
                   }
-                  onRemove={() => removeItem(it.id)}
+                  onRemove={() => requestRemoveItem(it.id)}
+                  removeArmed={itemSoftDelete.confirmingId === it.id}
                   onPhotoAdded={onItemPhotoAdded}
                   onPhotoDeleted={onItemPhotoDeleted}
                 />
               ))}
             </ul>
+            {itemSoftDelete.recentlyDeleted && (
+              <UndoBanner
+                message={`Removed "${itemSoftDelete.recentlyDeleted.name}".`}
+                onUndo={() => void itemSoftDelete.undo()}
+              />
+            )}
 
             {quickAdds.length > 0 && (
               <div className="flex flex-wrap gap-1.5 pt-1">
@@ -2273,15 +2323,41 @@ function MiscellaneousSection({
     setAdding(false);
   }
 
-  async function removeItem(itemId: string) {
-    const result = await withTrack(tracker, () =>
-      deleteDoorItemAction(itemId),
-    );
-    if (!result.ok) {
-      alert(`Couldn't remove: ${result.error}`);
-      return;
+  const itemSoftDelete = useSoftDelete<JobDoorItem>({
+    delete: async (item) =>
+      withTrack(tracker, () => deleteDoorItemAction(item.id)),
+    restore: async (snapshot) => {
+      const result = await withTrack(tracker, () =>
+        restoreDoorItemAction({
+          door_id: snapshot.door_id,
+          name: snapshot.name,
+          note: snapshot.note,
+          position: snapshot.position,
+          completed_at: snapshot.completed_at,
+          photo_storage_path: snapshot.photo_storage_path,
+          photo_uploaded_at: snapshot.photo_uploaded_at,
+        }),
+      );
+      if (!result.ok) return { ok: false, error: result.error };
+      const restored: JobDoorItem = {
+        ...snapshot,
+        id: result.itemId,
+        created_at: new Date().toISOString(),
+      };
+      return { ok: true, restored };
+    },
+    onOptimisticRemove: (id) =>
+      onItemsChange(items.filter((it) => it.id !== id)),
+    onRestore: (item) => onItemsChange([...items, item]),
+  });
+
+  function requestRemoveItem(itemId: string) {
+    if (itemSoftDelete.confirmingId === itemId) {
+      const target = items.find((it) => it.id === itemId);
+      if (target) void itemSoftDelete.confirm(target);
+    } else {
+      itemSoftDelete.arm(itemId);
     }
-    onItemsChange(items.filter((it) => it.id !== itemId));
   }
 
   return (
@@ -2361,22 +2437,50 @@ function MiscellaneousSection({
                     </span>
                     <button
                       type="button"
-                      onClick={() => removeItem(it.id)}
-                      aria-label={`Remove ${name} #${idx + 1}`}
-                      className="flex h-7 w-7 items-center justify-center rounded text-neutral-400 active:text-red-600 dark:active:text-red-400"
+                      onClick={() => requestRemoveItem(it.id)}
+                      aria-label={
+                        itemSoftDelete.confirmingId === it.id
+                          ? `Confirm remove ${name} #${idx + 1}`
+                          : `Remove ${name} #${idx + 1}`
+                      }
+                      className={
+                        "flex items-center justify-center rounded transition " +
+                        (itemSoftDelete.confirmingId === it.id
+                          ? "h-7 gap-1 bg-red-600 px-2 text-[10px] font-semibold text-white shadow-md"
+                          : "h-7 w-7 text-neutral-400 active:text-red-600 dark:active:text-red-400")
+                      }
                     >
-                      <svg
-                        className="h-3.5 w-3.5"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <line x1="18" y1="6" x2="6" y2="18" />
-                        <line x1="6" y1="6" x2="18" y2="18" />
-                      </svg>
+                      {itemSoftDelete.confirmingId === it.id ? (
+                        <>
+                          <svg
+                            className="h-3 w-3"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="3"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden
+                          >
+                            <polyline points="20 6 9 17 4 12" />
+                          </svg>
+                          ?
+                        </>
+                      ) : (
+                        <svg
+                          className="h-3.5 w-3.5"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden
+                        >
+                          <line x1="18" y1="6" x2="6" y2="18" />
+                          <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                      )}
                     </button>
                   </li>
                 );
@@ -2392,6 +2496,13 @@ function MiscellaneousSection({
           </div>
         );
       })}
+
+      {itemSoftDelete.recentlyDeleted && (
+        <UndoBanner
+          message={`Removed "${itemSoftDelete.recentlyDeleted.name}".`}
+          onUndo={() => void itemSoftDelete.undo()}
+        />
+      )}
 
       {adding ? (
         <form
@@ -2478,6 +2589,7 @@ function DoorItemRow({
   supabaseUrl,
   onUpdate,
   onRemove,
+  removeArmed,
   onPhotoAdded,
   onPhotoDeleted,
 }: {
@@ -2488,6 +2600,10 @@ function DoorItemRow({
   supabaseUrl: string;
   onUpdate: (item: JobDoorItem) => void;
   onRemove: () => void;
+  // First tap arms; second tap actually removes. The parent owns
+  // both the arm-state timer and the undo banner — this row just
+  // renders the toggle visually.
+  removeArmed: boolean;
   onPhotoAdded: (photo: JobDoorItemPhoto) => void;
   onPhotoDeleted: (id: string) => void;
 }) {
@@ -2498,24 +2614,27 @@ function DoorItemRow({
   const [uploading, setUploading] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const photoInput = useRef<HTMLInputElement>(null);
-  // Two-tap delete + undo for photos. confirmingPhotoId tracks which
-  // photo is in its "tap-again" state; recentlyDeleted lets the user
-  // resurrect the last delete within 8 s. Timers cleaned up on
-  // unmount so they can't fire on a dead component.
-  const [confirmingPhotoId, setConfirmingPhotoId] = useState<string | null>(
-    null,
-  );
-  const confirmTimerRef = useRef<number | null>(null);
-  const [recentlyDeleted, setRecentlyDeleted] =
-    useState<JobDoorItemPhoto | null>(null);
-  const undoTimerRef = useRef<number | null>(null);
-  useEffect(
-    () => () => {
-      if (confirmTimerRef.current) window.clearTimeout(confirmTimerRef.current);
-      if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
+
+  // Soft-delete photos with confirm-then-undo. Storage stays;
+  // restoreDoorItemPhoto re-inserts pointing at the same path.
+  const photoSoftDelete = useSoftDelete<JobDoorItemPhoto>({
+    delete: (photo) =>
+      withTrack(tracker, async () => {
+        const supabase = createClient();
+        return deleteDoorItemPhoto(supabase, photo);
+      }),
+    restore: async (snapshot) => {
+      const result = await withTrack(tracker, async () => {
+        const supabase = createClient();
+        return restoreDoorItemPhoto(supabase, snapshot);
+      });
+      return result.ok
+        ? { ok: true, restored: result.photo }
+        : { ok: false, error: result.error };
     },
-    [],
-  );
+    onOptimisticRemove: (id) => onPhotoDeleted(id),
+    onRestore: (photo) => onPhotoAdded(photo),
+  });
 
   if ((item.note ?? "") !== syncedNote) {
     if (noteDraft === syncedNote) setNoteDraft(item.note ?? "");
@@ -2561,60 +2680,6 @@ function DoorItemRow({
     onPhotoAdded(result.photo);
   }
 
-  function armDeletePhoto(photoId: string) {
-    if (confirmTimerRef.current) window.clearTimeout(confirmTimerRef.current);
-    setConfirmingPhotoId(photoId);
-    // Auto-dismiss the confirm state if the user walks away — they
-    // shouldn't have to find a "cancel" button if they tapped by
-    // accident.
-    confirmTimerRef.current = window.setTimeout(() => {
-      setConfirmingPhotoId(null);
-      confirmTimerRef.current = null;
-    }, 3000);
-  }
-
-  async function confirmRemovePhoto(photo: JobDoorItemPhoto) {
-    if (confirmTimerRef.current) window.clearTimeout(confirmTimerRef.current);
-    confirmTimerRef.current = null;
-    setConfirmingPhotoId(null);
-    const result = await withTrack(tracker, async () => {
-      const supabase = createClient();
-      return deleteDoorItemPhoto(supabase, photo);
-    });
-    if (!result.ok) {
-      alert(result.error);
-      return;
-    }
-    onPhotoDeleted(photo.id);
-    // Stash the row for the undo banner; the storage file is still
-    // in the bucket because deleteDoorItemPhoto is soft now, so
-    // re-inserting points at the same path.
-    if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
-    setRecentlyDeleted(photo);
-    undoTimerRef.current = window.setTimeout(() => {
-      setRecentlyDeleted(null);
-      undoTimerRef.current = null;
-    }, 8000);
-  }
-
-  async function undoLastPhotoDelete() {
-    if (!recentlyDeleted) return;
-    const snapshot = recentlyDeleted;
-    if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
-    undoTimerRef.current = null;
-    setRecentlyDeleted(null);
-    const result = await withTrack(tracker, async () => {
-      const supabase = createClient();
-      return restoreDoorItemPhoto(supabase, snapshot);
-    });
-    if (!result.ok) {
-      alert(`Couldn't undo: ${result.error}`);
-      // Put it back in the banner slot so the user can try again.
-      setRecentlyDeleted(snapshot);
-      return;
-    }
-    onPhotoAdded(result.photo);
-  }
 
   async function toggleComplete() {
     const nextCompletedAt = item.completed_at ? null : new Date().toISOString();
@@ -2741,21 +2806,47 @@ function DoorItemRow({
         <button
           type="button"
           onClick={onRemove}
-          aria-label={`Remove ${item.name}`}
-          className="flex h-8 w-8 items-center justify-center rounded text-neutral-400 active:text-red-600 dark:active:text-red-400"
+          aria-label={
+            removeArmed ? `Confirm remove ${item.name}` : `Remove ${item.name}`
+          }
+          className={
+            "flex items-center justify-center rounded transition " +
+            (removeArmed
+              ? "h-8 gap-1 bg-red-600 px-2 text-[10px] font-semibold text-white shadow-md"
+              : "h-8 w-8 text-neutral-400 active:text-red-600 dark:active:text-red-400")
+          }
         >
-          <svg
-            className="h-4 w-4"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <line x1="18" y1="6" x2="6" y2="18" />
-            <line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
+          {removeArmed ? (
+            <>
+              <svg
+                className="h-3 w-3"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+              Remove?
+            </>
+          ) : (
+            <svg
+              className="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          )}
         </button>
       </div>
 
@@ -2846,47 +2937,12 @@ function DoorItemRow({
                       className="h-full w-full object-cover"
                     />
                   </a>
-                  {confirmingPhotoId === p.id ? (
-                    <button
-                      type="button"
-                      onClick={() => void confirmRemovePhoto(p)}
-                      aria-label="Confirm delete"
-                      className="absolute right-0.5 top-0.5 flex h-7 items-center gap-1 rounded-full bg-red-600 px-2 text-[10px] font-semibold text-white shadow-md"
-                    >
-                      <svg
-                        className="h-3 w-3"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="3"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <polyline points="20 6 9 17 4 12" />
-                      </svg>
-                      Delete?
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => armDeletePhoto(p.id)}
-                      aria-label="Delete photo"
-                      className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white"
-                    >
-                      <svg
-                        className="h-3 w-3"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="3"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <line x1="18" y1="6" x2="6" y2="18" />
-                        <line x1="6" y1="6" x2="18" y2="18" />
-                      </svg>
-                    </button>
-                  )}
+                  <PhotoDeleteToggle
+                    photoId={p.id}
+                    armed={photoSoftDelete.confirmingId === p.id}
+                    onArm={() => photoSoftDelete.arm(p.id)}
+                    onConfirm={() => void photoSoftDelete.confirm(p)}
+                  />
                 </div>
               ))}
             </div>
@@ -2905,31 +2961,77 @@ function DoorItemRow({
         }}
       />
 
-      {recentlyDeleted && (
-        <div className="mt-2 flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-100">
-          <svg
-            className="h-3.5 w-3.5 flex-shrink-0 text-amber-700 dark:text-amber-400"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <polyline points="3 6 5 6 21 6" />
-            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-          </svg>
-          <span className="flex-1">Photo deleted.</span>
-          <button
-            type="button"
-            onClick={() => void undoLastPhotoDelete()}
-            className="h-7 rounded-md bg-amber-600 px-2 text-[11px] font-semibold text-white shadow active:scale-95"
-          >
-            Undo
-          </button>
-        </div>
+      {photoSoftDelete.recentlyDeleted && (
+        <UndoBanner
+          message="Photo deleted."
+          onUndo={() => void photoSoftDelete.undo()}
+        />
       )}
     </li>
+  );
+}
+
+// Two-state X button used by every photo grid. Default state is the
+// small black X in the corner; armed state is a red 'Delete?' pill
+// that needs a second tap to actually confirm. Lives at the top of
+// the file so the four photo flows (item / door / job / panel) can
+// share it without duplicating SVG.
+function PhotoDeleteToggle({
+  photoId,
+  armed,
+  onArm,
+  onConfirm,
+}: {
+  photoId: string;
+  armed: boolean;
+  onArm: () => void;
+  onConfirm: () => void;
+}) {
+  if (armed) {
+    return (
+      <button
+        type="button"
+        onClick={onConfirm}
+        aria-label={`Confirm delete photo ${photoId}`}
+        className="absolute right-0.5 top-0.5 flex h-7 items-center gap-1 rounded-full bg-red-600 px-2 text-[10px] font-semibold text-white shadow-md"
+      >
+        <svg
+          className="h-3 w-3"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+        Delete?
+      </button>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onArm}
+      aria-label="Delete photo"
+      className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white"
+    >
+      <svg
+        className="h-3 w-3"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <line x1="18" y1="6" x2="6" y2="18" />
+        <line x1="6" y1="6" x2="18" y2="18" />
+      </svg>
+    </button>
   );
 }
 
@@ -2975,18 +3077,24 @@ function JobPhotoSection({
     onAdded(result.photo);
   }
 
-  async function remove(photo: JobPhoto) {
-    if (!confirm("Delete this photo?")) return;
-    const result = await withTrack(tracker, async () => {
-      const supabase = createClient();
-      return deleteJobPhoto(supabase, photo);
-    });
-    if (!result.ok) {
-      setError(result.error);
-      return;
-    }
-    onDeleted(photo.id);
-  }
+  const softDelete = useSoftDelete<JobPhoto>({
+    delete: (photo) =>
+      withTrack(tracker, async () => {
+        const supabase = createClient();
+        return deleteJobPhoto(supabase, photo);
+      }),
+    restore: async (snapshot) => {
+      const result = await withTrack(tracker, async () => {
+        const supabase = createClient();
+        return restoreJobPhoto(supabase, snapshot);
+      });
+      return result.ok
+        ? { ok: true, restored: result.photo }
+        : { ok: false, error: result.error };
+    },
+    onOptimisticRemove: (id) => onDeleted(id),
+    onRestore: (photo) => onAdded(photo),
+  });
 
   return (
     <div className="space-y-2">
@@ -3010,25 +3118,12 @@ function JobPhotoSection({
                   className="h-full w-full object-cover"
                 />
               </a>
-              <button
-                type="button"
-                onClick={() => remove(p)}
-                aria-label="Delete photo"
-                className="absolute right-1 top-1 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-white active:bg-black/80"
-              >
-                <svg
-                  className="h-3.5 w-3.5"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
+              <PhotoDeleteToggle
+                photoId={p.id}
+                armed={softDelete.confirmingId === p.id}
+                onArm={() => softDelete.arm(p.id)}
+                onConfirm={() => void softDelete.confirm(p)}
+              />
             </div>
           ))}
         </div>
@@ -3048,6 +3143,12 @@ function JobPhotoSection({
       >
         {uploading ? "Uploading..." : "+ Add photo"}
       </button>
+      {softDelete.recentlyDeleted && (
+        <UndoBanner
+          message="Photo deleted."
+          onUndo={() => void softDelete.undo()}
+        />
+      )}
     </div>
   );
 }
@@ -3216,17 +3317,24 @@ function PanelCard({
     onPanelPhotoAdded(result.photo);
   }
 
-  async function removePhoto(photo: JobPanelPhoto) {
-    const result = await withTrack(tracker, async () => {
-      const supabase = createClient();
-      return deletePanelPhoto(supabase, photo);
-    });
-    if (!result.ok) {
-      alert(result.error);
-      return;
-    }
-    onPanelPhotoDeleted(photo.id);
-  }
+  const photoSoftDelete = useSoftDelete<JobPanelPhoto>({
+    delete: (photo) =>
+      withTrack(tracker, async () => {
+        const supabase = createClient();
+        return deletePanelPhoto(supabase, photo);
+      }),
+    restore: async (snapshot) => {
+      const result = await withTrack(tracker, async () => {
+        const supabase = createClient();
+        return restorePanelPhoto(supabase, snapshot);
+      });
+      return result.ok
+        ? { ok: true, restored: result.photo }
+        : { ok: false, error: result.error };
+    },
+    onOptimisticRemove: (id) => onPanelPhotoDeleted(id),
+    onRestore: (photo) => onPanelPhotoAdded(photo),
+  });
 
   const doorMap = new Map(allDoors.map((d) => [d.id, d]));
   const linkedDoors = panelDoorIds
@@ -3430,28 +3538,21 @@ function PanelCard({
                     className="h-full w-full object-cover"
                   />
                 </a>
-                <button
-                  type="button"
-                  onClick={() => void removePhoto(p)}
-                  aria-label="Delete photo"
-                  className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-black/60 text-white"
-                >
-                  <svg
-                    className="h-3 w-3"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="3"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
-                </button>
+                <PhotoDeleteToggle
+                  photoId={p.id}
+                  armed={photoSoftDelete.confirmingId === p.id}
+                  onArm={() => photoSoftDelete.arm(p.id)}
+                  onConfirm={() => void photoSoftDelete.confirm(p)}
+                />
               </div>
             ))}
           </div>
+        )}
+        {photoSoftDelete.recentlyDeleted && (
+          <UndoBanner
+            message="Photo deleted."
+            onUndo={() => void photoSoftDelete.undo()}
+          />
         )}
         <input
           ref={photoInput}
@@ -3706,17 +3807,34 @@ function SiteMapBody({
     });
   }
 
+  // Two-tap + undo for extras. The primary still goes through the
+  // legacy confirm() since restoring a primary properly would mean
+  // reviving the jobs.site_map_path link, which is one-of and
+  // tightly coupled to the annotation editor.
+  const extraSoftDelete = useSoftDelete<JobSiteMap>({
+    delete: (siteMap) =>
+      withTrack(tracker, async () => {
+        const supabase = createClient();
+        return deleteExtraSiteMap(supabase, siteMap);
+      }),
+    restore: async (snapshot) => {
+      const result = await withTrack(tracker, async () => {
+        const supabase = createClient();
+        return restoreExtraSiteMap(supabase, snapshot);
+      });
+      return result.ok
+        ? { ok: true, restored: result.siteMap }
+        : { ok: false, error: result.error };
+    },
+    onOptimisticRemove: (id) => onExtraRemoved(id),
+    onRestore: (siteMap) => onExtraAdded(siteMap),
+    undoTtlMs: 10000,
+  });
+
   async function removeSelected() {
     if (!selected) return;
-    if (
-      !confirm(
-        selected.isPrimary
-          ? "Remove the primary site map?"
-          : `Remove "${selected.label}"?`,
-      )
-    )
-      return;
     if (selected.isPrimary) {
+      if (!confirm("Remove the primary site map?")) return;
       const supabase = createClient();
       const result = await deleteSiteMap(
         supabase,
@@ -3732,18 +3850,18 @@ function SiteMapBody({
         site_map_path: null,
         site_map_uploaded_at: null,
       });
-    } else if (selectedExtra) {
-      const result = await withTrack(tracker, async () => {
-        const supabase = createClient();
-        return deleteExtraSiteMap(supabase, selectedExtra);
-      });
-      if (!result.ok) {
-        setError(result.error);
-        return;
-      }
-      onExtraRemoved(selectedExtra.id);
+      setSelectedKey(null);
+      return;
     }
-    setSelectedKey(null);
+    if (!selectedExtra) return;
+    // Two-tap on the visible Remove button: first tap arms, second
+    // tap confirms.
+    if (extraSoftDelete.confirmingId === selectedExtra.id) {
+      await extraSoftDelete.confirm(selectedExtra);
+      setSelectedKey(null);
+    } else {
+      extraSoftDelete.arm(selectedExtra.id);
+    }
   }
 
   const replaceInput = useRef<HTMLInputElement>(null);
@@ -3877,9 +3995,18 @@ function SiteMapBody({
                 <button
                   type="button"
                   onClick={removeSelected}
-                  className="h-10 rounded-lg border border-red-300 px-3 text-sm font-medium text-red-600 dark:border-red-900 dark:text-red-400"
+                  className={
+                    "h-10 rounded-lg px-3 text-sm font-medium transition " +
+                    (selectedExtra &&
+                    extraSoftDelete.confirmingId === selectedExtra.id
+                      ? "bg-red-600 text-white shadow-md"
+                      : "border border-red-300 text-red-600 dark:border-red-900 dark:text-red-400")
+                  }
                 >
-                  Remove
+                  {selectedExtra &&
+                  extraSoftDelete.confirmingId === selectedExtra.id
+                    ? "Confirm?"
+                    : "Remove"}
                 </button>
               </div>
               {selected.isPrimary && (
@@ -3988,6 +4115,15 @@ function SiteMapBody({
         onChange={replacePrimary}
       />
 
+      {extraSoftDelete.recentlyDeleted && (
+        <UndoBanner
+          message={`Removed PDF "${
+            extraSoftDelete.recentlyDeleted.label?.trim() || "Untitled"
+          }".`}
+          onUndo={() => void extraSoftDelete.undo()}
+        />
+      )}
+
       {fullscreenSrc && (
         <PdfFullscreenModal
           src={publicJobFileUrl(supabaseUrl, fullscreenSrc)}
@@ -4061,8 +4197,66 @@ function WorkedOnSection({
     setAdding(false);
   }
 
-  async function removeWorker(name: string) {
-    await commitWorkers(manual.filter((n) => n !== name));
+  // Two-tap + undo for manual workers. The "snapshot" the soft-delete
+  // hook needs has an id, so wrap each name in a synthetic { id, name }
+  // pair keyed by the name itself (manual_workers dedupes by string).
+  type WorkerSnapshot = { id: string; name: string; index: number };
+  const workerSoftDelete = useSoftDelete<WorkerSnapshot>({
+    delete: async (snapshot) => {
+      const supabase = createClient();
+      const { error } = await withTrack(tracker, async () =>
+        supabase
+          .from("jobs")
+          .update({
+            manual_workers: manual.filter((n) => n !== snapshot.name),
+          })
+          .eq("id", job.id),
+      );
+      return error ? { ok: false, error: error.message } : { ok: true };
+    },
+    restore: async (snapshot) => {
+      const supabase = createClient();
+      const { data, error } = await withTrack(tracker, async () =>
+        supabase
+          .from("jobs")
+          .update({
+            manual_workers: [
+              ...manual.slice(0, snapshot.index),
+              snapshot.name,
+              ...manual.slice(snapshot.index),
+            ],
+          })
+          .eq("id", job.id)
+          .select("*")
+          .single(),
+      );
+      if (error || !data) {
+        return { ok: false, error: error?.message ?? "Couldn't restore." };
+      }
+      onJobUpdate(data as Job);
+      return { ok: true, restored: snapshot };
+    },
+    // Reading parent state via job + onJobUpdate; the synthetic id
+    // makes the hook's contract happy without persisting it.
+    onOptimisticRemove: () => {
+      // No-op — the delete path already updates jobs.manual_workers
+      // via Supabase, which arrives back through the realtime job
+      // UPDATE subscription. Nothing extra to do client-side here.
+    },
+    onRestore: () => {
+      // Same — restore writes through jobs and the row update fans
+      // back via realtime.
+    },
+  });
+
+  function requestRemoveWorker(name: string) {
+    const id = `worker:${name}`;
+    if (workerSoftDelete.confirmingId === id) {
+      const index = manual.indexOf(name);
+      void workerSoftDelete.confirm({ id, name, index });
+    } else {
+      workerSoftDelete.arm(id);
+    }
   }
 
   if (
@@ -4121,27 +4315,62 @@ function WorkedOnSection({
             <span className="flex-1 truncate text-sm font-medium">{name}</span>
             <button
               type="button"
-              onClick={() => void removeWorker(name)}
+              onClick={() => requestRemoveWorker(name)}
               disabled={pending}
-              aria-label={`Remove ${name}`}
-              className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded text-neutral-400 active:text-red-600 disabled:opacity-50 dark:active:text-red-400"
+              aria-label={
+                workerSoftDelete.confirmingId === `worker:${name}`
+                  ? `Confirm remove ${name}`
+                  : `Remove ${name}`
+              }
+              className={
+                "flex flex-shrink-0 items-center justify-center rounded transition disabled:opacity-50 " +
+                (workerSoftDelete.confirmingId === `worker:${name}`
+                  ? "h-7 gap-1 bg-red-600 px-2 text-[10px] font-semibold text-white shadow-md"
+                  : "h-7 w-7 text-neutral-400 active:text-red-600 dark:active:text-red-400")
+              }
             >
-              <svg
-                className="h-3.5 w-3.5"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
+              {workerSoftDelete.confirmingId === `worker:${name}` ? (
+                <>
+                  <svg
+                    className="h-3 w-3"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  ?
+                </>
+              ) : (
+                <svg
+                  className="h-3.5 w-3.5"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              )}
             </button>
           </li>
         ))}
       </ul>
+
+      {workerSoftDelete.recentlyDeleted && (
+        <UndoBanner
+          message={`Removed "${workerSoftDelete.recentlyDeleted.name}".`}
+          onUndo={() => void workerSoftDelete.undo()}
+        />
+      )}
 
       {adding ? (
         <form

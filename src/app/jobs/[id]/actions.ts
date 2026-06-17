@@ -233,6 +233,47 @@ export async function deleteJobAction(jobId: string): Promise<DeleteResult> {
   }
 }
 
+// Re-insert a soft-deleted door item exactly as it was. Used by the
+// inline 'Undo' banner that appears after the user taps Remove on
+// an item row. New uuid + created_at; everything else preserved off
+// the snapshot.
+export type RestoreDoorItemSnapshot = {
+  door_id: string;
+  name: string;
+  note: string | null;
+  position: number;
+  completed_at: string | null;
+  photo_storage_path: string | null;
+  photo_uploaded_at: string | null;
+};
+
+export type RestoreDoorItemResult =
+  | { ok: true; itemId: string }
+  | { ok: false; error: string };
+
+export async function restoreDoorItemAction(
+  snapshot: RestoreDoorItemSnapshot,
+): Promise<RestoreDoorItemResult> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("job_door_items")
+    .insert({
+      door_id: snapshot.door_id,
+      name: snapshot.name,
+      note: snapshot.note,
+      position: snapshot.position,
+      completed_at: snapshot.completed_at,
+      photo_storage_path: snapshot.photo_storage_path,
+      photo_uploaded_at: snapshot.photo_uploaded_at,
+    })
+    .select("id")
+    .single();
+  if (error || !data) {
+    return { ok: false, error: error?.message ?? "Couldn't restore item." };
+  }
+  return { ok: true, itemId: data.id };
+}
+
 export async function deleteDoorItemAction(
   itemId: string,
 ): Promise<DeleteResult> {

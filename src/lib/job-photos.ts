@@ -104,17 +104,9 @@ export async function deleteJobPhoto(
   supabase: SupabaseClient,
   photo: JobPhoto,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const { error: storageError } = await supabase.storage
-    .from(JOB_BUCKET)
-    .remove([photo.storage_path]);
-
-  if (
-    storageError &&
-    !storageError.message.toLowerCase().includes("not found")
-  ) {
-    return { ok: false, error: storageError.message };
-  }
-
+  // Soft delete — DB row only. Storage file stays so restoreJobPhoto
+  // can resurrect by pointing a new row at the same path. The undo
+  // window is short; orphan rate is negligible.
   const { error: dbError } = await supabase
     .from("job_photos")
     .delete()
@@ -122,6 +114,29 @@ export async function deleteJobPhoto(
 
   if (dbError) return { ok: false, error: dbError.message };
   return { ok: true };
+}
+
+export async function restoreJobPhoto(
+  supabase: SupabaseClient,
+  snapshot: JobPhoto,
+): Promise<
+  | { ok: true; photo: JobPhoto }
+  | { ok: false; error: string }
+> {
+  const { data, error } = await supabase
+    .from("job_photos")
+    .insert({
+      job_id: snapshot.job_id,
+      door_id: snapshot.door_id,
+      storage_path: snapshot.storage_path,
+      caption: snapshot.caption,
+    })
+    .select("*")
+    .single();
+  if (error || !data) {
+    return { ok: false, error: error?.message ?? "Couldn't restore photo." };
+  }
+  return { ok: true, photo: data as JobPhoto };
 }
 
 import type { JobDoorItemPhoto, JobPanelPhoto } from "./jobs";
@@ -387,21 +402,36 @@ export async function deleteExtraSiteMap(
   supabase: SupabaseClient,
   siteMap: JobSiteMap,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const { error: storageError } = await supabase.storage
-    .from(JOB_BUCKET)
-    .remove([siteMap.storage_path]);
-  if (
-    storageError &&
-    !storageError.message.toLowerCase().includes("not found")
-  ) {
-    return { ok: false, error: storageError.message };
-  }
+  // Soft delete; storage stays for restoreExtraSiteMap.
   const { error: dbError } = await supabase
     .from("job_site_maps")
     .delete()
     .eq("id", siteMap.id);
   if (dbError) return { ok: false, error: dbError.message };
   return { ok: true };
+}
+
+export async function restoreExtraSiteMap(
+  supabase: SupabaseClient,
+  snapshot: JobSiteMap,
+): Promise<
+  | { ok: true; siteMap: JobSiteMap }
+  | { ok: false; error: string }
+> {
+  const { data, error } = await supabase
+    .from("job_site_maps")
+    .insert({
+      job_id: snapshot.job_id,
+      label: snapshot.label,
+      storage_path: snapshot.storage_path,
+      position: snapshot.position,
+    })
+    .select("*")
+    .single();
+  if (error || !data) {
+    return { ok: false, error: error?.message ?? "Couldn't restore PDF." };
+  }
+  return { ok: true, siteMap: data as JobSiteMap };
 }
 
 export type RenameExtraSiteMapResult =
@@ -485,15 +515,7 @@ export async function deletePanelPhoto(
   supabase: SupabaseClient,
   photo: JobPanelPhoto,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const { error: storageError } = await supabase.storage
-    .from(JOB_BUCKET)
-    .remove([photo.storage_path]);
-  if (
-    storageError &&
-    !storageError.message.toLowerCase().includes("not found")
-  ) {
-    return { ok: false, error: storageError.message };
-  }
+  // Soft delete; storage stays for restorePanelPhoto.
   const { data, error: dbError } = await supabase
     .from("job_panel_photos")
     .delete()
@@ -504,4 +526,27 @@ export async function deletePanelPhoto(
     return { ok: false, error: "No rows were affected." };
   }
   return { ok: true };
+}
+
+export async function restorePanelPhoto(
+  supabase: SupabaseClient,
+  snapshot: JobPanelPhoto,
+): Promise<
+  | { ok: true; photo: JobPanelPhoto }
+  | { ok: false; error: string }
+> {
+  const { data, error } = await supabase
+    .from("job_panel_photos")
+    .insert({
+      panel_id: snapshot.panel_id,
+      storage_path: snapshot.storage_path,
+      caption: snapshot.caption,
+      position: snapshot.position,
+    })
+    .select("*")
+    .single();
+  if (error || !data) {
+    return { ok: false, error: error?.message ?? "Couldn't restore photo." };
+  }
+  return { ok: true, photo: data as JobPanelPhoto };
 }
