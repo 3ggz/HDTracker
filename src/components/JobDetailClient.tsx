@@ -1935,6 +1935,19 @@ function DoorCard({
         </button>
         <input
           ref={nameInputRef}
+          // Per-row id (and matching name) so iOS Safari treats each
+          // input as its own form field. Without these, a column of
+          // identical "Door name" inputs registers as one repeating
+          // autofill row and the OS misroutes typed characters /
+          // Enter taps into a sibling — the "text jumps to the
+          // previous box after ~8 entries" report.
+          id={`door-name-${door.id}`}
+          name={`door-name-${door.id}`}
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="words"
+          spellCheck={false}
+          enterKeyHint="done"
           className={inputClass + " flex-1"}
           value={nameDraft}
           onChange={(e) => setNameDraft(e.target.value)}
@@ -1944,6 +1957,16 @@ function DoorCard({
               commitField({ name: trimmed });
             } else if (!trimmed) {
               setNameDraft(door.name);
+            }
+          }}
+          onKeyDown={(e) => {
+            // Explicit Enter handler — blur commits via the handler
+            // above. Without this, Enter has no defined behavior on
+            // a free-standing input and iOS will pick one (often
+            // landing focus on a sibling).
+            if (e.key === "Enter") {
+              e.preventDefault();
+              e.currentTarget.blur();
             }
           }}
           placeholder="Door name"
@@ -2055,12 +2078,24 @@ function DoorCard({
             </span>
             <input
               className="h-8 flex-1 rounded border border-neutral-300 bg-white px-2 text-xs dark:border-neutral-700 dark:bg-neutral-900"
+              id={`door-floor-${door.id}`}
+              name={`door-floor-${door.id}`}
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
+              enterKeyHint="done"
               placeholder="optional"
               value={floorDraft}
               onChange={(e) => setFloorDraft(e.target.value)}
               onBlur={() => {
                 const next = floorDraft.trim() || null;
                 if (next !== door.floor) commitField({ floor: next });
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  e.currentTarget.blur();
+                }
               }}
             />
           </label>
@@ -2126,6 +2161,11 @@ function DoorCard({
             </h3>
             <textarea
               className={textareaClass}
+              id={`door-notes-${door.id}`}
+              name={`door-notes-${door.id}`}
+              autoComplete="off"
+              autoCorrect="on"
+              spellCheck
               value={notesDraft}
               onChange={(e) => setNotesDraft(e.target.value)}
               onBlur={() => {
