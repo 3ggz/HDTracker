@@ -374,11 +374,17 @@ export function JobDetailClient({
         .update(patch)
         .eq("id", job.id)
         .select("*")
-        .single();
+        .maybeSingle();
     });
     setHeaderSaving(false);
-    if (error || !data) {
-      setHeaderError(error?.message ?? "Couldn't save.");
+    if (error) {
+      setHeaderError(error.message);
+      return;
+    }
+    if (!data) {
+      setHeaderError(
+        "Couldn't save — job may have been deleted from another tab.",
+      );
       return;
     }
     setJob(data as Job);
@@ -672,9 +678,17 @@ export function JobDetailClient({
       />
 
       {(() => {
-        const regularDoors = doors.filter(
+        const regularDoorsRaw = doors.filter(
           (d) => d.name !== STANDALONE_DOOR_NAME,
         );
+        // Auto-sink: tested (== completed) doors fall to the bottom of
+        // whatever list they're in so the unfinished ones stay on top.
+        // Relative order within each bucket preserves the existing
+        // position-based sort so manual reordering still wins.
+        const regularDoors = [
+          ...regularDoorsRaw.filter((d) => !d.tested_at),
+          ...regularDoorsRaw.filter((d) => d.tested_at),
+        ];
         const standaloneDoor = doors.find(
           (d) => d.name === STANDALONE_DOOR_NAME,
         );
@@ -1217,10 +1231,10 @@ export function JobDetailClient({
               .update({ completed_at: nextCompleted })
               .eq("id", job.id)
               .select("*")
-              .single();
+              .maybeSingle();
           });
           if (error || !data) {
-            alert(error?.message ?? "Couldn't update.");
+            alert(error?.message ?? "Couldn't update — refresh to sync.");
             return;
           }
           setJob(data as Job);
@@ -1837,6 +1851,11 @@ function DoorCard({
   const tracker = useContext(SaveTrackerContext);
 
   async function commitField(patch: Partial<JobDoor>) {
+    // maybeSingle (not single) so a missing row doesn't reject with
+    // PostgREST's "JSON object requested, multiple (or no) rows
+    // returned" — the user reported seeing that raw error when
+    // saving a door name. If the row legitimately isn't there (deleted
+    // in another tab, RLS edge case), tell them in plain English.
     const { data, error } = await withTrack(tracker, async () => {
       const supabase = createClient();
       return supabase
@@ -1844,10 +1863,16 @@ function DoorCard({
         .update(patch)
         .eq("id", door.id)
         .select("*")
-        .single();
+        .maybeSingle();
     });
-    if (error || !data) {
-      alert(error?.message ?? "Couldn't save door.");
+    if (error) {
+      alert(`Couldn't save door: ${error.message}`);
+      return;
+    }
+    if (!data) {
+      alert(
+        "Couldn't save door — it may have been deleted from another tab. Refresh to sync.",
+      );
       return;
     }
     onDoorUpdate(data as JobDoor);
@@ -2293,10 +2318,10 @@ function MiscellaneousSection({
         .update({ completed_at: nextCompletedAt })
         .eq("id", item.id)
         .select("*")
-        .single();
+        .maybeSingle();
     });
     if (error || !data) {
-      alert(error?.message ?? "Couldn't update item.");
+      alert(error?.message ?? "Couldn't update item — refresh to sync.");
       return;
     }
     onItemsChange(items.map((it) => (it.id === item.id ? (data as JobDoorItem) : it)));
@@ -2649,35 +2674,42 @@ function DoorItemRow({
         .update({ note: next })
         .eq("id", item.id)
         .select("*")
-        .single();
+        .maybeSingle();
     });
     if (error || !data) {
-      alert(error?.message ?? "Couldn't save note.");
+      alert(error?.message ?? "Couldn't save note — refresh to sync.");
       return;
     }
     onUpdate(data as JobDoorItem);
   }
 
-  async function uploadPhoto(file: File) {
+  async function uploadPhotos(files: FileList | File[]) {
     setUploading(true);
-    const result = await withTrack(tracker, async () => {
-      const supabase = createClient();
-      return uploadDoorItemPhoto({
-        supabase,
-        file,
-        jobId: job.id,
-        doorId: door.id,
-        itemId: item.id,
-        nextPosition: photos.length,
+    const list = Array.from(files);
+    // Serial upload — keeps the position counter monotonic and avoids
+    // hammering the bucket with parallel writes. Per-file errors
+    // bubble up via alert but don't stop the rest of the batch.
+    for (let i = 0; i < list.length; i++) {
+      const file = list[i];
+      const result = await withTrack(tracker, async () => {
+        const supabase = createClient();
+        return uploadDoorItemPhoto({
+          supabase,
+          file,
+          jobId: job.id,
+          doorId: door.id,
+          itemId: item.id,
+          nextPosition: photos.length + i,
+        });
       });
-    });
+      if (!result.ok) {
+        alert(`${file.name}: ${result.error}`);
+        continue;
+      }
+      onPhotoAdded(result.photo);
+    }
     if (photoInput.current) photoInput.current.value = "";
     setUploading(false);
-    if (!result.ok) {
-      alert(result.error);
-      return;
-    }
-    onPhotoAdded(result.photo);
   }
 
 
@@ -2690,10 +2722,10 @@ function DoorItemRow({
         .update({ completed_at: nextCompletedAt })
         .eq("id", item.id)
         .select("*")
-        .single();
+        .maybeSingle();
     });
     if (error || !data) {
-      alert(error?.message ?? "Couldn't update item.");
+      alert(error?.message ?? "Couldn't update item — refresh to sync.");
       return;
     }
     onUpdate(data as JobDoorItem);
@@ -2954,10 +2986,12 @@ function DoorItemRow({
         ref={photoInput}
         type="file"
         accept="image/*"
+        multiple
         className="hidden"
         onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) uploadPhoto(f);
+          if (e.target.files && e.target.files.length > 0) {
+            void uploadPhotos(e.target.files);
+          }
         }}
       />
 
@@ -3060,21 +3094,25 @@ function JobPhotoSection({
   }
 
   async function onChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
     setUploading(true);
     setError(null);
-    const result = await withTrack(tracker, async () => {
-      const supabase = createClient();
-      return uploadJobPhoto({ supabase, file, jobId, doorId });
-    });
+    let firstError: string | null = null;
+    for (const file of Array.from(files)) {
+      const result = await withTrack(tracker, async () => {
+        const supabase = createClient();
+        return uploadJobPhoto({ supabase, file, jobId, doorId });
+      });
+      if (!result.ok) {
+        if (!firstError) firstError = `${file.name}: ${result.error}`;
+        continue;
+      }
+      onAdded(result.photo);
+    }
     if (fileInput.current) fileInput.current.value = "";
     setUploading(false);
-    if (!result.ok) {
-      setError(result.error);
-      return;
-    }
-    onAdded(result.photo);
+    if (firstError) setError(firstError);
   }
 
   const softDelete = useSoftDelete<JobPhoto>({
@@ -3132,6 +3170,7 @@ function JobPhotoSection({
         ref={fileInput}
         type="file"
         accept="image/*"
+        multiple
         className="hidden"
         onChange={onChange}
       />
@@ -3212,10 +3251,13 @@ function PanelCard({
         .update(patch)
         .eq("id", panel.id)
         .select("*")
-        .single();
+        .maybeSingle();
     });
     if (error || !data) {
-      alert(error?.message ?? "Couldn't save panel.");
+      alert(
+        error?.message ??
+          "Couldn't save panel — it may have been deleted. Refresh to sync.",
+      );
       return;
     }
     onPanelUpdate(data as JobPanel);
@@ -3296,25 +3338,29 @@ function PanelCard({
     }
   }
 
-  async function uploadPhoto(file: File) {
+  async function uploadPhotos(files: FileList | File[]) {
     setUploading(true);
-    const result = await withTrack(tracker, async () => {
-      const supabase = createClient();
-      return uploadPanelPhoto({
-        supabase,
-        file,
-        jobId,
-        panelId: panel.id,
-        nextPosition: photos.length,
+    const list = Array.from(files);
+    for (let i = 0; i < list.length; i++) {
+      const file = list[i];
+      const result = await withTrack(tracker, async () => {
+        const supabase = createClient();
+        return uploadPanelPhoto({
+          supabase,
+          file,
+          jobId,
+          panelId: panel.id,
+          nextPosition: photos.length + i,
+        });
       });
-    });
+      if (!result.ok) {
+        alert(`${file.name}: ${result.error}`);
+        continue;
+      }
+      onPanelPhotoAdded(result.photo);
+    }
     if (photoInput.current) photoInput.current.value = "";
     setUploading(false);
-    if (!result.ok) {
-      alert(result.error);
-      return;
-    }
-    onPanelPhotoAdded(result.photo);
   }
 
   const photoSoftDelete = useSoftDelete<JobPanelPhoto>({
@@ -3558,10 +3604,12 @@ function PanelCard({
           ref={photoInput}
           type="file"
           accept="image/*"
+          multiple
           className="hidden"
           onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) void uploadPhoto(f);
+            if (e.target.files && e.target.files.length > 0) {
+              void uploadPhotos(e.target.files);
+            }
           }}
         />
         <button
@@ -3687,7 +3735,7 @@ function SiteMapBody({
           .update({ site_map_label: next })
           .eq("id", job.id)
           .select("*")
-          .single();
+          .maybeSingle();
       });
       if (dbError || !data) {
         setError(dbError?.message ?? "Couldn't rename.");
@@ -3717,7 +3765,7 @@ function SiteMapBody({
         .update({ site_map_url: value })
         .eq("id", job.id)
         .select("*")
-        .single();
+        .maybeSingle();
     });
     if (dbError || !data) {
       setError(dbError?.message ?? "Couldn't save link.");
@@ -4174,7 +4222,7 @@ function WorkedOnSection({
         .update({ manual_workers: next })
         .eq("id", job.id)
         .select("*")
-        .single();
+        .maybeSingle();
     });
     setPending(false);
     if (dbError || !data) {
