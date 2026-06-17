@@ -41,6 +41,11 @@ export function JobPrintView({
   // Default the map toggle on only when the job actually has one
   // uploaded — otherwise the checkbox is a no-op.
   const [includeMap, setIncludeMap] = useState<boolean>(!!job.site_map_path);
+  // Photos on by default since the report usually wants them; flipping
+  // off is the "lean PDF for emailing" path. Suppresses the door
+  // photo grid, the per-door item photo strip, and the trailing job
+  // photo gallery.
+  const [includePhotos, setIncludePhotos] = useState<boolean>(true);
 
   // No auto-print: the user picks include-map first, then taps Print
   // when they're ready. Previously this fired window.print() on mount
@@ -77,23 +82,54 @@ export function JobPrintView({
         >
           ← Back
         </Link>
-        {job.site_map_path && (
+        <div className="flex flex-wrap items-center gap-3">
           <label className="flex cursor-pointer items-center gap-2 text-xs text-neutral-700">
             <input
               type="checkbox"
-              checked={includeMap}
-              onChange={(e) => setIncludeMap(e.target.checked)}
+              checked={includePhotos}
+              onChange={(e) => setIncludePhotos(e.target.checked)}
               className="h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-2 focus:ring-neutral-900/10"
             />
-            Include site map
+            Include photos
           </label>
-        )}
+          {job.site_map_path && (
+            <label className="flex cursor-pointer items-center gap-2 text-xs text-neutral-700">
+              <input
+                type="checkbox"
+                checked={includeMap}
+                onChange={(e) => setIncludeMap(e.target.checked)}
+                className="h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-2 focus:ring-neutral-900/10"
+              />
+              Include site map
+            </label>
+          )}
+        </div>
         <button
           type="button"
           onClick={() => window.print()}
-          className="h-9 rounded-lg bg-neutral-900 px-3 text-xs font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
+          // window.print() is the export path on every modern browser —
+          // it opens the system Save-as-PDF dialog on iOS/Android/macOS/
+          // Windows so the user always gets a file, never a paper job.
+          // The label says 'Export PDF' instead of 'Print' to match that
+          // expectation.
+          className="flex h-9 items-center gap-1 rounded-lg bg-neutral-900 px-3 text-xs font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
         >
-          Print
+          <svg
+            className="h-3.5 w-3.5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <line x1="12" y1="18" x2="12" y2="12" />
+            <polyline points="9 15 12 18 15 15" />
+          </svg>
+          Export PDF
         </button>
       </div>
 
@@ -185,7 +221,7 @@ export function JobPrintView({
                         </p>
                       </div>
                     )}
-                    {doorPhotos.length > 0 && (
+                    {includePhotos && doorPhotos.length > 0 && (
                       <div className="mt-2">
                         <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
                           Photos
@@ -203,7 +239,8 @@ export function JobPrintView({
                         </div>
                       </div>
                     )}
-                    {doorItems.some((it) => it.photo_storage_path) && (
+                    {includePhotos &&
+                      doorItems.some((it) => it.photo_storage_path) && (
                       <div className="mt-2">
                         <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
                           Item photos
@@ -272,7 +309,7 @@ export function JobPrintView({
           )}
         </section>
 
-        {jobPhotos.length > 0 && (
+        {includePhotos && jobPhotos.length > 0 && (
           <section className="avoid-break mb-6">
             <h2 className="mb-3 text-lg font-bold">
               Job photos ({jobPhotos.length})
