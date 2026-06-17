@@ -189,15 +189,11 @@ export async function deleteDoorItemPhoto(
   supabase: SupabaseClient,
   photo: JobDoorItemPhoto,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const { error: storageError } = await supabase.storage
-    .from(JOB_BUCKET)
-    .remove([photo.storage_path]);
-  if (
-    storageError &&
-    !storageError.message.toLowerCase().includes("not found")
-  ) {
-    return { ok: false, error: storageError.message };
-  }
+  // Soft delete: only drop the DB row, leave the storage file behind
+  // so the inline 'Undo' banner can resurrect the photo by inserting
+  // a new row pointing at the same path. The few-second undo window
+  // is short enough that the orphan rate is negligible; if it ever
+  // matters we can run a periodic sweep that diffs storage vs DB.
   const { data, error: dbError } = await supabase
     .from("job_door_item_photos")
     .delete()
@@ -208,6 +204,32 @@ export async function deleteDoorItemPhoto(
     return { ok: false, error: "No rows were affected." };
   }
   return { ok: true };
+}
+
+// Re-insert a deleted door-item photo, pointing at the storage path
+// from the snapshot. New uuid + created_at; everything else copied
+// off the deleted row.
+export async function restoreDoorItemPhoto(
+  supabase: SupabaseClient,
+  snapshot: JobDoorItemPhoto,
+): Promise<
+  | { ok: true; photo: JobDoorItemPhoto }
+  | { ok: false; error: string }
+> {
+  const { data, error } = await supabase
+    .from("job_door_item_photos")
+    .insert({
+      item_id: snapshot.item_id,
+      storage_path: snapshot.storage_path,
+      caption: snapshot.caption,
+      position: snapshot.position,
+    })
+    .select("*")
+    .single();
+  if (error || !data) {
+    return { ok: false, error: error?.message ?? "Couldn't restore photo." };
+  }
+  return { ok: true, photo: data as JobDoorItemPhoto };
 }
 
 export function validateSiteMapFile(file: {

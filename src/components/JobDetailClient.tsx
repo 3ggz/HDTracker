@@ -38,6 +38,7 @@ import {
   deleteSiteMap,
   publicJobFileUrl,
   renameExtraSiteMap,
+  restoreDoorItemPhoto,
   uploadDoorItemPhoto,
   uploadExtraSiteMap,
   uploadJobPhoto,
@@ -2497,6 +2498,24 @@ function DoorItemRow({
   const [uploading, setUploading] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const photoInput = useRef<HTMLInputElement>(null);
+  // Two-tap delete + undo for photos. confirmingPhotoId tracks which
+  // photo is in its "tap-again" state; recentlyDeleted lets the user
+  // resurrect the last delete within 8 s. Timers cleaned up on
+  // unmount so they can't fire on a dead component.
+  const [confirmingPhotoId, setConfirmingPhotoId] = useState<string | null>(
+    null,
+  );
+  const confirmTimerRef = useRef<number | null>(null);
+  const [recentlyDeleted, setRecentlyDeleted] =
+    useState<JobDoorItemPhoto | null>(null);
+  const undoTimerRef = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (confirmTimerRef.current) window.clearTimeout(confirmTimerRef.current);
+      if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
+    },
+    [],
+  );
 
   if ((item.note ?? "") !== syncedNote) {
     if (noteDraft === syncedNote) setNoteDraft(item.note ?? "");
@@ -2542,7 +2561,22 @@ function DoorItemRow({
     onPhotoAdded(result.photo);
   }
 
-  async function removePhoto(photo: JobDoorItemPhoto) {
+  function armDeletePhoto(photoId: string) {
+    if (confirmTimerRef.current) window.clearTimeout(confirmTimerRef.current);
+    setConfirmingPhotoId(photoId);
+    // Auto-dismiss the confirm state if the user walks away — they
+    // shouldn't have to find a "cancel" button if they tapped by
+    // accident.
+    confirmTimerRef.current = window.setTimeout(() => {
+      setConfirmingPhotoId(null);
+      confirmTimerRef.current = null;
+    }, 3000);
+  }
+
+  async function confirmRemovePhoto(photo: JobDoorItemPhoto) {
+    if (confirmTimerRef.current) window.clearTimeout(confirmTimerRef.current);
+    confirmTimerRef.current = null;
+    setConfirmingPhotoId(null);
     const result = await withTrack(tracker, async () => {
       const supabase = createClient();
       return deleteDoorItemPhoto(supabase, photo);
@@ -2552,6 +2586,34 @@ function DoorItemRow({
       return;
     }
     onPhotoDeleted(photo.id);
+    // Stash the row for the undo banner; the storage file is still
+    // in the bucket because deleteDoorItemPhoto is soft now, so
+    // re-inserting points at the same path.
+    if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
+    setRecentlyDeleted(photo);
+    undoTimerRef.current = window.setTimeout(() => {
+      setRecentlyDeleted(null);
+      undoTimerRef.current = null;
+    }, 8000);
+  }
+
+  async function undoLastPhotoDelete() {
+    if (!recentlyDeleted) return;
+    const snapshot = recentlyDeleted;
+    if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
+    undoTimerRef.current = null;
+    setRecentlyDeleted(null);
+    const result = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return restoreDoorItemPhoto(supabase, snapshot);
+    });
+    if (!result.ok) {
+      alert(`Couldn't undo: ${result.error}`);
+      // Put it back in the banner slot so the user can try again.
+      setRecentlyDeleted(snapshot);
+      return;
+    }
+    onPhotoAdded(result.photo);
   }
 
   async function toggleComplete() {
@@ -2649,21 +2711,31 @@ function DoorItemRow({
         <button
           type="button"
           onClick={() => setActionsOpen((v) => !v)}
-          aria-label={`More actions for ${item.name}`}
+          aria-label={
+            actionsOpen
+              ? `Hide actions for ${item.name}`
+              : `Show actions for ${item.name}`
+          }
           aria-expanded={actionsOpen}
           className="flex h-8 w-8 items-center justify-center rounded text-neutral-500 active:bg-neutral-100 dark:text-neutral-400 dark:active:bg-neutral-800"
         >
+          {/* Chevron that rotates open instead of a static + — the +
+              didn't change to a − when the actions panel opened so it
+              read like an 'add' affordance. Same iconography as the
+              door / floor / section collapsibles. */}
           <svg
-            className="h-4 w-4"
+            className={
+              "h-4 w-4 transition-transform " +
+              (actionsOpen ? "rotate-90" : "")
+            }
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
-            strokeWidth="2.5"
+            strokeWidth="2"
             strokeLinecap="round"
             strokeLinejoin="round"
           >
-            <line x1="12" y1="5" x2="12" y2="19" />
-            <line x1="5" y1="12" x2="19" y2="12" />
+            <polyline points="9 6 15 12 9 18" />
           </svg>
         </button>
         <button
@@ -2774,25 +2846,47 @@ function DoorItemRow({
                       className="h-full w-full object-cover"
                     />
                   </a>
-                  <button
-                    type="button"
-                    onClick={() => void removePhoto(p)}
-                    aria-label="Delete photo"
-                    className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white"
-                  >
-                    <svg
-                      className="h-3 w-3"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="3"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
+                  {confirmingPhotoId === p.id ? (
+                    <button
+                      type="button"
+                      onClick={() => void confirmRemovePhoto(p)}
+                      aria-label="Confirm delete"
+                      className="absolute right-0.5 top-0.5 flex h-7 items-center gap-1 rounded-full bg-red-600 px-2 text-[10px] font-semibold text-white shadow-md"
                     >
-                      <line x1="18" y1="6" x2="6" y2="18" />
-                      <line x1="6" y1="6" x2="18" y2="18" />
-                    </svg>
-                  </button>
+                      <svg
+                        className="h-3 w-3"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="3"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                      Delete?
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => armDeletePhoto(p.id)}
+                      aria-label="Delete photo"
+                      className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white"
+                    >
+                      <svg
+                        className="h-3 w-3"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="3"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                      </svg>
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -2810,6 +2904,31 @@ function DoorItemRow({
           if (f) uploadPhoto(f);
         }}
       />
+
+      {recentlyDeleted && (
+        <div className="mt-2 flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-100">
+          <svg
+            className="h-3.5 w-3.5 flex-shrink-0 text-amber-700 dark:text-amber-400"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <polyline points="3 6 5 6 21 6" />
+            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+          </svg>
+          <span className="flex-1">Photo deleted.</span>
+          <button
+            type="button"
+            onClick={() => void undoLastPhotoDelete()}
+            className="h-7 rounded-md bg-amber-600 px-2 text-[11px] font-semibold text-white shadow active:scale-95"
+          >
+            Undo
+          </button>
+        </div>
+      )}
     </li>
   );
 }
