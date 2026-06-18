@@ -61,7 +61,7 @@ export default async function VehicleDetailPage({
     <>
       <header className="sticky top-0 z-10 flex items-center gap-3 border-b border-neutral-200 bg-neutral-50/80 px-4 py-3 backdrop-blur dark:border-neutral-800 dark:bg-neutral-950/80">
         <Link
-          href="/"
+          href="/vehicles"
           aria-label="Back"
           className="-ml-2 flex h-10 w-10 items-center justify-center rounded-full active:bg-neutral-200/60 dark:active:bg-neutral-800/60"
         >

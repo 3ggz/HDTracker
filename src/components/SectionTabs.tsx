@@ -5,12 +5,13 @@ import { useFaqUnreadCounts } from "@/lib/faq-unread";
 
 type Tab = { href: string; label: string; key: "vehicles" | "jobs" | "faq" };
 
-// Tab order: Jobs first since it's the day-to-day work surface.
-// Inventory and FAQ live behind it. Keys remain stable so existing
+// Jobs sits in the middle — it's the default page and the one
+// people open the app for. Inventory lives at /vehicles now; the
+// bare "/" route redirects to /jobs. Keys stay stable so existing
 // `active="vehicles"` / `active="jobs"` calls don't churn.
 const TABS: readonly Tab[] = [
+  { href: "/vehicles", label: "Inventory", key: "vehicles" },
   { href: "/jobs", label: "Jobs", key: "jobs" },
-  { href: "/", label: "Inventory", key: "vehicles" },
   { href: "/faq", label: "FAQ", key: "faq" },
 ];
 
