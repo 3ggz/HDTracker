@@ -50,7 +50,12 @@ import {
   type JobPhoto,
   type JobSiteMap,
 } from "@/lib/job-photos";
-import { HUGS_TEMPLATE } from "@/lib/job-templates";
+import {
+  HUGS_TEMPLATE,
+  HUGS_TEMPLATE_ID,
+  HUGS_DOOR_TEMPLATE,
+  type DoorTemplate,
+} from "@/lib/job-templates";
 import { firstNameFromEmail } from "@/lib/email";
 import { useSoftDelete } from "@/lib/use-soft-delete";
 import { PdfFullscreenModal } from "./PdfFullscreenModal";
@@ -150,6 +155,88 @@ export function JobDetailClient({
   const [extraSiteMaps, setExtraSiteMaps] = useState(initialExtraSiteMaps);
   const [autoDetectOpen, setAutoDetectOpen] = useState(false);
   const [newDoorId, setNewDoorId] = useState<string | null>(null);
+
+  // Door-creation template registry. HUGS is always pinned at the
+  // front; DB-backed user templates are appended. Selection persists
+  // per-device via localStorage so a tech picks once and keeps it.
+  const [dbTemplates, setDbTemplates] = useState<DoorTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] =
+    useState<string>(HUGS_TEMPLATE_ID);
+  const [createTemplateOpen, setCreateTemplateOpen] = useState(false);
+
+  // Restore last-used template id from localStorage once on mount.
+  // Falls back to HUGS if the stored id no longer resolves (template
+  // was deleted on another device).
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("hd:job:template:default");
+      if (stored) setSelectedTemplateId(stored);
+    } catch {
+      // localStorage unavailable — keep HUGS default.
+    }
+  }, []);
+
+  async function loadTemplates() {
+    const supabase = createClient();
+    const { data: rows } = await supabase
+      .from("job_templates")
+      .select("id, name, job_template_items(name, position)")
+      .order("name");
+    if (!rows) return;
+    const next: DoorTemplate[] = rows.map((r) => {
+      const itemRows = (r.job_template_items ?? []) as {
+        name: string;
+        position: number;
+      }[];
+      itemRows.sort((a, b) => a.position - b.position);
+      return {
+        id: r.id,
+        name: r.name,
+        items: itemRows.map((it) => it.name),
+        editable: true,
+      };
+    });
+    setDbTemplates(next);
+  }
+
+  useEffect(() => {
+    void loadTemplates();
+  }, []);
+
+  const allTemplates = useMemo<DoorTemplate[]>(
+    () => [HUGS_DOOR_TEMPLATE, ...dbTemplates],
+    [dbTemplates],
+  );
+  const selectedTemplate =
+    allTemplates.find((t) => t.id === selectedTemplateId) ??
+    HUGS_DOOR_TEMPLATE;
+
+  function pickTemplate(id: string) {
+    setSelectedTemplateId(id);
+    try {
+      localStorage.setItem("hd:job:template:default", id);
+    } catch {
+      // Best-effort persistence; selection still applies in-memory.
+    }
+  }
+
+  async function deleteTemplate(id: string) {
+    if (id === HUGS_TEMPLATE_ID) return;
+    const target = dbTemplates.find((t) => t.id === id);
+    if (!target) return;
+    if (!window.confirm(`Delete template "${target.name}"?`)) return;
+    const supabase = createClient();
+    const { error } = await supabase
+      .from("job_templates")
+      .delete()
+      .eq("id", id);
+    if (error) {
+      alert(`Couldn't delete template: ${error.message}`);
+      return;
+    }
+    setDbTemplates((cur) => cur.filter((t) => t.id !== id));
+    if (selectedTemplateId === id) pickTemplate(HUGS_TEMPLATE_ID);
+  }
 
   // Snapshot of the most recently deleted door, kept around so the
   // top-of-page Undo button can ask the server to recreate it. We
@@ -586,7 +673,7 @@ export function JobDetailClient({
           ok = false;
           return;
         }
-        const itemRows = HUGS_TEMPLATE.requiredItems.map((n, idx) => ({
+        const itemRows = selectedTemplate.items.map((n, idx) => ({
           door_id: door.id,
           name: n,
           position: idx,
@@ -745,9 +832,17 @@ export function JobDetailClient({
                 A→Z
               </button>
             )}
+            <TemplatePicker
+              templates={allTemplates}
+              selectedId={selectedTemplateId}
+              onPick={pickTemplate}
+              onCreate={() => setCreateTemplateOpen(true)}
+              onDelete={(id) => void deleteTemplate(id)}
+            />
             <AddDoorMenu
               jobId={job.id}
               existingCount={doors.length}
+              template={selectedTemplate}
               onAdded={(door, newItems, options) => {
                 doorIdsRef.current.add(door.id);
                 setDoors((d) => [...d, door]);
@@ -1337,6 +1432,22 @@ export function JobDetailClient({
       )}
 
       <SaveStatusBar pending={pendingSaves > 0} flash={savedFlash} />
+
+      {createTemplateOpen && (
+        <CreateTemplateModal
+          onClose={() => setCreateTemplateOpen(false)}
+          onSaved={(template) => {
+            setDbTemplates((cur) => {
+              const without = cur.filter((t) => t.id !== template.id);
+              return [...without, template].sort((a, b) =>
+                a.name.localeCompare(b.name),
+              );
+            });
+            pickTemplate(template.id);
+            setCreateTemplateOpen(false);
+          }}
+        />
+      )}
     </main>
     </SaveTrackerContext.Provider>
   );
@@ -1661,10 +1772,12 @@ function ErrorBanner({ message }: { message: string }) {
 function AddDoorMenu({
   jobId,
   existingCount,
+  template,
   onAdded,
 }: {
   jobId: string;
   existingCount: number;
+  template: DoorTemplate;
   onAdded: (
     door: JobDoor,
     items: JobDoorItem[],
@@ -1697,7 +1810,7 @@ function AddDoorMenu({
         alert(error?.message ?? "Couldn't add door.");
         return false;
       }
-      const itemRows = HUGS_TEMPLATE.requiredItems.map((n, idx) => ({
+      const itemRows = template.items.map((n, idx) => ({
         door_id: door.id,
         name: n,
         position: idx,
@@ -1837,6 +1950,344 @@ function AddDoorMenu({
       >
         {pending ? "Adding…" : "+ Door"}
       </button>
+    </div>
+  );
+}
+
+function TemplatePicker({
+  templates,
+  selectedId,
+  onPick,
+  onCreate,
+  onDelete,
+}: {
+  templates: DoorTemplate[];
+  selectedId: string;
+  onPick: (id: string) => void;
+  onCreate: () => void;
+  onDelete: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const selected =
+    templates.find((t) => t.id === selectedId) ?? templates[0];
+
+  useEffect(() => {
+    if (!open) return;
+    function onDown(e: MouseEvent | TouchEvent) {
+      if (!wrapRef.current) return;
+      if (!wrapRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+    };
+  }, [open]);
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={
+          selected
+            ? `${selected.name} — ${selected.items.length} item${selected.items.length === 1 ? "" : "s"}`
+            : "Template"
+        }
+        className="flex h-9 max-w-[8rem] items-center gap-1 rounded-md border border-neutral-300 px-2 text-[11px] font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
+      >
+        <svg
+          className="h-3.5 w-3.5 flex-shrink-0"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+          <line x1="9" y1="13" x2="15" y2="13" />
+          <line x1="9" y1="17" x2="15" y2="17" />
+        </svg>
+        <span className="truncate">{selected?.name ?? "Template"}</span>
+        <svg
+          className="h-3 w-3 flex-shrink-0 text-neutral-400"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute right-0 top-full z-30 mt-1 w-56 overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+        >
+          <ul className="max-h-64 overflow-y-auto py-1">
+            {templates.map((t) => {
+              const isSel = t.id === selectedId;
+              return (
+                <li key={t.id} className="flex items-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onPick(t.id);
+                      setOpen(false);
+                    }}
+                    className={
+                      "flex-1 truncate px-3 py-2 text-left text-xs " +
+                      (isSel
+                        ? "bg-neutral-100 font-semibold text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100"
+                        : "text-neutral-700 dark:text-neutral-300")
+                    }
+                  >
+                    {isSel && <span className="mr-1">✓</span>}
+                    {t.name}
+                    <span className="ml-1 text-neutral-400">
+                      ({t.items.length})
+                    </span>
+                  </button>
+                  {t.editable && (
+                    <button
+                      type="button"
+                      onClick={() => onDelete(t.id)}
+                      aria-label={`Delete template ${t.name}`}
+                      className="flex h-8 w-8 items-center justify-center text-neutral-400 active:text-red-600"
+                    >
+                      <svg
+                        className="h-3.5 w-3.5"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <polyline points="3 6 5 6 21 6" />
+                        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                        <path d="M10 11v6M14 11v6" />
+                      </svg>
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+          <div className="border-t border-neutral-200 dark:border-neutral-700">
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                onCreate();
+              }}
+              className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-xs font-medium text-neutral-900 active:bg-neutral-100 dark:text-neutral-100 dark:active:bg-neutral-800"
+            >
+              <span className="text-base leading-none">+</span> Create
+              template…
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CreateTemplateModal({
+  onClose,
+  onSaved,
+}: {
+  onClose: () => void;
+  onSaved: (template: DoorTemplate) => void;
+}) {
+  const [name, setName] = useState("");
+  const [items, setItems] = useState<string[]>([""]);
+  const [saving, setSaving] = useState(false);
+
+  function updateItem(idx: number, value: string) {
+    setItems((cur) => cur.map((v, i) => (i === idx ? value : v)));
+  }
+  function addItemRow() {
+    setItems((cur) => [...cur, ""]);
+  }
+  function removeItemRow(idx: number) {
+    setItems((cur) => (cur.length === 1 ? cur : cur.filter((_, i) => i !== idx)));
+  }
+
+  async function save() {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      alert("Give the template a name.");
+      return;
+    }
+    const cleanItems = items.map((s) => s.trim()).filter(Boolean);
+    if (cleanItems.length === 0) {
+      alert("Add at least one item.");
+      return;
+    }
+    setSaving(true);
+    const supabase = createClient();
+    const { data: tpl, error } = await supabase
+      .from("job_templates")
+      .insert({ name: trimmedName })
+      .select("id, name")
+      .single();
+    if (error || !tpl) {
+      setSaving(false);
+      alert(`Couldn't save template: ${error?.message ?? "unknown error"}`);
+      return;
+    }
+    const itemRows = cleanItems.map((n, i) => ({
+      template_id: tpl.id,
+      name: n,
+      position: i,
+    }));
+    const { error: itemsError } = await supabase
+      .from("job_template_items")
+      .insert(itemRows);
+    if (itemsError) {
+      setSaving(false);
+      alert(
+        `Template created, but items failed to save: ${itemsError.message}`,
+      );
+      return;
+    }
+    setSaving(false);
+    onSaved({
+      id: tpl.id,
+      name: tpl.name,
+      items: cleanItems,
+      editable: true,
+    });
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-xl dark:bg-neutral-900"
+      >
+        <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
+          <h2 className="text-base font-semibold">New template</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="-mr-1 flex h-8 w-8 items-center justify-center rounded-full text-neutral-500 active:bg-neutral-100 dark:active:bg-neutral-800"
+          >
+            <svg
+              className="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+        <div className="space-y-3 px-4 py-4">
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Name
+            </label>
+            <input
+              autoFocus
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Card reader door"
+              className="mt-1 h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-950"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Items to pre-fill
+            </label>
+            <ul className="mt-1 space-y-1.5">
+              {items.map((v, i) => (
+                <li key={i} className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    value={v}
+                    onChange={(e) => updateItem(i, e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        if (i === items.length - 1) addItemRow();
+                      }
+                    }}
+                    placeholder={`Item ${i + 1}`}
+                    className="h-9 flex-1 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-950"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeItemRow(i)}
+                    disabled={items.length === 1}
+                    aria-label={`Remove item ${i + 1}`}
+                    className="flex h-9 w-9 items-center justify-center rounded-md text-neutral-400 active:bg-neutral-100 disabled:opacity-30 dark:active:bg-neutral-800"
+                  >
+                    <svg
+                      className="h-4 w-4"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <button
+              type="button"
+              onClick={addItemRow}
+              className="mt-2 inline-flex h-8 items-center gap-1 rounded-md border border-neutral-300 px-2 text-xs font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
+            >
+              <span className="text-base leading-none">+</span> Add item
+            </button>
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-neutral-200 px-4 py-3 dark:border-neutral-800">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="h-9 rounded-md px-3 text-xs font-medium text-neutral-700 active:bg-neutral-100 dark:text-neutral-300 dark:active:bg-neutral-800"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving}
+            className="h-9 rounded-md bg-neutral-900 px-4 text-xs font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+          >
+            {saving ? "Saving…" : "Save template"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
