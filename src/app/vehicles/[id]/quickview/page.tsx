@@ -108,7 +108,7 @@ export default async function VehicleQuickViewPage({
           </h1>
         </div>
         <Link
-          href="/"
+          href="/vehicles"
           className="text-sm font-medium text-neutral-600 underline-offset-4 active:text-neutral-900 hover:underline dark:text-neutral-400 dark:active:text-neutral-100"
         >
           Vehicles

@@ -571,10 +571,10 @@ export function VehicleDetailClient({
       return;
     }
 
-    // revalidatePath("/") from the action invalidated the home page's
-    // cached vehicle list — replace + refresh now lands on a fresh
-    // server render with the row gone.
-    router.replace("/");
+    // revalidatePath("/vehicles") from the action invalidated the
+    // inventory list — replace + refresh now lands on a fresh server
+    // render with the row gone.
+    router.replace("/vehicles");
     router.refresh();
   }
 

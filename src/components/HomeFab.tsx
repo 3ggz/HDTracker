@@ -6,8 +6,15 @@ import { usePathname } from "next/navigation";
 // Universal home button. Sits bottom-left so it doesn't fight the
 // existing bottom-right + FABs (AddVehicle / AddJob) or the bottom-
 // center save-status pill on the job editor. Hidden on the home
-// page itself and on auth screens where "home" isn't meaningful.
-const HIDE_EXACT = new Set(["/", "/signin", "/pending-approval"]);
+// page itself (now /jobs) and on auth screens where "home" isn't
+// meaningful. /, /signin, and /pending-approval stay in the
+// hide-list as a belt-and-suspenders for any in-flight redirects.
+const HIDE_EXACT = new Set([
+  "/",
+  "/jobs",
+  "/signin",
+  "/pending-approval",
+]);
 const HIDE_PREFIX = ["/forgot-password"];
 
 export function HomeFab() {
@@ -16,7 +23,7 @@ export function HomeFab() {
   if (HIDE_PREFIX.some((p) => pathname.startsWith(p))) return null;
   return (
     <Link
-      href="/"
+      href="/jobs"
       aria-label="Home"
       className="fixed bottom-4 left-4 z-30 flex h-11 w-11 items-center justify-center rounded-full border border-neutral-200 bg-white/95 text-neutral-700 shadow-lg backdrop-blur active:scale-95 dark:border-neutral-700 dark:bg-neutral-900/95 dark:text-neutral-200 print:hidden"
     >
