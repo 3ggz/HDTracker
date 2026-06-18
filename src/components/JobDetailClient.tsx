@@ -514,6 +514,37 @@ export function JobDetailClient({
     }
   }
 
+  // Which floor (if any) the user is currently renaming. null when
+  // not editing. We only allow renaming real floor values, not the
+  // synthetic "Unassigned" bucket for null-floor doors.
+  const [renamingFloor, setRenamingFloor] = useState<string | null>(null);
+
+  async function renameFloor(oldFloor: string, nextRaw: string) {
+    const next = nextRaw.trim() || null;
+    if (next === oldFloor) {
+      setRenamingFloor(null);
+      return;
+    }
+    const { error } = await withTrack(saveTracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("job_doors")
+        .update({ floor: next })
+        .eq("job_id", job.id)
+        .eq("floor", oldFloor);
+    });
+    if (error) {
+      alert(`Couldn't rename floor: ${error.message}`);
+      return;
+    }
+    setDoors((current) =>
+      current.map((d) =>
+        d.floor === oldFloor ? { ...d, floor: next } : d,
+      ),
+    );
+    setRenamingFloor(null);
+  }
+
   async function persistDoorOrder(reordered: JobDoor[]) {
     await withTrack(saveTracker, async () => {
       const supabase = createClient();
@@ -930,29 +961,55 @@ export function JobDetailClient({
                     .length ?? 0),
                 0,
               );
+              const canRename = floor !== null;
+              const isRenamingThis =
+                canRename && renamingFloor === floor;
               return (
-                <CollapsibleSection
-                  key={floor ?? "__unassigned"}
-                  title={`${floor ?? "Unassigned"} — ${floorDoors.length} ${
-                    floorDoors.length === 1 ? "door" : "doors"
-                  }${total ? ` · ${done}/${total}` : ""}`}
-                  storageKey={`hd:job:${initialJob.id}:floor:${floor ?? "_unassigned"}`}
-                >
-                  <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={onDragEnd}
+                <div key={floor ?? "__unassigned"} className="space-y-2">
+                  {isRenamingThis && (
+                    <FloorRenameStrip
+                      oldFloor={floor as string}
+                      onSave={(next) => void renameFloor(floor as string, next)}
+                      onCancel={() => setRenamingFloor(null)}
+                    />
+                  )}
+                  <CollapsibleSection
+                    title={`${floor ?? "Unassigned"} — ${floorDoors.length} ${
+                      floorDoors.length === 1 ? "door" : "doors"
+                    }${total ? ` · ${done}/${total}` : ""}`}
+                    storageKey={`hd:job:${initialJob.id}:floor:${floor ?? "_unassigned"}`}
+                    rightHeader={
+                      canRename && !isRenamingThis ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setRenamingFloor(floor);
+                          }}
+                          aria-label={`Rename floor ${floor}`}
+                          className="h-8 rounded-md border border-neutral-300 px-2 text-[11px] font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
+                        >
+                          Rename
+                        </button>
+                      ) : undefined
+                    }
                   >
-                    <SortableContext
-                      items={floorDoors.map((d) => d.id)}
-                      strategy={verticalListSortingStrategy}
+                    <DndContext
+                      sensors={sensors}
+                      collisionDetection={closestCenter}
+                      onDragEnd={onDragEnd}
                     >
-                      <ul className="space-y-3">
-                        {floorDoors.map(renderDoor)}
-                      </ul>
-                    </SortableContext>
-                  </DndContext>
-                </CollapsibleSection>
+                      <SortableContext
+                        items={floorDoors.map((d) => d.id)}
+                        strategy={verticalListSortingStrategy}
+                      >
+                        <ul className="space-y-3">
+                          {floorDoors.map(renderDoor)}
+                        </ul>
+                      </SortableContext>
+                    </DndContext>
+                  </CollapsibleSection>
+                </div>
               );
             })}
             {standaloneSection}
@@ -1426,6 +1483,59 @@ function JobSummaryCard({
   );
 }
 
+function FloorRenameStrip({
+  oldFloor,
+  onSave,
+  onCancel,
+}: {
+  oldFloor: string;
+  onSave: (next: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(oldFloor);
+  return (
+    <div className="flex items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-900/50 dark:bg-amber-950/40">
+      <span className="hidden text-[11px] font-semibold uppercase tracking-wide text-amber-800 sm:inline dark:text-amber-200">
+        Rename &ldquo;{oldFloor}&rdquo;
+      </span>
+      <input
+        autoFocus
+        type="text"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            onSave(draft);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            onCancel();
+          }
+        }}
+        autoComplete="off"
+        autoCorrect="off"
+        spellCheck={false}
+        enterKeyHint="done"
+        className="h-9 min-w-0 flex-1 rounded-md border border-neutral-300 bg-white px-2 text-sm text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+      />
+      <button
+        type="button"
+        onClick={() => onSave(draft)}
+        className="h-9 flex-shrink-0 rounded-md bg-neutral-900 px-3 text-xs font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
+      >
+        Save
+      </button>
+      <button
+        type="button"
+        onClick={onCancel}
+        className="h-9 flex-shrink-0 rounded-md border border-neutral-300 px-3 text-xs font-medium text-neutral-700 dark:border-neutral-700 dark:text-neutral-300"
+      >
+        Cancel
+      </button>
+    </div>
+  );
+}
+
 function CollapsibleSection({
   title,
   defaultOpen = false,
@@ -1559,6 +1669,10 @@ function AddDoorMenu({
   const tracker = useContext(SaveTrackerContext);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkText, setBulkText] = useState("");
+  // Floor value that gets stamped on every door created from this
+  // menu — persists across bulk/single/back-and-forth so the user
+  // can type it once and then add as many doors as they want.
+  const [floorDraft, setFloorDraft] = useState("");
   const [pending, setPending] = useState(false);
 
   async function createOne(
@@ -1568,9 +1682,10 @@ function AddDoorMenu({
   ): Promise<boolean> {
     return withTrack(tracker, async () => {
       const supabase = createClient();
+      const floor = floorDraft.trim() || null;
       const { data: door, error } = await supabase
         .from("job_doors")
-        .insert({ job_id: jobId, name, position })
+        .insert({ job_id: jobId, name, position, floor })
         .select("*")
         .single();
       if (error || !door) {
@@ -1622,9 +1737,28 @@ function AddDoorMenu({
     setBulkOpen(false);
   }
 
+  // Floor input is the same compact field in both states — set once,
+  // applies to every door added afterwards. Distinct id so the
+  // browser stops grouping it with the AddDoorMenu in other doors.
+  const floorInput = (
+    <input
+      type="text"
+      placeholder="Floor"
+      value={floorDraft}
+      onChange={(e) => setFloorDraft(e.target.value)}
+      id={`add-door-floor-${jobId}`}
+      name={`add-door-floor-${jobId}`}
+      autoComplete="off"
+      autoCorrect="off"
+      spellCheck={false}
+      className="h-9 w-16 rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+    />
+  );
+
   if (bulkOpen) {
     return (
-      <div className="flex items-center gap-1">
+      <div className="flex flex-wrap items-center gap-1">
+        {floorInput}
         <input
           autoFocus
           type="text"
@@ -1641,7 +1775,7 @@ function AddDoorMenu({
               setBulkOpen(false);
             }
           }}
-          className="h-9 w-44 rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+          className="h-9 min-w-[10rem] flex-1 rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
         />
         <button
           type="button"
@@ -1680,6 +1814,7 @@ function AddDoorMenu({
 
   return (
     <div className="flex items-center gap-1">
+      {floorInput}
       <button
         type="button"
         onClick={() => setBulkOpen(true)}

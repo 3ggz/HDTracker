@@ -65,12 +65,17 @@ export function JobPrintView({
   return (
     <>
       <style>{`
-        @page { margin: 0.5in; }
+        @page { margin: 0.4in; }
         @media print {
           .print-toolbar { display: none !important; }
           a { color: inherit; text-decoration: none; }
           .page-break { page-break-before: always; }
           .avoid-break { page-break-inside: avoid; }
+          /* Two-column door grid via CSS columns so cards flow into
+             whichever column has room first. break-inside: avoid keeps
+             each door card together instead of splitting mid-card. */
+          .door-cols { column-count: 2; column-gap: 0.2in; }
+          .door-cols > li { break-inside: avoid; -webkit-column-break-inside: avoid; display: block; margin-bottom: 0.12in; }
         }
         body { background: white; }
       `}</style>
@@ -141,38 +146,34 @@ export function JobPrintView({
         </button>
       </div>
 
-      <article className="mx-auto max-w-3xl bg-white px-6 py-8 text-neutral-900">
-        <header className="mb-6 border-b border-neutral-300 pb-4">
-          <h1 className="text-2xl font-bold">{job.name}</h1>
-          <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
+      <article className="mx-auto max-w-3xl bg-white px-4 py-4 text-neutral-900 print:text-[10px] print:leading-tight">
+        <header className="mb-3 border-b border-neutral-300 pb-2">
+          <h1 className="text-lg font-bold leading-tight">{job.name}</h1>
+          <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11px]">
             {job.number && (
-              <p>
-                <span className="font-semibold">Job #:</span> {job.number}
-              </p>
+              <span>
+                <span className="font-semibold">#</span> {job.number}
+              </span>
             )}
             {job.address && (
-              <p className="col-span-2">
-                <span className="font-semibold">Address:</span> {job.address}
-              </p>
+              <span>
+                <span className="font-semibold">Addr:</span> {job.address}
+              </span>
             )}
-            <p>
-              <span className="font-semibold">Created:</span>{" "}
-              {new Date(job.created_at).toLocaleDateString()}
-            </p>
-            <p>
-              <span className="font-semibold">Updated:</span>{" "}
+            <span className="text-neutral-500">
+              {new Date(job.created_at).toLocaleDateString()} →{" "}
               {new Date(job.updated_at).toLocaleDateString()}
-            </p>
+            </span>
           </div>
           {job.notes && (
-            <p className="mt-3 whitespace-pre-wrap text-sm">
+            <p className="mt-1 whitespace-pre-wrap text-[11px]">
               <span className="font-semibold">Notes:</span> {job.notes}
             </p>
           )}
         </header>
 
-        <section className="mb-6">
-          <h2 className="mb-3 text-lg font-bold">Doors ({doors.length})</h2>
+        <section className="mb-3">
+          <h2 className="mb-2 text-sm font-bold">Doors ({doors.length})</h2>
           {doors.length === 0 ? (
             <p className="text-sm text-neutral-500">No doors recorded.</p>
           ) : (
@@ -193,118 +194,93 @@ export function JobPrintView({
               const renderDoor = (door: JobDoor) => {
                 const doorItems = itemsByDoor.get(door.id) ?? [];
                 const doorPhotos = photos.filter((p) => p.door_id === door.id);
+                const itemsWithPhotos = doorItems.filter(
+                  (it) => it.photo_storage_path,
+                );
                 return (
                   <li
                     key={door.id}
-                    className="avoid-break rounded border border-neutral-300 p-3"
+                    className="avoid-break rounded border border-neutral-300 p-1.5"
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <h3 className="text-base font-semibold">{door.name}</h3>
+                    <div className="flex items-center justify-between gap-1">
+                      <h3 className="text-[11px] font-semibold leading-tight">
+                        {door.name}
+                      </h3>
                       {door.tested_at && (
-                        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-600 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
-                          ✓ Tested
+                        <span className="inline-flex items-center rounded-full border border-emerald-600 px-1 py-0 text-[8px] font-semibold uppercase tracking-wide text-emerald-700">
+                          ✓
                         </span>
                       )}
                     </div>
                     {doorItems.length > 0 && (
-                      <div className="mt-2">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                          Equipment
-                        </p>
-                        {/* Equipment list distinguishes completed items
-                            with a green ✓ glyph + slightly muted text.
-                            Intentionally no strikethrough — coworker
-                            noted on the quick view that striking the
-                            whole line was too noisy. */}
-                        <ul className="mt-1 space-y-0.5 text-sm">
-                          {doorItems.map((it) => {
-                            const done = !!it.completed_at;
-                            return (
-                              <li
-                                key={it.id}
+                      <ul className="mt-1 space-y-0 text-[10px] leading-tight">
+                        {doorItems.map((it) => {
+                          const done = !!it.completed_at;
+                          return (
+                            <li
+                              key={it.id}
+                              className={
+                                "flex items-baseline gap-1 " +
+                                (done ? "text-neutral-500" : "text-neutral-900")
+                              }
+                            >
+                              <span
+                                aria-hidden
                                 className={
-                                  "flex items-baseline gap-2 " +
-                                  (done ? "text-neutral-500" : "text-neutral-900")
+                                  "w-2 flex-shrink-0 text-[10px] font-semibold leading-none " +
+                                  (done ? "text-emerald-600" : "text-neutral-300")
                                 }
                               >
-                                <span
-                                  aria-hidden
-                                  className={
-                                    "w-3 flex-shrink-0 text-[12px] font-semibold leading-none " +
-                                    (done ? "text-emerald-600" : "text-neutral-300")
-                                  }
-                                >
-                                  {done ? "✓" : "○"}
-                                </span>
-                                <span>
-                                  {it.name}
-                                  {it.note && (
-                                    <span className="text-neutral-500">
-                                      {" "}
-                                      — {it.note}
-                                    </span>
-                                  )}
-                                </span>
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      </div>
+                                {done ? "✓" : "○"}
+                              </span>
+                              <span>
+                                {it.name}
+                                {it.note && (
+                                  <span className="text-neutral-500">
+                                    {" "}
+                                    — {it.note}
+                                  </span>
+                                )}
+                              </span>
+                            </li>
+                          );
+                        })}
+                      </ul>
                     )}
                     {door.notes && (
-                      <div className="mt-2">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                          Notes
-                        </p>
-                        <p className="mt-0.5 whitespace-pre-wrap text-sm">
-                          {door.notes}
-                        </p>
-                      </div>
+                      <p className="mt-1 whitespace-pre-wrap text-[10px] leading-tight">
+                        <span className="font-semibold">Notes:</span>{" "}
+                        {door.notes}
+                      </p>
                     )}
                     {includePhotos && doorPhotos.length > 0 && (
-                      <div className="mt-2">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                          Photos
-                        </p>
-                        <div className="mt-1 grid grid-cols-3 gap-1.5">
-                          {doorPhotos.map((p) => (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img
-                              key={p.id}
-                              src={publicJobFileUrl(supabaseUrl, p.storage_path)}
-                              alt=""
-                              className="aspect-square w-full rounded border border-neutral-200 object-cover"
-                            />
-                          ))}
-                        </div>
+                      <div className="mt-1 grid grid-cols-4 gap-0.5">
+                        {doorPhotos.map((p) => (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            key={p.id}
+                            src={publicJobFileUrl(supabaseUrl, p.storage_path)}
+                            alt=""
+                            className="aspect-square w-full rounded border border-neutral-200 object-cover"
+                          />
+                        ))}
                       </div>
                     )}
-                    {includePhotos &&
-                      doorItems.some((it) => it.photo_storage_path) && (
-                      <div className="mt-2">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                          Item photos
-                        </p>
-                        <div className="mt-1 grid grid-cols-4 gap-1.5">
-                          {doorItems
-                            .filter((it) => it.photo_storage_path)
-                            .map((it) => (
-                              <figure key={it.id}>
-                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                <img
-                                  src={publicJobFileUrl(
-                                    supabaseUrl,
-                                    it.photo_storage_path as string,
-                                  )}
-                                  alt={it.name}
-                                  className="aspect-square w-full rounded border border-neutral-200 object-cover"
-                                />
-                                <figcaption className="mt-0.5 text-[10px] text-neutral-600">
-                                  {it.name}
-                                </figcaption>
-                              </figure>
-                            ))}
-                        </div>
+                    {includePhotos && itemsWithPhotos.length > 0 && (
+                      <div className="mt-1 grid grid-cols-5 gap-0.5">
+                        {itemsWithPhotos.map((it) => (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            key={it.id}
+                            src={publicJobFileUrl(
+                              supabaseUrl,
+                              it.photo_storage_path as string,
+                            )}
+                            alt={it.name}
+                            title={it.name}
+                            className="aspect-square w-full rounded border border-neutral-200 object-cover"
+                          />
+                        ))}
                       </div>
                     )}
                   </li>
@@ -313,7 +289,7 @@ export function JobPrintView({
 
               if (!useFloorGroups) {
                 return (
-                  <ul className="space-y-4">
+                  <ul className="door-cols space-y-2">
                     {printableDoors.map(renderDoor)}
                   </ul>
                 );
@@ -326,18 +302,18 @@ export function JobPrintView({
               });
 
               return (
-                <div className="space-y-6">
+                <div className="space-y-3">
                   {floorOrder.map((floor) => {
                     const floorDoors = printableDoors.filter(
                       (d) => (d.floor ?? null) === floor,
                     );
                     return (
                       <div key={floor ?? "__unassigned"}>
-                        <h3 className="mb-2 border-b border-neutral-300 pb-1 text-sm font-bold uppercase tracking-wide text-neutral-700">
+                        <h3 className="mb-1 border-b border-neutral-300 pb-0.5 text-[11px] font-bold uppercase tracking-wide text-neutral-700">
                           {floor ?? "Unassigned"} — {floorDoors.length}{" "}
                           {floorDoors.length === 1 ? "door" : "doors"}
                         </h3>
-                        <ul className="space-y-4">
+                        <ul className="door-cols space-y-2">
                           {floorDoors.map(renderDoor)}
                         </ul>
                       </div>
@@ -350,11 +326,11 @@ export function JobPrintView({
         </section>
 
         {includePhotos && jobPhotos.length > 0 && (
-          <section className="avoid-break mb-6">
-            <h2 className="mb-3 text-lg font-bold">
+          <section className="avoid-break mb-3">
+            <h2 className="mb-1 text-sm font-bold">
               Job photos ({jobPhotos.length})
             </h2>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-5 gap-0.5">
               {jobPhotos.map((p) => (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
