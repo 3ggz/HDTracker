@@ -1579,13 +1579,18 @@ function CollapsibleSection({
   }
   return (
     <section className="overflow-hidden rounded-2xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-      <button
-        type="button"
-        onClick={toggle}
-        className="flex w-full items-center justify-between gap-2 px-4 py-3 active:bg-neutral-100 dark:active:bg-neutral-800"
-        aria-expanded={open}
-      >
-        <span className="flex items-center gap-2">
+      {/* Header row is a div, not a button — putting rightHeader's
+          interactive children (Rename button, AddDoorMenu, etc.)
+          inside another <button> is invalid HTML and breaks clicks
+          on the inner controls in most browsers. The toggle is now
+          a sibling of rightHeader instead of its parent. */}
+      <div className="flex w-full items-center justify-between gap-2 px-4 py-3">
+        <button
+          type="button"
+          onClick={toggle}
+          className="-mx-2 flex flex-1 items-center gap-2 rounded px-2 py-1 text-left active:bg-neutral-100 dark:active:bg-neutral-800"
+          aria-expanded={open}
+        >
           <svg
             className={
               "h-4 w-4 text-neutral-400 transition-transform " +
@@ -1603,9 +1608,9 @@ function CollapsibleSection({
           <span className="text-sm font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-300">
             {title}
           </span>
-        </span>
-        {rightHeader && <span onClick={(e) => e.stopPropagation()}>{rightHeader}</span>}
-      </button>
+        </button>
+        {rightHeader && <div className="flex-shrink-0">{rightHeader}</div>}
+      </div>
       {open && <div className="space-y-3 px-4 pb-4">{children}</div>}
     </section>
   );
