@@ -13,6 +13,7 @@ import type {
 } from "@/lib/jobs";
 import type { JobPhoto, JobSiteMap } from "@/lib/job-photos";
 import { isAdminEmail } from "@/lib/admin";
+import { firstNameFromEmail } from "@/lib/email";
 
 // Auto-detect calls Claude vision with xhigh effort on multi-page PDFs;
 // allow up to 2 minutes so the server action doesn't time out at 10s/60s.
@@ -41,6 +42,8 @@ export default async function JobDetailPage({
     { data: panels },
     { data: extraSiteMaps },
     { data: activityEmails },
+    { data: fleetActivityEmails },
+    { data: jobsWithManualWorkers },
   ] = await Promise.all([
     supabase.from("jobs").select("*").eq("id", id).single(),
     supabase
@@ -77,6 +80,22 @@ export default async function JobDetailPage({
       .eq("job_id", id)
       .not("user_email", "is", null)
       .order("created_at", { ascending: true }),
+    // Fleet-wide cast of every emailed contributor across all jobs.
+    // Powers the Worked-on suggestion dropdown. Pulling a single
+    // column without filtering is still small (one row per edit
+    // total); a few thousand rows is fine to dedupe in JS.
+    supabase
+      .from("job_activity")
+      .select("user_email")
+      .not("user_email", "is", null)
+      .limit(2000),
+    // Fleet-wide manual_workers names — anyone the team has typed
+    // in by hand on any job. We flatten the text[] in JS.
+    supabase
+      .from("jobs")
+      .select("manual_workers")
+      .not("manual_workers", "is", null)
+      .limit(2000),
   ]);
 
   // Derived "worked on" — first-seen-first order so the original
@@ -93,6 +112,36 @@ export default async function JobDetailPage({
       seen.add(key);
       derivedWorkers.push(email);
     }
+  }
+
+  // Fleet-wide "member" pool for the Worked-on add-name combo. Two
+  // streams: every email that's ever appeared in a job_activity row
+  // (which we convert to first names so the dropdown shows people,
+  // not emails) and every manually-typed name across all jobs. We
+  // dedupe by lowercase, keep the first-seen casing, and sort
+  // alphabetically for a steady alphabetized dropdown.
+  const memberSuggestions: string[] = [];
+  {
+    const seen = new Set<string>();
+    const pushUnique = (raw: string) => {
+      const name = raw.trim();
+      if (!name) return;
+      const key = name.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      memberSuggestions.push(name);
+    };
+    for (const row of fleetActivityEmails ?? []) {
+      const email = (row.user_email as string | null)?.trim();
+      if (email) pushUnique(firstNameFromEmail(email));
+    }
+    for (const row of jobsWithManualWorkers ?? []) {
+      const list = row.manual_workers as string[] | null;
+      for (const name of list ?? []) pushUnique(name);
+    }
+    memberSuggestions.sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: "base" }),
+    );
   }
 
   if (error || !job) notFound();
@@ -224,6 +273,7 @@ export default async function JobDetailPage({
         initialPanelPhotos={(panelPhotos ?? []) as JobPanelPhoto[]}
         initialExtraSiteMaps={(extraSiteMaps ?? []) as JobSiteMap[]}
         initialDerivedWorkers={derivedWorkers}
+        initialMemberSuggestions={memberSuggestions}
         doorsLoadError={doorsError?.message ?? null}
         itemsLoadError={itemsError?.message ?? null}
         photosLoadError={photosError?.message ?? null}

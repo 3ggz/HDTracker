@@ -121,6 +121,7 @@ export function JobDetailClient({
   canDeleteJob,
   initialExtraSiteMaps,
   initialDerivedWorkers,
+  initialMemberSuggestions,
 }: {
   initialJob: Job;
   initialDoors: JobDoor[];
@@ -140,6 +141,9 @@ export function JobDetailClient({
   // on navigation, which is fine — the manual list IS realtime via
   // the existing job UPDATE subscription.
   initialDerivedWorkers: string[];
+  // Fleet-wide unique names ever associated with a job — used to
+  // pre-populate the Worked-on autocomplete dropdown.
+  initialMemberSuggestions: string[];
 }) {
   const router = useRouter();
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
@@ -1285,22 +1289,6 @@ export function JobDetailClient({
       </CollapsibleSection>
 
       <CollapsibleSection
-        title={`Worked on (${
-          new Set([
-            ...initialDerivedWorkers.map((e) => e.toLowerCase()),
-            ...(job.manual_workers ?? []),
-          ]).size
-        })`}
-        storageKey={`hd:job:${initialJob.id}:workers`}
-      >
-        <WorkedOnSection
-          job={job}
-          derivedWorkers={initialDerivedWorkers}
-          onJobUpdate={(j) => setJob(j)}
-        />
-      </CollapsibleSection>
-
-      <CollapsibleSection
         title="Job details"
         storageKey={`hd:job:${initialJob.id}:details`}
       >
@@ -1341,6 +1329,23 @@ export function JobDetailClient({
             }
           />
         </Field>
+        <div className="pt-1">
+          <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+            Worked on
+          </p>
+          <p className="mt-0.5 text-[11px] text-neutral-400 dark:text-neutral-500">
+            Auto-fills from anyone who edits this job. Add helpers
+            without accounts below.
+          </p>
+          <div className="mt-2">
+            <WorkedOnSection
+              job={job}
+              derivedWorkers={initialDerivedWorkers}
+              memberSuggestions={initialMemberSuggestions}
+              onJobUpdate={(j) => setJob(j)}
+            />
+          </div>
+        </div>
         {headerError && <ErrorBanner message={headerError} />}
         <div className="flex gap-2">
           <button
@@ -4780,10 +4785,12 @@ function SiteMapBody({
 function WorkedOnSection({
   job,
   derivedWorkers,
+  memberSuggestions,
   onJobUpdate,
 }: {
   job: Job;
   derivedWorkers: string[];
+  memberSuggestions: string[];
   onJobUpdate: (job: Job) => void;
 }) {
   const tracker = useContext(SaveTrackerContext);
@@ -5019,13 +5026,18 @@ function WorkedOnSection({
           }}
           className="flex gap-2"
         >
-          <input
-            autoFocus
-            type="text"
-            placeholder="Name"
+          <MemberCombo
             value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            className="block h-10 flex-1 rounded-md border border-neutral-300 bg-white px-3 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+            onChange={setNewName}
+            suggestions={memberSuggestions.filter((s) => {
+              const lower = s.toLowerCase();
+              if (manualLower.has(lower)) return false;
+              return !visibleDerived.some(
+                (e) =>
+                  firstNameFromEmail(e).toLowerCase() === lower ||
+                  e.toLowerCase() === lower,
+              );
+            })}
           />
           <button
             type="submit"
@@ -5058,6 +5070,119 @@ function WorkedOnSection({
       )}
 
       {error && <ErrorBanner message={error} />}
+    </div>
+  );
+}
+
+// Inline combo input for the Worked-on add row. Unlike the shared
+// Combobox, it stays closed on focus — the user has to either start
+// typing (autocomplete) or tap the chevron (full member list). The
+// chevron sits inside the input so the visible field width matches
+// a normal text input. Tapping a suggestion fills the value; the
+// outer form's Add button still commits.
+function MemberCombo({
+  value,
+  onChange,
+  suggestions,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  suggestions: string[];
+}) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const filtered = useMemo(() => {
+    const trimmed = value.trim().toLowerCase();
+    if (!trimmed) return suggestions.slice(0, 50);
+    return suggestions
+      .filter((s) => s.toLowerCase().includes(trimmed))
+      .slice(0, 50);
+  }, [value, suggestions]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDown(e: MouseEvent | TouchEvent) {
+      if (!containerRef.current) return;
+      if (!containerRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown, { passive: true });
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+    };
+  }, [open]);
+
+  function pick(name: string) {
+    onChange(name);
+    setOpen(false);
+    inputRef.current?.focus();
+  }
+
+  return (
+    <div ref={containerRef} className="relative flex-1">
+      <input
+        ref={inputRef}
+        autoFocus
+        type="text"
+        placeholder="Name"
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+          // Open as soon as the user starts typing — but only if the
+          // field actually has content. Otherwise typing then erasing
+          // would leave the full list hovering open uninvited.
+          setOpen(e.target.value.length > 0);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") setOpen(false);
+        }}
+        autoComplete="off"
+        className="block h-10 w-full rounded-md border border-neutral-300 bg-white pl-3 pr-9 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+      />
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-label={open ? "Close member list" : "Open member list"}
+        aria-expanded={open}
+        className="absolute right-0 top-0 flex h-10 w-9 items-center justify-center text-neutral-400 active:text-neutral-700 dark:active:text-neutral-200"
+      >
+        <svg
+          className={"h-4 w-4 transition-transform " + (open ? "rotate-180" : "")}
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+      {open && filtered.length > 0 && (
+        <ul
+          role="listbox"
+          className="absolute left-0 right-0 z-30 mt-1 max-h-48 overflow-auto rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+        >
+          {filtered.map((s) => (
+            <li key={s} role="option">
+              <button
+                type="button"
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  pick(s);
+                }}
+                className="block w-full px-3 py-2 text-left text-sm transition active:bg-neutral-100 hover:bg-neutral-100 dark:active:bg-neutral-800 dark:hover:bg-neutral-800"
+              >
+                {s}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
