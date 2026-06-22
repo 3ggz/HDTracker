@@ -662,6 +662,8 @@ export function JobDetailClient({
     const baseDoorPosition = doors.length;
     let ok = true;
     await withTrack(saveTracker, async () => {
+      const template_id =
+        selectedTemplate.id === HUGS_TEMPLATE_ID ? null : selectedTemplate.id;
       for (let i = 0; i < names.length; i++) {
         const { data: door, error: doorError } = await supabase
           .from("job_doors")
@@ -669,6 +671,7 @@ export function JobDetailClient({
             job_id: job.id,
             name: names[i],
             position: baseDoorPosition + i,
+            template_id,
           })
           .select("*")
           .single();
@@ -866,6 +869,7 @@ export function JobDetailClient({
             supabaseUrl={supabaseUrl}
             jobPhotos={photos.filter((p) => p.door_id === door.id)}
             itemPhotos={itemPhotos}
+            templates={allTemplates}
             onDoorUpdate={(updated) =>
               setDoors((current) =>
                 current.map((d) => (d.id === updated.id ? updated : d)),
@@ -1806,9 +1810,13 @@ function AddDoorMenu({
     return withTrack(tracker, async () => {
       const supabase = createClient();
       const floor = floorDraft.trim() || null;
+      // HUGS is hardcoded — its id ("hugs") isn't a uuid, so don't
+      // try to write it into the foreign key column.
+      const template_id =
+        template.id === HUGS_TEMPLATE_ID ? null : template.id;
       const { data: door, error } = await supabase
         .from("job_doors")
-        .insert({ job_id: jobId, name, position, floor })
+        .insert({ job_id: jobId, name, position, floor, template_id })
         .select("*")
         .single();
       if (error || !door) {
@@ -2304,6 +2312,7 @@ type DoorCardProps = {
   supabaseUrl: string;
   jobPhotos: JobPhoto[];
   itemPhotos: JobDoorItemPhoto[];
+  templates: DoorTemplate[];
   onDoorUpdate: (door: JobDoor) => void;
   onDoorDelete: (id: string) => void;
   onItemsChange: (doorId: string, next: JobDoorItem[]) => void;
@@ -2366,6 +2375,7 @@ function DoorCard({
   supabaseUrl,
   jobPhotos,
   itemPhotos,
+  templates,
   onDoorUpdate,
   onDoorDelete,
   onItemsChange,
@@ -2563,12 +2573,20 @@ function DoorCard({
   }
 
   const usedNames = new Set(items.map((it) => it.name));
-  const quickAdds = [
-    ...HUGS_TEMPLATE.requiredItems,
-    ...HUGS_TEMPLATE.optionalItems,
-    "Door contact",
-    "REX",
-  ].filter((n) => REPEATABLE_ITEMS.has(n) || !usedNames.has(n));
+  // Quick-add suggestions are drawn from the door's template — HUGS
+  // surfaces both required + optional items, user templates surface
+  // their full list. "Door contact" and "REX" stay as universal
+  // fallbacks (they appear on basically every door regardless of
+  // template) when not already covered.
+  const doorTemplate = door.template_id
+    ? templates.find((t) => t.id === door.template_id)
+    : null;
+  const templateItems = doorTemplate
+    ? doorTemplate.items
+    : [...HUGS_TEMPLATE.requiredItems, ...HUGS_TEMPLATE.optionalItems];
+  const quickAdds = Array.from(
+    new Set([...templateItems, "Door contact", "REX"]),
+  ).filter((n) => REPEATABLE_ITEMS.has(n) || !usedNames.has(n));
 
   const completedCount = items.filter((it) => it.completed_at).length;
 
