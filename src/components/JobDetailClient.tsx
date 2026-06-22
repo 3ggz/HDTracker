@@ -182,27 +182,73 @@ export function JobDetailClient({
 
   async function loadTemplates() {
     const supabase = createClient();
-    const { data: rows } = await supabase
+    // Two-query load so a missing column on job_template_items
+    // doesn't kill the whole template list. The embedded-relation
+    // form (job_template_items(...)) errors out as a unit if any
+    // selected column doesn't exist — splitting lets us fall back
+    // to a column-less retry on the items query.
+    const templatesRes = await supabase
       .from("job_templates")
-      .select(
-        "id, name, job_template_items(name, position, is_secondary)",
-      )
+      .select("id, name")
       .order("name");
-    if (!rows) return;
-    const next: DoorTemplate[] = rows.map((r) => {
-      const itemRows = (r.job_template_items ?? []) as {
-        name: string;
-        position: number;
-        is_secondary?: boolean | null;
-      }[];
-      itemRows.sort((a, b) => a.position - b.position);
+    if (templatesRes.error) {
+      console.warn("Templates load failed:", templatesRes.error.message);
+      return;
+    }
+    const templates = templatesRes.data ?? [];
+    if (templates.length === 0) {
+      setDbTemplates([]);
+      return;
+    }
+
+    type ItemRow = {
+      template_id: string;
+      name: string;
+      position: number;
+      is_secondary?: boolean | null;
+    };
+    let itemRows: ItemRow[] = [];
+    const itemsRes = await supabase
+      .from("job_template_items")
+      .select("template_id, name, position, is_secondary")
+      .in("template_id", templates.map((t) => t.id));
+    if (itemsRes.error) {
+      // Fallback for pre-0036 databases that don't have is_secondary
+      // yet. Everything loads as a primary item — secondaries stay
+      // empty until the migration runs.
+      const retry = await supabase
+        .from("job_template_items")
+        .select("template_id, name, position")
+        .in("template_id", templates.map((t) => t.id));
+      if (retry.error) {
+        console.warn(
+          "Template items load failed:",
+          retry.error.message,
+        );
+        setDbTemplates([]);
+        return;
+      }
+      itemRows = (retry.data ?? []) as ItemRow[];
+    } else {
+      itemRows = (itemsRes.data ?? []) as ItemRow[];
+    }
+
+    const byTemplate = new Map<string, ItemRow[]>();
+    for (const it of itemRows) {
+      const list = byTemplate.get(it.template_id) ?? [];
+      list.push(it);
+      byTemplate.set(it.template_id, list);
+    }
+    const next: DoorTemplate[] = templates.map((t) => {
+      const list = byTemplate.get(t.id) ?? [];
+      list.sort((a, b) => a.position - b.position);
       return {
-        id: r.id,
-        name: r.name,
-        items: itemRows
+        id: t.id,
+        name: t.name,
+        items: list
           .filter((it) => !it.is_secondary)
           .map((it) => it.name),
-        secondaryItems: itemRows
+        secondaryItems: list
           .filter((it) => it.is_secondary)
           .map((it) => it.name),
         editable: true,
@@ -2179,9 +2225,29 @@ function CreateTemplateModal({
         is_secondary: true,
       })),
     ];
-    const { error: itemsError } = await supabase
-      .from("job_template_items")
-      .insert(itemRows);
+    let itemsError = (
+      await supabase.from("job_template_items").insert(itemRows)
+    ).error;
+    // Fallback for pre-0036 databases. If we can't write
+    // is_secondary, drop it from every row and retry — but warn the
+    // user that secondaries won't persist until the migration runs.
+    if (itemsError && /is_secondary/i.test(itemsError.message)) {
+      if (cleanSecondaries.length > 0) {
+        setSaving(false);
+        alert(
+          "Run migration 0036 to enable optional secondaries. Save without them, or apply the migration in the Supabase SQL Editor first.",
+        );
+        return;
+      }
+      const retryRows = itemRows.map((r) => ({
+        template_id: r.template_id,
+        name: r.name,
+        position: r.position,
+      }));
+      itemsError = (
+        await supabase.from("job_template_items").insert(retryRows)
+      ).error;
+    }
     if (itemsError) {
       setSaving(false);
       alert(
