@@ -22,6 +22,7 @@ export type JobDoor = {
   floor: string | null;
   tested_at: string | null;
   position: number;
+  template_id: string | null;
   created_at: string;
   updated_at: string;
 };
