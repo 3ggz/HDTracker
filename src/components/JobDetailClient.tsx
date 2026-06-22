@@ -184,19 +184,27 @@ export function JobDetailClient({
     const supabase = createClient();
     const { data: rows } = await supabase
       .from("job_templates")
-      .select("id, name, job_template_items(name, position)")
+      .select(
+        "id, name, job_template_items(name, position, is_secondary)",
+      )
       .order("name");
     if (!rows) return;
     const next: DoorTemplate[] = rows.map((r) => {
       const itemRows = (r.job_template_items ?? []) as {
         name: string;
         position: number;
+        is_secondary?: boolean | null;
       }[];
       itemRows.sort((a, b) => a.position - b.position);
       return {
         id: r.id,
         name: r.name,
-        items: itemRows.map((it) => it.name),
+        items: itemRows
+          .filter((it) => !it.is_secondary)
+          .map((it) => it.name),
+        secondaryItems: itemRows
+          .filter((it) => it.is_secondary)
+          .map((it) => it.name),
         editable: true,
       };
     });
@@ -2125,17 +2133,8 @@ function CreateTemplateModal({
 }) {
   const [name, setName] = useState("");
   const [items, setItems] = useState<string[]>([""]);
+  const [secondaryItems, setSecondaryItems] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
-
-  function updateItem(idx: number, value: string) {
-    setItems((cur) => cur.map((v, i) => (i === idx ? value : v)));
-  }
-  function addItemRow() {
-    setItems((cur) => [...cur, ""]);
-  }
-  function removeItemRow(idx: number) {
-    setItems((cur) => (cur.length === 1 ? cur : cur.filter((_, i) => i !== idx)));
-  }
 
   async function save() {
     const trimmedName = name.trim();
@@ -2144,8 +2143,11 @@ function CreateTemplateModal({
       return;
     }
     const cleanItems = items.map((s) => s.trim()).filter(Boolean);
+    const cleanSecondaries = secondaryItems
+      .map((s) => s.trim())
+      .filter(Boolean);
     if (cleanItems.length === 0) {
-      alert("Add at least one item.");
+      alert("Add at least one item to pre-fill.");
       return;
     }
     setSaving(true);
@@ -2160,11 +2162,23 @@ function CreateTemplateModal({
       alert(`Couldn't save template: ${error?.message ?? "unknown error"}`);
       return;
     }
-    const itemRows = cleanItems.map((n, i) => ({
-      template_id: tpl.id,
-      name: n,
-      position: i,
-    }));
+    // Primary + secondary rows share a single ordered list — primaries
+    // come first so legacy code that ignores is_secondary still sees
+    // them in the expected order.
+    const itemRows = [
+      ...cleanItems.map((n, i) => ({
+        template_id: tpl.id,
+        name: n,
+        position: i,
+        is_secondary: false,
+      })),
+      ...cleanSecondaries.map((n, i) => ({
+        template_id: tpl.id,
+        name: n,
+        position: cleanItems.length + i,
+        is_secondary: true,
+      })),
+    ];
     const { error: itemsError } = await supabase
       .from("job_template_items")
       .insert(itemRows);
@@ -2180,6 +2194,7 @@ function CreateTemplateModal({
       id: tpl.id,
       name: tpl.name,
       items: cleanItems,
+      secondaryItems: cleanSecondaries,
       editable: true,
     });
   }
@@ -2231,56 +2246,19 @@ function CreateTemplateModal({
               className="mt-1 h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-950"
             />
           </div>
-          <div>
-            <label className="block text-xs font-semibold uppercase tracking-wide text-neutral-500">
-              Items to pre-fill
-            </label>
-            <ul className="mt-1 space-y-1.5">
-              {items.map((v, i) => (
-                <li key={i} className="flex items-center gap-1.5">
-                  <input
-                    type="text"
-                    value={v}
-                    onChange={(e) => updateItem(i, e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        if (i === items.length - 1) addItemRow();
-                      }
-                    }}
-                    placeholder={`Item ${i + 1}`}
-                    className="h-9 flex-1 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-950"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => removeItemRow(i)}
-                    disabled={items.length === 1}
-                    aria-label={`Remove item ${i + 1}`}
-                    className="flex h-9 w-9 items-center justify-center rounded-md text-neutral-400 active:bg-neutral-100 disabled:opacity-30 dark:active:bg-neutral-800"
-                  >
-                    <svg
-                      className="h-4 w-4"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <line x1="5" y1="12" x2="19" y2="12" />
-                    </svg>
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <button
-              type="button"
-              onClick={addItemRow}
-              className="mt-2 inline-flex h-8 items-center gap-1 rounded-md border border-neutral-300 px-2 text-xs font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
-            >
-              <span className="text-base leading-none">+</span> Add item
-            </button>
-          </div>
+          <TemplateItemList
+            label="Items to pre-fill"
+            hint="Added to every door created with this template."
+            values={items}
+            onChange={setItems}
+            minOne
+          />
+          <TemplateItemList
+            label="Optional secondaries"
+            hint="Quick-add suggestions on the door — not pre-filled."
+            values={secondaryItems}
+            onChange={setSecondaryItems}
+          />
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-neutral-200 px-4 py-3 dark:border-neutral-800">
           <button
@@ -2301,6 +2279,98 @@ function CreateTemplateModal({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Item-list editor shared by the template modal's required and
+// secondary sections. `minOne` keeps at least one empty row so the
+// required list never collapses to zero, while the optional list
+// starts empty (an "+ Add" button reveals the first row).
+function TemplateItemList({
+  label,
+  hint,
+  values,
+  onChange,
+  minOne = false,
+}: {
+  label: string;
+  hint?: string;
+  values: string[];
+  onChange: (next: string[]) => void;
+  minOne?: boolean;
+}) {
+  function updateRow(idx: number, value: string) {
+    onChange(values.map((v, i) => (i === idx ? value : v)));
+  }
+  function addRow() {
+    onChange([...values, ""]);
+  }
+  function removeRow(idx: number) {
+    if (minOne && values.length <= 1) {
+      onChange([""]);
+      return;
+    }
+    onChange(values.filter((_, i) => i !== idx));
+  }
+
+  return (
+    <div>
+      <label className="block text-xs font-semibold uppercase tracking-wide text-neutral-500">
+        {label}
+      </label>
+      {hint && (
+        <p className="mt-0.5 text-[11px] text-neutral-400 dark:text-neutral-500">
+          {hint}
+        </p>
+      )}
+      {values.length > 0 && (
+        <ul className="mt-1 space-y-1.5">
+          {values.map((v, i) => (
+            <li key={i} className="flex items-center gap-1.5">
+              <input
+                type="text"
+                value={v}
+                onChange={(e) => updateRow(i, e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    if (i === values.length - 1) addRow();
+                  }
+                }}
+                placeholder={`Item ${i + 1}`}
+                className="h-9 flex-1 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-950"
+              />
+              <button
+                type="button"
+                onClick={() => removeRow(i)}
+                disabled={minOne && values.length === 1 && !v.trim()}
+                aria-label={`Remove item ${i + 1}`}
+                className="flex h-9 w-9 items-center justify-center rounded-md text-neutral-400 active:bg-neutral-100 disabled:opacity-30 dark:active:bg-neutral-800"
+              >
+                <svg
+                  className="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <button
+        type="button"
+        onClick={addRow}
+        className="mt-2 inline-flex h-8 items-center gap-1 rounded-md border border-neutral-300 px-2 text-xs font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
+      >
+        <span className="text-base leading-none">+</span> Add item
+      </button>
     </div>
   );
 }
@@ -2582,7 +2652,7 @@ function DoorCard({
     ? templates.find((t) => t.id === door.template_id)
     : null;
   const templateItems = doorTemplate
-    ? doorTemplate.items
+    ? [...doorTemplate.items, ...doorTemplate.secondaryItems]
     : [...HUGS_TEMPLATE.requiredItems, ...HUGS_TEMPLATE.optionalItems];
   const quickAdds = Array.from(
     new Set([...templateItems, "Door contact", "REX"]),
