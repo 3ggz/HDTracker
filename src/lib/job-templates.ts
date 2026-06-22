@@ -29,10 +29,14 @@ export function getTemplate(id: string): JobTemplate | undefined {
 // Unified shape that both HUGS and user-defined templates expose to
 // the door-creation paths. `items` is what gets inserted into
 // job_door_items when a door is created with this template selected.
+// `secondaryItems` doesn't pre-fill, but surfaces as quick-add
+// suggestions inside the door card — mirroring the original HUGS
+// required/optional split.
 export type DoorTemplate = {
   id: string;
   name: string;
   items: string[];
+  secondaryItems: string[];
   editable: boolean;
 };
 
@@ -42,5 +46,6 @@ export const HUGS_DOOR_TEMPLATE: DoorTemplate = {
   id: HUGS_TEMPLATE_ID,
   name: HUGS_TEMPLATE.label,
   items: [...HUGS_TEMPLATE.requiredItems],
+  secondaryItems: [...HUGS_TEMPLATE.optionalItems],
   editable: false,
 };
