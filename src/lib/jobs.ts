@@ -6,7 +6,10 @@ export type Job = {
   notes: string | null;
   site_map_path: string | null;
   site_map_uploaded_at: string | null;
+  site_map_url: string | null;
+  site_map_label: string | null;
   completed_at: string | null;
+  manual_workers: string[];
   created_at: string;
   updated_at: string;
 };
@@ -19,6 +22,7 @@ export type JobDoor = {
   floor: string | null;
   tested_at: string | null;
   position: number;
+  template_id: string | null;
   created_at: string;
   updated_at: string;
 };

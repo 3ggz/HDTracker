@@ -5,6 +5,7 @@ import { LiveUpdater } from "@/components/LiveUpdater";
 import { PendingApprovalsBanner } from "@/components/PendingApprovalsBanner";
 import { SectionTabs } from "@/components/SectionTabs";
 import { FaqSubTabs } from "@/components/FaqSubTabs";
+import { MarkFaqSeen } from "@/components/MarkFaqSeen";
 import { Avatar } from "@/components/Avatar";
 import { isAdminEmail } from "@/lib/admin";
 import { firstNameFromEmail } from "@/lib/faq-qa";
@@ -47,6 +48,7 @@ export default async function FaqQuestionsPage() {
   return (
     <>
       <LiveUpdater channelName="faq-questions-list" table="faq_questions" />
+      <MarkFaqSeen category="qa" />
       <AppHeader />
       {isAdmin && <PendingApprovalsBanner initialCount={pendingCount} />}
       <SectionTabs active="faq" />

@@ -70,7 +70,7 @@ export function BackTip() {
           ? `hdt-tip-in ${EXIT_MS}ms ease-out reverse forwards`
           : `hdt-tip-in 300ms ease-out both`,
       }}
-      className="pointer-events-none fixed inset-x-0 top-20 z-[60] flex justify-center px-4"
+      className="pointer-events-none fixed inset-x-0 bottom-6 z-[60] flex justify-center px-4"
     >
       <div className="pointer-events-auto flex items-center gap-3 rounded-2xl bg-neutral-900 px-4 py-3 text-sm font-medium text-white shadow-2xl ring-1 ring-white/10 dark:bg-neutral-100 dark:text-neutral-900 dark:ring-black/10">
         <SwipeHintIcon />

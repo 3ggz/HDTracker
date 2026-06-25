@@ -12,8 +12,8 @@ export type DeleteVehicleResult =
 //      delete with .eq() silently succeeds (error: null) when RLS
 //      filters away the row, which previously made deletes look like
 //      they worked when they hadn't.
-//   2. Call revalidatePath("/") so the home page re-fetches the
-//      vehicle list immediately on next navigation, no stale-cache
+//   2. Call revalidatePath("/vehicles") so the inventory list
+//      re-fetches immediately on next navigation, no stale-cache
 //      flash showing the just-deleted row.
 //
 // Cascade FKs on vehicle_items / vehicle_issues / vehicle_photos /
@@ -39,7 +39,7 @@ export async function deleteVehicleAction(
     };
   }
 
-  revalidatePath("/");
+  revalidatePath("/vehicles");
   revalidatePath("/quickview");
   return { ok: true };
 }

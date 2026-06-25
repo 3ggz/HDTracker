@@ -13,5 +13,5 @@ export const FEATURES = {
   // surface the "Forgot password?" link again. The admin tools
   // (banner on /, link in AppHeader, /admin/resets page) keep
   // working regardless so Mark can still service direct requests.
-  showForgotPasswordLink: false,
+  showForgotPasswordLink: true,
 } as const;

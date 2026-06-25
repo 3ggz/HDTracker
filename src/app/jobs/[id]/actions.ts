@@ -202,27 +202,76 @@ export async function deleteDoorAction(doorId: string): Promise<DeleteResult> {
 // permissive (per the project's "leave RLS alone for now" rule), so
 // the gate is enforced here in the server action.
 export async function deleteJobAction(jobId: string): Promise<DeleteResult> {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!isAdminEmail(user?.email)) {
-    return { ok: false, error: "Only admins can delete jobs." };
-  }
-  const { data, error } = await supabase
-    .from("jobs")
-    .delete()
-    .eq("id", jobId)
-    .select("id");
-  if (error) return { ok: false, error: error.message };
-  if (!data || data.length === 0) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!isAdminEmail(user?.email)) {
+      return { ok: false, error: "Only admins can delete jobs." };
+    }
+    const { data, error } = await supabase
+      .from("jobs")
+      .delete()
+      .eq("id", jobId)
+      .select("id");
+    if (error) return { ok: false, error: error.message };
+    if (!data || data.length === 0) {
+      return {
+        ok: false,
+        error:
+          "Database didn't report an error but no rows were affected. Try signing out and back in.",
+      };
+    }
+    return { ok: true };
+  } catch (err) {
+    console.error("deleteJobAction failed", err);
     return {
       ok: false,
-      error:
-        "Database didn't report an error but no rows were affected.",
+      error: err instanceof Error ? err.message : "Unexpected server error.",
     };
   }
-  return { ok: true };
+}
+
+// Re-insert a soft-deleted door item exactly as it was. Used by the
+// inline 'Undo' banner that appears after the user taps Remove on
+// an item row. New uuid + created_at; everything else preserved off
+// the snapshot.
+export type RestoreDoorItemSnapshot = {
+  door_id: string;
+  name: string;
+  note: string | null;
+  position: number;
+  completed_at: string | null;
+  photo_storage_path: string | null;
+  photo_uploaded_at: string | null;
+};
+
+export type RestoreDoorItemResult =
+  | { ok: true; itemId: string }
+  | { ok: false; error: string };
+
+export async function restoreDoorItemAction(
+  snapshot: RestoreDoorItemSnapshot,
+): Promise<RestoreDoorItemResult> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("job_door_items")
+    .insert({
+      door_id: snapshot.door_id,
+      name: snapshot.name,
+      note: snapshot.note,
+      position: snapshot.position,
+      completed_at: snapshot.completed_at,
+      photo_storage_path: snapshot.photo_storage_path,
+      photo_uploaded_at: snapshot.photo_uploaded_at,
+    })
+    .select("id")
+    .single();
+  if (error || !data) {
+    return { ok: false, error: error?.message ?? "Couldn't restore item." };
+  }
+  return { ok: true, itemId: data.id };
 }
 
 export async function deleteDoorItemAction(
@@ -336,6 +385,11 @@ export async function restoreDoorAction(
     });
   }
 
+  // The three follow-up inserts are independent of each other —
+  // run them in parallel and surface the first failure instead of
+  // silently returning ok with a partial restore.
+  const followUps: PromiseLike<{ error: { message: string } | null }>[] = [];
+
   if (input.itemPhotos.length > 0) {
     const photoRows = input.itemPhotos
       .map((p) => ({
@@ -346,7 +400,9 @@ export async function restoreDoorAction(
       }))
       .filter((r) => r.item_id);
     if (photoRows.length > 0) {
-      await supabase.from("job_door_item_photos").insert(photoRows);
+      followUps.push(
+        supabase.from("job_door_item_photos").insert(photoRows),
+      );
     }
   }
 
@@ -357,7 +413,7 @@ export async function restoreDoorAction(
       storage_path: p.storage_path,
       caption: p.caption,
     }));
-    await supabase.from("job_photos").insert(photoRows);
+    followUps.push(supabase.from("job_photos").insert(photoRows));
   }
 
   if (input.panelIds.length > 0) {
@@ -366,7 +422,18 @@ export async function restoreDoorAction(
       door_id: newDoor.id,
       position: idx,
     }));
-    await supabase.from("job_panel_doors").insert(linkRows);
+    followUps.push(supabase.from("job_panel_doors").insert(linkRows));
+  }
+
+  if (followUps.length > 0) {
+    const results = await Promise.all(followUps);
+    const firstError = results.find((r) => r.error)?.error;
+    if (firstError) {
+      return {
+        ok: false,
+        error: `Door and items restored, but some photos or panel links failed: ${firstError.message}`,
+      };
+    }
   }
 
   return { ok: true, doorId: newDoor.id, itemIdMap };

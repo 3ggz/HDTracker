@@ -209,8 +209,8 @@ function ResetStatusInner() {
                 />
               </svg>
               <p className="text-sm text-neutral-700 dark:text-neutral-300">
-                Waiting for Mark to approve. This page will update on its
-                own — leave it open.
+                Awaiting admin authorization. This page will update on
+                its own — leave it open.
               </p>
             </div>
             <Link

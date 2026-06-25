@@ -88,7 +88,7 @@ export default function AskQuestionPage() {
             type="text"
             required
             autoFocus
-            placeholder="e.g. Why does my 5500 keep faulting on PoE?"
+            placeholder="Title"
             className={inputClass}
           />
         </Field>
@@ -96,7 +96,7 @@ export default function AskQuestionPage() {
         <Field label="Details" hint="Optional — context, error messages, what you tried">
           <textarea
             name="body"
-            placeholder="What were you doing when it happened?"
+            placeholder="Description"
             className={textareaClass}
           />
         </Field>

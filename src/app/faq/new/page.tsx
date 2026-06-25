@@ -83,7 +83,7 @@ export default function NewFaqPage() {
             type="text"
             required
             autoFocus
-            placeholder="e.g. HUGS 8 board jumper config"
+            placeholder="Title"
             className={inputClass}
           />
         </Field>
@@ -91,7 +91,7 @@ export default function NewFaqPage() {
         <Field label="Body" hint="Optional — add photos on the next screen">
           <textarea
             name="body"
-            placeholder="Short reference text the installer can read..."
+            placeholder="Description"
             className={textareaClass}
           />
         </Field>

@@ -14,6 +14,16 @@ export const ALLOWED_SITE_MAP_MIME_TYPES: readonly string[] = [
   "application/pdf",
 ];
 
+export type JobSiteMap = {
+  id: string;
+  job_id: string;
+  label: string | null;
+  storage_path: string;
+  uploaded_at: string;
+  position: number;
+  created_at: string;
+};
+
 export type JobPhoto = {
   id: string;
   job_id: string;
@@ -94,17 +104,9 @@ export async function deleteJobPhoto(
   supabase: SupabaseClient,
   photo: JobPhoto,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const { error: storageError } = await supabase.storage
-    .from(JOB_BUCKET)
-    .remove([photo.storage_path]);
-
-  if (
-    storageError &&
-    !storageError.message.toLowerCase().includes("not found")
-  ) {
-    return { ok: false, error: storageError.message };
-  }
-
+  // Soft delete — DB row only. Storage file stays so restoreJobPhoto
+  // can resurrect by pointing a new row at the same path. The undo
+  // window is short; orphan rate is negligible.
   const { error: dbError } = await supabase
     .from("job_photos")
     .delete()
@@ -112,6 +114,29 @@ export async function deleteJobPhoto(
 
   if (dbError) return { ok: false, error: dbError.message };
   return { ok: true };
+}
+
+export async function restoreJobPhoto(
+  supabase: SupabaseClient,
+  snapshot: JobPhoto,
+): Promise<
+  | { ok: true; photo: JobPhoto }
+  | { ok: false; error: string }
+> {
+  const { data, error } = await supabase
+    .from("job_photos")
+    .insert({
+      job_id: snapshot.job_id,
+      door_id: snapshot.door_id,
+      storage_path: snapshot.storage_path,
+      caption: snapshot.caption,
+    })
+    .select("*")
+    .single();
+  if (error || !data) {
+    return { ok: false, error: error?.message ?? "Couldn't restore photo." };
+  }
+  return { ok: true, photo: data as JobPhoto };
 }
 
 import type { JobDoorItemPhoto, JobPanelPhoto } from "./jobs";
@@ -179,15 +204,11 @@ export async function deleteDoorItemPhoto(
   supabase: SupabaseClient,
   photo: JobDoorItemPhoto,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const { error: storageError } = await supabase.storage
-    .from(JOB_BUCKET)
-    .remove([photo.storage_path]);
-  if (
-    storageError &&
-    !storageError.message.toLowerCase().includes("not found")
-  ) {
-    return { ok: false, error: storageError.message };
-  }
+  // Soft delete: only drop the DB row, leave the storage file behind
+  // so the inline 'Undo' banner can resurrect the photo by inserting
+  // a new row pointing at the same path. The few-second undo window
+  // is short enough that the orphan rate is negligible; if it ever
+  // matters we can run a periodic sweep that diffs storage vs DB.
   const { data, error: dbError } = await supabase
     .from("job_door_item_photos")
     .delete()
@@ -198,6 +219,32 @@ export async function deleteDoorItemPhoto(
     return { ok: false, error: "No rows were affected." };
   }
   return { ok: true };
+}
+
+// Re-insert a deleted door-item photo, pointing at the storage path
+// from the snapshot. New uuid + created_at; everything else copied
+// off the deleted row.
+export async function restoreDoorItemPhoto(
+  supabase: SupabaseClient,
+  snapshot: JobDoorItemPhoto,
+): Promise<
+  | { ok: true; photo: JobDoorItemPhoto }
+  | { ok: false; error: string }
+> {
+  const { data, error } = await supabase
+    .from("job_door_item_photos")
+    .insert({
+      item_id: snapshot.item_id,
+      storage_path: snapshot.storage_path,
+      caption: snapshot.caption,
+      position: snapshot.position,
+    })
+    .select("*")
+    .single();
+  if (error || !data) {
+    return { ok: false, error: error?.message ?? "Couldn't restore photo." };
+  }
+  return { ok: true, photo: data as JobDoorItemPhoto };
 }
 
 export function validateSiteMapFile(file: {
@@ -292,6 +339,122 @@ export async function deleteSiteMap(
   return { ok: true };
 }
 
+// Additional site maps beyond the primary one — stored in
+// job_site_maps so each can carry an optional label. Same bucket as
+// the primary map; we use a different path prefix so the storage
+// listing reads cleanly.
+
+type UploadExtraSiteMapOptions = {
+  supabase: SupabaseClient;
+  file: File;
+  jobId: string;
+  nextPosition: number;
+  label?: string | null;
+};
+
+export type UploadExtraSiteMapResult =
+  | { ok: true; siteMap: JobSiteMap }
+  | { ok: false; error: string };
+
+export async function uploadExtraSiteMap({
+  supabase,
+  file,
+  jobId,
+  nextPosition,
+  label,
+}: UploadExtraSiteMapOptions): Promise<UploadExtraSiteMapResult> {
+  const validation = validateSiteMapFile(file);
+  if (!validation.ok) return validation;
+
+  const fileId = crypto.randomUUID();
+  const storagePath = `${jobId}/site-maps/${fileId}.pdf`;
+
+  const { error: uploadError } = await supabase.storage
+    .from(JOB_BUCKET)
+    .upload(storagePath, file, {
+      upsert: false,
+      contentType: "application/pdf",
+    });
+  if (uploadError) return { ok: false, error: uploadError.message };
+
+  const { data, error: dbError } = await supabase
+    .from("job_site_maps")
+    .insert({
+      job_id: jobId,
+      label: label?.trim() || null,
+      storage_path: storagePath,
+      position: nextPosition,
+    })
+    .select("*")
+    .single();
+
+  if (dbError || !data) {
+    await supabase.storage.from(JOB_BUCKET).remove([storagePath]);
+    return {
+      ok: false,
+      error: dbError?.message ?? "Couldn't save the map.",
+    };
+  }
+  return { ok: true, siteMap: data as JobSiteMap };
+}
+
+export async function deleteExtraSiteMap(
+  supabase: SupabaseClient,
+  siteMap: JobSiteMap,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  // Soft delete; storage stays for restoreExtraSiteMap.
+  const { error: dbError } = await supabase
+    .from("job_site_maps")
+    .delete()
+    .eq("id", siteMap.id);
+  if (dbError) return { ok: false, error: dbError.message };
+  return { ok: true };
+}
+
+export async function restoreExtraSiteMap(
+  supabase: SupabaseClient,
+  snapshot: JobSiteMap,
+): Promise<
+  | { ok: true; siteMap: JobSiteMap }
+  | { ok: false; error: string }
+> {
+  const { data, error } = await supabase
+    .from("job_site_maps")
+    .insert({
+      job_id: snapshot.job_id,
+      label: snapshot.label,
+      storage_path: snapshot.storage_path,
+      position: snapshot.position,
+    })
+    .select("*")
+    .single();
+  if (error || !data) {
+    return { ok: false, error: error?.message ?? "Couldn't restore PDF." };
+  }
+  return { ok: true, siteMap: data as JobSiteMap };
+}
+
+export type RenameExtraSiteMapResult =
+  | { ok: true; siteMap: JobSiteMap }
+  | { ok: false; error: string };
+
+export async function renameExtraSiteMap(
+  supabase: SupabaseClient,
+  id: string,
+  label: string | null,
+): Promise<RenameExtraSiteMapResult> {
+  const { data, error } = await supabase
+    .from("job_site_maps")
+    .update({ label })
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error || !data) {
+    return { ok: false, error: error?.message ?? "Couldn't rename." };
+  }
+  return { ok: true, siteMap: data as JobSiteMap };
+}
+
 // Append a photo to a panel. Multiple per panel supported.
 type UploadPanelPhotoOptions = {
   supabase: SupabaseClient;
@@ -352,15 +515,7 @@ export async function deletePanelPhoto(
   supabase: SupabaseClient,
   photo: JobPanelPhoto,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const { error: storageError } = await supabase.storage
-    .from(JOB_BUCKET)
-    .remove([photo.storage_path]);
-  if (
-    storageError &&
-    !storageError.message.toLowerCase().includes("not found")
-  ) {
-    return { ok: false, error: storageError.message };
-  }
+  // Soft delete; storage stays for restorePanelPhoto.
   const { data, error: dbError } = await supabase
     .from("job_panel_photos")
     .delete()
@@ -371,4 +526,27 @@ export async function deletePanelPhoto(
     return { ok: false, error: "No rows were affected." };
   }
   return { ok: true };
+}
+
+export async function restorePanelPhoto(
+  supabase: SupabaseClient,
+  snapshot: JobPanelPhoto,
+): Promise<
+  | { ok: true; photo: JobPanelPhoto }
+  | { ok: false; error: string }
+> {
+  const { data, error } = await supabase
+    .from("job_panel_photos")
+    .insert({
+      panel_id: snapshot.panel_id,
+      storage_path: snapshot.storage_path,
+      caption: snapshot.caption,
+      position: snapshot.position,
+    })
+    .select("*")
+    .single();
+  if (error || !data) {
+    return { ok: false, error: error?.message ?? "Couldn't restore photo." };
+  }
+  return { ok: true, photo: data as JobPanelPhoto };
 }

@@ -86,10 +86,25 @@ export async function completePasswordReset(
     );
     if (updateError) return { ok: false, error: updateError.message };
 
-    await supabase
+    // The password IS changed at this point. If stamping fulfilled_at
+    // fails we must not return success — an unfulfilled approved row
+    // would let the same approval be cashed in again. Use the admin
+    // client so RLS can never be the reason the stamp silently no-ops.
+    const { error: fulfillError } = await admin
       .from("password_reset_requests")
       .update({ fulfilled_at: new Date().toISOString() })
       .eq("id", req.id);
+    if (fulfillError) {
+      console.error(
+        "completePasswordReset: password updated but fulfilled_at stamp failed",
+        fulfillError,
+      );
+      return {
+        ok: false,
+        error:
+          "Password was changed, but the request couldn't be closed out. Sign in with the new password; tell an admin to dismiss the request.",
+      };
+    }
 
     return { ok: true, email: req.email };
   } catch (err) {

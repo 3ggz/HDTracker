@@ -32,20 +32,39 @@ import {
 } from "@/lib/jobs";
 import {
   deleteDoorItemPhoto,
+  deleteExtraSiteMap,
   deleteJobPhoto,
   deletePanelPhoto,
   deleteSiteMap,
   publicJobFileUrl,
+  renameExtraSiteMap,
+  restoreDoorItemPhoto,
+  restoreExtraSiteMap,
+  restoreJobPhoto,
+  restorePanelPhoto,
   uploadDoorItemPhoto,
+  uploadExtraSiteMap,
   uploadJobPhoto,
   uploadPanelPhoto,
   uploadSiteMap,
   type JobPhoto,
+  type JobSiteMap,
 } from "@/lib/job-photos";
-import { HUGS_TEMPLATE } from "@/lib/job-templates";
+import {
+  HUGS_TEMPLATE,
+  HUGS_TEMPLATE_ID,
+  HUGS_DOOR_TEMPLATE,
+  type DoorTemplate,
+} from "@/lib/job-templates";
+import { firstNameFromEmail } from "@/lib/email";
+import { useSoftDelete } from "@/lib/use-soft-delete";
+import { PdfFullscreenModal } from "./PdfFullscreenModal";
+import { PhotoFullscreenModal } from "./PhotoFullscreenModal";
+import { UndoBanner } from "./UndoBanner";
 import {
   deleteDoorAction,
   deleteJobAction,
+  restoreDoorItemAction,
   deleteDoorItemAction,
   restoreDoorAction,
   type RestoreDoorInput,
@@ -58,6 +77,11 @@ import { AutoDetectModal } from "./AutoDetectModal";
 // and rendered as their own section below the floor groups.
 const STANDALONE_DOOR_NAME = "Standalone Equipment";
 
+// A door can be wired up with more than one 5200 / 3220 exciter, so
+// the quick-add chip for those stays available even after one is
+// added. Everything else hides once present.
+const REPEATABLE_ITEMS = new Set(["5200 Exciter", "3220 Exciter"]);
+
 // Shared save-tracker so the universal "saving / saved" bar at the
 // bottom of the page reflects activity from every child component
 // (door fields, panel fields, item toggles, photo uploads, etc.)
@@ -65,6 +89,18 @@ const STANDALONE_DOOR_NAME = "Standalone Equipment";
 type SaveTracker = { begin: () => void; end: () => void };
 const noopTracker: SaveTracker = { begin: () => {}, end: () => {} };
 const SaveTrackerContext = createContext<SaveTracker>(noopTracker);
+
+// Photo viewer context so any nested photo grid (item photos, door
+// photos, panel photos, job photos) can open the in-app fullscreen
+// modal without each one carrying its own state + modal. Click
+// handlers call `open(src, label)`; the provider lives at the top
+// of JobDetailClient and renders the modal once.
+type PhotoViewerContextValue = {
+  open: (src: string, label?: string) => void;
+};
+const PhotoViewerContext = createContext<PhotoViewerContextValue>({
+  open: () => {},
+});
 async function withTrack<T>(
   tracker: SaveTracker,
   fn: () => Promise<T>,
@@ -96,6 +132,9 @@ export function JobDetailClient({
   itemsLoadError,
   photosLoadError,
   canDeleteJob,
+  initialExtraSiteMaps,
+  initialDerivedWorkers,
+  initialMemberSuggestions,
 }: {
   initialJob: Job;
   initialDoors: JobDoor[];
@@ -109,6 +148,15 @@ export function JobDetailClient({
   itemsLoadError: string | null;
   photosLoadError: string | null;
   canDeleteJob: boolean;
+  initialExtraSiteMaps: JobSiteMap[];
+  // Distinct user emails pulled from job_activity at SSR. Live updates
+  // here would require a separate channel; for now the list rehydrates
+  // on navigation, which is fine — the manual list IS realtime via
+  // the existing job UPDATE subscription.
+  initialDerivedWorkers: string[];
+  // Fleet-wide unique names ever associated with a job — used to
+  // pre-populate the Worked-on autocomplete dropdown.
+  initialMemberSuggestions: string[];
 }) {
   const router = useRouter();
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
@@ -121,8 +169,152 @@ export function JobDetailClient({
   const [panelDoors, setPanelDoors] = useState(initialPanelDoors);
   const [itemPhotos, setItemPhotos] = useState(initialItemPhotos);
   const [panelPhotos, setPanelPhotos] = useState(initialPanelPhotos);
+  const [extraSiteMaps, setExtraSiteMaps] = useState(initialExtraSiteMaps);
   const [autoDetectOpen, setAutoDetectOpen] = useState(false);
   const [newDoorId, setNewDoorId] = useState<string | null>(null);
+
+  // Door-creation template registry. HUGS is always pinned at the
+  // front; DB-backed user templates are appended. Selection persists
+  // per-device via localStorage so a tech picks once and keeps it.
+  const [dbTemplates, setDbTemplates] = useState<DoorTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] =
+    useState<string>(HUGS_TEMPLATE_ID);
+  const [createTemplateOpen, setCreateTemplateOpen] = useState(false);
+
+  // In-app fullscreen photo viewer. Anything that used to be an
+  // `<a target="_blank">` thumbnail now opens this modal instead so
+  // the iOS back button stays on the job page.
+  const [viewerPhoto, setViewerPhoto] = useState<
+    { src: string; label: string | null } | null
+  >(null);
+
+  // Restore last-used template id from localStorage once on mount.
+  // Falls back to HUGS if the stored id no longer resolves (template
+  // was deleted on another device).
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("hd:job:template:default");
+      if (stored) setSelectedTemplateId(stored);
+    } catch {
+      // localStorage unavailable — keep HUGS default.
+    }
+  }, []);
+
+  async function loadTemplates() {
+    const supabase = createClient();
+    // Two-query load so a missing column on job_template_items
+    // doesn't kill the whole template list. The embedded-relation
+    // form (job_template_items(...)) errors out as a unit if any
+    // selected column doesn't exist — splitting lets us fall back
+    // to a column-less retry on the items query.
+    const templatesRes = await supabase
+      .from("job_templates")
+      .select("id, name")
+      .order("name");
+    if (templatesRes.error) {
+      console.warn("Templates load failed:", templatesRes.error.message);
+      return;
+    }
+    const templates = templatesRes.data ?? [];
+    if (templates.length === 0) {
+      setDbTemplates([]);
+      return;
+    }
+
+    type ItemRow = {
+      template_id: string;
+      name: string;
+      position: number;
+      is_secondary?: boolean | null;
+    };
+    let itemRows: ItemRow[] = [];
+    const itemsRes = await supabase
+      .from("job_template_items")
+      .select("template_id, name, position, is_secondary")
+      .in("template_id", templates.map((t) => t.id));
+    if (itemsRes.error) {
+      // Fallback for pre-0036 databases that don't have is_secondary
+      // yet. Everything loads as a primary item — secondaries stay
+      // empty until the migration runs.
+      const retry = await supabase
+        .from("job_template_items")
+        .select("template_id, name, position")
+        .in("template_id", templates.map((t) => t.id));
+      if (retry.error) {
+        console.warn(
+          "Template items load failed:",
+          retry.error.message,
+        );
+        setDbTemplates([]);
+        return;
+      }
+      itemRows = (retry.data ?? []) as ItemRow[];
+    } else {
+      itemRows = (itemsRes.data ?? []) as ItemRow[];
+    }
+
+    const byTemplate = new Map<string, ItemRow[]>();
+    for (const it of itemRows) {
+      const list = byTemplate.get(it.template_id) ?? [];
+      list.push(it);
+      byTemplate.set(it.template_id, list);
+    }
+    const next: DoorTemplate[] = templates.map((t) => {
+      const list = byTemplate.get(t.id) ?? [];
+      list.sort((a, b) => a.position - b.position);
+      return {
+        id: t.id,
+        name: t.name,
+        items: list
+          .filter((it) => !it.is_secondary)
+          .map((it) => it.name),
+        secondaryItems: list
+          .filter((it) => it.is_secondary)
+          .map((it) => it.name),
+        editable: true,
+      };
+    });
+    setDbTemplates(next);
+  }
+
+  useEffect(() => {
+    void loadTemplates();
+  }, []);
+
+  const allTemplates = useMemo<DoorTemplate[]>(
+    () => [HUGS_DOOR_TEMPLATE, ...dbTemplates],
+    [dbTemplates],
+  );
+  const selectedTemplate =
+    allTemplates.find((t) => t.id === selectedTemplateId) ??
+    HUGS_DOOR_TEMPLATE;
+
+  function pickTemplate(id: string) {
+    setSelectedTemplateId(id);
+    try {
+      localStorage.setItem("hd:job:template:default", id);
+    } catch {
+      // Best-effort persistence; selection still applies in-memory.
+    }
+  }
+
+  async function deleteTemplate(id: string) {
+    if (id === HUGS_TEMPLATE_ID) return;
+    const target = dbTemplates.find((t) => t.id === id);
+    if (!target) return;
+    if (!window.confirm(`Delete template "${target.name}"?`)) return;
+    const supabase = createClient();
+    const { error } = await supabase
+      .from("job_templates")
+      .delete()
+      .eq("id", id);
+    if (error) {
+      alert(`Couldn't delete template: ${error.message}`);
+      return;
+    }
+    setDbTemplates((cur) => cur.filter((t) => t.id !== id));
+    if (selectedTemplateId === id) pickTemplate(HUGS_TEMPLATE_ID);
+  }
 
   // Snapshot of the most recently deleted door, kept around so the
   // top-of-page Undo button can ask the server to recreate it. We
@@ -323,15 +515,20 @@ export function JobDetailClient({
 
   async function saveHeader() {
     const trimmedName = headerDraft.name.trim();
+    const trimmedNumber = headerDraft.number.trim();
     if (!trimmedName) {
       setHeaderError("Job needs a name.");
+      return;
+    }
+    if (!trimmedNumber) {
+      setHeaderError("Job number is required.");
       return;
     }
     setHeaderSaving(true);
     setHeaderError(null);
     const patch = {
       name: trimmedName,
-      number: headerDraft.number.trim() || null,
+      number: trimmedNumber,
       address: headerDraft.address.trim() || null,
       notes: headerDraft.notes.trim() || null,
     };
@@ -342,11 +539,17 @@ export function JobDetailClient({
         .update(patch)
         .eq("id", job.id)
         .select("*")
-        .single();
+        .maybeSingle();
     });
     setHeaderSaving(false);
-    if (error || !data) {
-      setHeaderError(error?.message ?? "Couldn't save.");
+    if (error) {
+      setHeaderError(error.message);
+      return;
+    }
+    if (!data) {
+      setHeaderError(
+        "Couldn't save — job may have been deleted from another tab.",
+      );
       return;
     }
     setJob(data as Job);
@@ -378,6 +581,13 @@ export function JobDetailClient({
     return { total, done };
   }, [items]);
 
+  // One Set shared by every PanelCard instead of building a fresh
+  // one per panel per render.
+  const allAssignedDoorIds = useMemo(
+    () => new Set(panelDoors.map((pd) => pd.door_id)),
+    [panelDoors],
+  );
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(TouchSensor, {
@@ -387,74 +597,117 @@ export function JobDetailClient({
 
   async function undoLastDoorDelete() {
     if (!lastDeletedDoor || restoringDoor) return;
+    // Snapshot before the first await. A newer delete can overwrite
+    // lastDeletedDoor mid-flight; without the capture we'd restore
+    // the wrong door (and label the alert with the wrong name).
+    const { payload, label } = lastDeletedDoor;
     setRestoringDoor(true);
-    const result = await withTrack(saveTracker, () =>
-      restoreDoorAction(lastDeletedDoor.payload),
-    );
-    setRestoringDoor(false);
-    if (!result.ok) {
-      alert(`Couldn't restore "${lastDeletedDoor.label}": ${result.error}`);
+    try {
+      const result = await withTrack(saveTracker, () =>
+        restoreDoorAction(payload),
+      );
+      if (!result.ok) {
+        alert(`Couldn't restore "${label}": ${result.error}`);
+        return;
+      }
+      // Pull fresh rows for the recreated door so local state matches
+      // the DB (new IDs, server-set timestamps, etc).
+      const supabase = createClient();
+      const [
+        { data: doorRow },
+        { data: itemRows },
+        { data: photoRows },
+        { data: itemPhotoRows },
+        { data: panelDoorRows },
+      ] = await Promise.all([
+        supabase
+          .from("job_doors")
+          .select("*")
+          .eq("id", result.doorId)
+          .single(),
+        supabase
+          .from("job_door_items")
+          .select("*")
+          .eq("door_id", result.doorId),
+        supabase
+          .from("job_photos")
+          .select("*")
+          .eq("door_id", result.doorId),
+        supabase
+          .from("job_door_item_photos")
+          .select("*")
+          .in("item_id", Object.values(result.itemIdMap)),
+        supabase
+          .from("job_panel_doors")
+          .select("*")
+          .eq("door_id", result.doorId),
+      ]);
+      if (doorRow) {
+        doorIdsRef.current.add((doorRow as JobDoor).id);
+        setDoors((current) =>
+          current.some((d) => d.id === (doorRow as JobDoor).id)
+            ? current
+            : [...current, doorRow as JobDoor],
+        );
+      }
+      if (itemRows) {
+        setItems((current) => [...current, ...(itemRows as JobDoorItem[])]);
+      }
+      if (photoRows) {
+        setPhotos((current) => [...(photoRows as JobPhoto[]), ...current]);
+      }
+      if (itemPhotoRows) {
+        setItemPhotos((current) => [
+          ...current,
+          ...(itemPhotoRows as JobDoorItemPhoto[]),
+        ]);
+      }
+      if (panelDoorRows) {
+        setPanelDoors((current) => [
+          ...current,
+          ...(panelDoorRows as JobPanelDoor[]),
+        ]);
+      }
+      // Only clear the undo slot if it still refers to the door we
+      // restored — a fresh delete that landed mid-restore keeps its
+      // own undo available.
+      setLastDeletedDoor((current) =>
+        current?.payload === payload ? null : current,
+      );
+    } finally {
+      setRestoringDoor(false);
+    }
+  }
+
+  // Which floor (if any) the user is currently renaming. null when
+  // not editing. We only allow renaming real floor values, not the
+  // synthetic "Unassigned" bucket for null-floor doors.
+  const [renamingFloor, setRenamingFloor] = useState<string | null>(null);
+
+  async function renameFloor(oldFloor: string, nextRaw: string) {
+    const next = nextRaw.trim() || null;
+    if (next === oldFloor) {
+      setRenamingFloor(null);
       return;
     }
-    // Pull fresh rows for the recreated door so local state matches
-    // the DB (new IDs, server-set timestamps, etc).
-    const supabase = createClient();
-    const [
-      { data: doorRow },
-      { data: itemRows },
-      { data: photoRows },
-      { data: itemPhotoRows },
-      { data: panelDoorRows },
-    ] = await Promise.all([
-      supabase
+    const { error } = await withTrack(saveTracker, async () => {
+      const supabase = createClient();
+      return supabase
         .from("job_doors")
-        .select("*")
-        .eq("id", result.doorId)
-        .single(),
-      supabase
-        .from("job_door_items")
-        .select("*")
-        .eq("door_id", result.doorId),
-      supabase
-        .from("job_photos")
-        .select("*")
-        .eq("door_id", result.doorId),
-      supabase
-        .from("job_door_item_photos")
-        .select("*")
-        .in("item_id", Object.values(result.itemIdMap)),
-      supabase
-        .from("job_panel_doors")
-        .select("*")
-        .eq("door_id", result.doorId),
-    ]);
-    if (doorRow) {
-      doorIdsRef.current.add((doorRow as JobDoor).id);
-      setDoors((current) =>
-        current.some((d) => d.id === (doorRow as JobDoor).id)
-          ? current
-          : [...current, doorRow as JobDoor],
-      );
+        .update({ floor: next })
+        .eq("job_id", job.id)
+        .eq("floor", oldFloor);
+    });
+    if (error) {
+      alert(`Couldn't rename floor: ${error.message}`);
+      return;
     }
-    if (itemRows) {
-      setItems((current) => [...current, ...(itemRows as JobDoorItem[])]);
-    }
-    if (photoRows) {
-      setPhotos((current) => [...(photoRows as JobPhoto[]), ...current]);
-    }
-    if (itemPhotoRows) {
-      setItemPhotos((current) => [
-        ...current,
-        ...(itemPhotoRows as JobDoorItemPhoto[]),
-      ]);
-    }
-    if (panelDoorRows) {
-      setPanelDoors((current) => [
-        ...current,
-        ...(panelDoorRows as JobPanelDoor[]),
-      ]);
-    }
-    setLastDeletedDoor(null);
+    setDoors((current) =>
+      current.map((d) =>
+        d.floor === oldFloor ? { ...d, floor: next } : d,
+      ),
+    );
+    setRenamingFloor(null);
   }
 
   async function persistDoorOrder(reordered: JobDoor[]) {
@@ -483,6 +736,8 @@ export function JobDetailClient({
     const baseDoorPosition = doors.length;
     let ok = true;
     await withTrack(saveTracker, async () => {
+      const template_id =
+        selectedTemplate.id === HUGS_TEMPLATE_ID ? null : selectedTemplate.id;
       for (let i = 0; i < names.length; i++) {
         const { data: door, error: doorError } = await supabase
           .from("job_doors")
@@ -490,6 +745,7 @@ export function JobDetailClient({
             job_id: job.id,
             name: names[i],
             position: baseDoorPosition + i,
+            template_id,
           })
           .select("*")
           .single();
@@ -498,7 +754,7 @@ export function JobDetailClient({
           ok = false;
           return;
         }
-        const itemRows = HUGS_TEMPLATE.requiredItems.map((n, idx) => ({
+        const itemRows = selectedTemplate.items.map((n, idx) => ({
           door_id: door.id,
           name: n,
           position: idx,
@@ -564,8 +820,16 @@ export function JobDetailClient({
     void persistDoorOrder(sorted);
   }
 
+  const photoViewer = useMemo<PhotoViewerContextValue>(
+    () => ({
+      open: (src, label) => setViewerPhoto({ src, label: label ?? null }),
+    }),
+    [],
+  );
+
   return (
     <SaveTrackerContext.Provider value={saveTracker}>
+    <PhotoViewerContext.Provider value={photoViewer}>
     <main className="mx-auto w-full max-w-md flex-1 space-y-3 px-4 pb-32 pt-4">
       {lastDeletedDoor && (
         <div className="sticky top-14 z-40 -mx-4 mb-2 flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 shadow-sm dark:border-amber-900/50 dark:bg-amber-950/60">
@@ -621,9 +885,17 @@ export function JobDetailClient({
       />
 
       {(() => {
-        const regularDoors = doors.filter(
+        const regularDoorsRaw = doors.filter(
           (d) => d.name !== STANDALONE_DOOR_NAME,
         );
+        // Auto-sink: tested (== completed) doors fall to the bottom of
+        // whatever list they're in so the unfinished ones stay on top.
+        // Relative order within each bucket preserves the existing
+        // position-based sort so manual reordering still wins.
+        const regularDoors = [
+          ...regularDoorsRaw.filter((d) => !d.tested_at),
+          ...regularDoorsRaw.filter((d) => d.tested_at),
+        ];
         const standaloneDoor = doors.find(
           (d) => d.name === STANDALONE_DOOR_NAME,
         );
@@ -649,9 +921,17 @@ export function JobDetailClient({
                 A→Z
               </button>
             )}
+            <TemplatePicker
+              templates={allTemplates}
+              selectedId={selectedTemplateId}
+              onPick={pickTemplate}
+              onCreate={() => setCreateTemplateOpen(true)}
+              onDelete={(id) => void deleteTemplate(id)}
+            />
             <AddDoorMenu
               jobId={job.id}
               existingCount={doors.length}
+              template={selectedTemplate}
               onAdded={(door, newItems, options) => {
                 doorIdsRef.current.add(door.id);
                 setDoors((d) => [...d, door]);
@@ -671,6 +951,7 @@ export function JobDetailClient({
             supabaseUrl={supabaseUrl}
             jobPhotos={photos.filter((p) => p.door_id === door.id)}
             itemPhotos={itemPhotos}
+            templates={allTemplates}
             onDoorUpdate={(updated) =>
               setDoors((current) =>
                 current.map((d) => (d.id === updated.id ? updated : d)),
@@ -784,10 +1065,19 @@ export function JobDetailClient({
 
         const standaloneSection = standaloneDoor ? (
           <CollapsibleSection
-            title={`Standalone equipment — ${standaloneItems.length} ${standaloneItems.length === 1 ? "item" : "items"}${standaloneItems.length ? ` · ${standaloneDone}/${standaloneItems.length}` : ""}`}
+            title={`Miscellaneous — ${standaloneItems.length} ${standaloneItems.length === 1 ? "item" : "items"}${standaloneItems.length ? ` · ${standaloneDone}/${standaloneItems.length}` : ""}`}
             storageKey={`hd:job:${initialJob.id}:standalone`}
           >
-            <ul className="space-y-3">{renderDoor(standaloneDoor)}</ul>
+            <MiscellaneousSection
+              door={standaloneDoor}
+              items={standaloneItems}
+              onItemsChange={(next) => {
+                setItems((current) => [
+                  ...current.filter((it) => it.door_id !== standaloneDoor.id),
+                  ...next,
+                ]);
+              }}
+            />
           </CollapsibleSection>
         ) : null;
 
@@ -856,29 +1146,55 @@ export function JobDetailClient({
                     .length ?? 0),
                 0,
               );
+              const canRename = floor !== null;
+              const isRenamingThis =
+                canRename && renamingFloor === floor;
               return (
-                <CollapsibleSection
-                  key={floor ?? "__unassigned"}
-                  title={`${floor ?? "Unassigned"} — ${floorDoors.length} ${
-                    floorDoors.length === 1 ? "door" : "doors"
-                  }${total ? ` · ${done}/${total}` : ""}`}
-                  storageKey={`hd:job:${initialJob.id}:floor:${floor ?? "_unassigned"}`}
-                >
-                  <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={onDragEnd}
+                <div key={floor ?? "__unassigned"} className="space-y-2">
+                  {isRenamingThis && (
+                    <FloorRenameStrip
+                      oldFloor={floor as string}
+                      onSave={(next) => void renameFloor(floor as string, next)}
+                      onCancel={() => setRenamingFloor(null)}
+                    />
+                  )}
+                  <CollapsibleSection
+                    title={`${floor ?? "Unassigned"} — ${floorDoors.length} ${
+                      floorDoors.length === 1 ? "door" : "doors"
+                    }${total ? ` · ${done}/${total}` : ""}`}
+                    storageKey={`hd:job:${initialJob.id}:floor:${floor ?? "_unassigned"}`}
+                    rightHeader={
+                      canRename && !isRenamingThis ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setRenamingFloor(floor);
+                          }}
+                          aria-label={`Rename floor ${floor}`}
+                          className="h-8 rounded-md border border-neutral-300 px-2 text-[11px] font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
+                        >
+                          Rename
+                        </button>
+                      ) : undefined
+                    }
                   >
-                    <SortableContext
-                      items={floorDoors.map((d) => d.id)}
-                      strategy={verticalListSortingStrategy}
+                    <DndContext
+                      sensors={sensors}
+                      collisionDetection={closestCenter}
+                      onDragEnd={onDragEnd}
                     >
-                      <ul className="space-y-3">
-                        {floorDoors.map(renderDoor)}
-                      </ul>
-                    </SortableContext>
-                  </DndContext>
-                </CollapsibleSection>
+                      <SortableContext
+                        items={floorDoors.map((d) => d.id)}
+                        strategy={verticalListSortingStrategy}
+                      >
+                        <ul className="space-y-3">
+                          {floorDoors.map(renderDoor)}
+                        </ul>
+                      </SortableContext>
+                    </DndContext>
+                  </CollapsibleSection>
+                </div>
               );
             })}
             {standaloneSection}
@@ -937,9 +1253,7 @@ export function JobDetailClient({
                 panelDoorIds={panelDoors
                   .filter((pd) => pd.panel_id === panel.id)
                   .map((pd) => pd.door_id)}
-                allAssignedDoorIds={
-                  new Set(panelDoors.map((pd) => pd.door_id))
-                }
+                allAssignedDoorIds={allAssignedDoorIds}
                 onCreateAndAddDoors={(names) =>
                   createDoorsForPanel(panel.id, names)
                 }
@@ -1000,6 +1314,18 @@ export function JobDetailClient({
           onJobUpdate={(j) => setJob(j)}
           supabaseUrl={supabaseUrl}
           onOpenAutoDetect={() => setAutoDetectOpen(true)}
+          extras={extraSiteMaps}
+          onExtraAdded={(map) =>
+            setExtraSiteMaps((cur) => [...cur, map])
+          }
+          onExtraRemoved={(id) =>
+            setExtraSiteMaps((cur) => cur.filter((m) => m.id !== id))
+          }
+          onExtraRenamed={(map) =>
+            setExtraSiteMaps((cur) =>
+              cur.map((m) => (m.id === map.id ? map : m)),
+            )
+          }
         />
       </CollapsibleSection>
 
@@ -1061,13 +1387,14 @@ export function JobDetailClient({
             }
           />
         </Field>
-        <Field label="Job number" hint="Optional">
+        <Field label="Job number" required>
           <input
             className={inputClass}
             value={headerDraft.number}
             onChange={(e) =>
               setHeaderDraft((d) => ({ ...d, number: e.target.value }))
             }
+            required
           />
         </Field>
         <Field label="Address" hint="Optional">
@@ -1088,6 +1415,23 @@ export function JobDetailClient({
             }
           />
         </Field>
+        <div className="pt-1">
+          <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+            Worked on
+          </p>
+          <p className="mt-0.5 text-[11px] text-neutral-400 dark:text-neutral-500">
+            Auto-fills from anyone who edits this job. Add helpers
+            without accounts below.
+          </p>
+          <div className="mt-2">
+            <WorkedOnSection
+              job={job}
+              derivedWorkers={initialDerivedWorkers}
+              memberSuggestions={initialMemberSuggestions}
+              onJobUpdate={(j) => setJob(j)}
+            />
+          </div>
+        </div>
         {headerError && <ErrorBanner message={headerError} />}
         <div className="flex gap-2">
           <button
@@ -1130,10 +1474,10 @@ export function JobDetailClient({
               .update({ completed_at: nextCompleted })
               .eq("id", job.id)
               .select("*")
-              .single();
+              .maybeSingle();
           });
           if (error || !data) {
-            alert(error?.message ?? "Couldn't update.");
+            alert(error?.message ?? "Couldn't update — refresh to sync.");
             return;
           }
           setJob(data as Job);
@@ -1179,7 +1523,32 @@ export function JobDetailClient({
       )}
 
       <SaveStatusBar pending={pendingSaves > 0} flash={savedFlash} />
+
+      {createTemplateOpen && (
+        <CreateTemplateModal
+          onClose={() => setCreateTemplateOpen(false)}
+          onSaved={(template) => {
+            setDbTemplates((cur) => {
+              const without = cur.filter((t) => t.id !== template.id);
+              return [...without, template].sort((a, b) =>
+                a.name.localeCompare(b.name),
+              );
+            });
+            pickTemplate(template.id);
+            setCreateTemplateOpen(false);
+          }}
+        />
+      )}
+
+      {viewerPhoto && (
+        <PhotoFullscreenModal
+          src={viewerPhoto.src}
+          label={viewerPhoto.label ?? undefined}
+          onClose={() => setViewerPhoto(null)}
+        />
+      )}
     </main>
+    </PhotoViewerContext.Provider>
     </SaveTrackerContext.Provider>
   );
 }
@@ -1325,6 +1694,59 @@ function JobSummaryCard({
   );
 }
 
+function FloorRenameStrip({
+  oldFloor,
+  onSave,
+  onCancel,
+}: {
+  oldFloor: string;
+  onSave: (next: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(oldFloor);
+  return (
+    <div className="flex items-center gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-900/50 dark:bg-amber-950/40">
+      <span className="hidden text-[11px] font-semibold uppercase tracking-wide text-amber-800 sm:inline dark:text-amber-200">
+        Rename &ldquo;{oldFloor}&rdquo;
+      </span>
+      <input
+        autoFocus
+        type="text"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            onSave(draft);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            onCancel();
+          }
+        }}
+        autoComplete="off"
+        autoCorrect="off"
+        spellCheck={false}
+        enterKeyHint="done"
+        className="h-9 min-w-0 flex-1 rounded-md border border-neutral-300 bg-white px-2 text-sm text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+      />
+      <button
+        type="button"
+        onClick={() => onSave(draft)}
+        className="h-9 flex-shrink-0 rounded-md bg-neutral-900 px-3 text-xs font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
+      >
+        Save
+      </button>
+      <button
+        type="button"
+        onClick={onCancel}
+        className="h-9 flex-shrink-0 rounded-md border border-neutral-300 px-3 text-xs font-medium text-neutral-700 dark:border-neutral-700 dark:text-neutral-300"
+      >
+        Cancel
+      </button>
+    </div>
+  );
+}
+
 function CollapsibleSection({
   title,
   defaultOpen = false,
@@ -1368,13 +1790,18 @@ function CollapsibleSection({
   }
   return (
     <section className="overflow-hidden rounded-2xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-      <button
-        type="button"
-        onClick={toggle}
-        className="flex w-full items-center justify-between gap-2 px-4 py-3 active:bg-neutral-100 dark:active:bg-neutral-800"
-        aria-expanded={open}
-      >
-        <span className="flex items-center gap-2">
+      {/* Header row is a div, not a button — putting rightHeader's
+          interactive children (Rename button, AddDoorMenu, etc.)
+          inside another <button> is invalid HTML and breaks clicks
+          on the inner controls in most browsers. The toggle is now
+          a sibling of rightHeader instead of its parent. */}
+      <div className="flex w-full items-center justify-between gap-2 px-4 py-3">
+        <button
+          type="button"
+          onClick={toggle}
+          className="-mx-2 flex flex-1 items-center gap-2 rounded px-2 py-1 text-left active:bg-neutral-100 dark:active:bg-neutral-800"
+          aria-expanded={open}
+        >
           <svg
             className={
               "h-4 w-4 text-neutral-400 transition-transform " +
@@ -1392,9 +1819,9 @@ function CollapsibleSection({
           <span className="text-sm font-semibold uppercase tracking-wide text-neutral-600 dark:text-neutral-300">
             {title}
           </span>
-        </span>
-        {rightHeader && <span onClick={(e) => e.stopPropagation()}>{rightHeader}</span>}
-      </button>
+        </button>
+        {rightHeader && <div className="flex-shrink-0">{rightHeader}</div>}
+      </div>
       {open && <div className="space-y-3 px-4 pb-4">{children}</div>}
     </section>
   );
@@ -1403,16 +1830,23 @@ function CollapsibleSection({
 function Field({
   label,
   hint,
+  required,
   children,
 }: {
   label: string;
   hint?: string;
+  required?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <label className="block">
       <span className="mb-1.5 flex items-baseline justify-between text-xs font-medium">
-        <span>{label}</span>
+        <span>
+          {label}
+          {required && (
+            <span className="text-red-600 dark:text-red-400"> *</span>
+          )}
+        </span>
         {hint && (
           <span className="font-normal text-neutral-400 dark:text-neutral-500">
             {hint}
@@ -1438,10 +1872,12 @@ function ErrorBanner({ message }: { message: string }) {
 function AddDoorMenu({
   jobId,
   existingCount,
+  template,
   onAdded,
 }: {
   jobId: string;
   existingCount: number;
+  template: DoorTemplate;
   onAdded: (
     door: JobDoor,
     items: JobDoorItem[],
@@ -1451,6 +1887,10 @@ function AddDoorMenu({
   const tracker = useContext(SaveTrackerContext);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkText, setBulkText] = useState("");
+  // Floor value that gets stamped on every door created from this
+  // menu — persists across bulk/single/back-and-forth so the user
+  // can type it once and then add as many doors as they want.
+  const [floorDraft, setFloorDraft] = useState("");
   const [pending, setPending] = useState(false);
 
   async function createOne(
@@ -1460,16 +1900,21 @@ function AddDoorMenu({
   ): Promise<boolean> {
     return withTrack(tracker, async () => {
       const supabase = createClient();
+      const floor = floorDraft.trim() || null;
+      // HUGS is hardcoded — its id ("hugs") isn't a uuid, so don't
+      // try to write it into the foreign key column.
+      const template_id =
+        template.id === HUGS_TEMPLATE_ID ? null : template.id;
       const { data: door, error } = await supabase
         .from("job_doors")
-        .insert({ job_id: jobId, name, position })
+        .insert({ job_id: jobId, name, position, floor, template_id })
         .select("*")
         .single();
       if (error || !door) {
         alert(error?.message ?? "Couldn't add door.");
         return false;
       }
-      const itemRows = HUGS_TEMPLATE.requiredItems.map((n, idx) => ({
+      const itemRows = template.items.map((n, idx) => ({
         door_id: door.id,
         name: n,
         position: idx,
@@ -1514,9 +1959,28 @@ function AddDoorMenu({
     setBulkOpen(false);
   }
 
+  // Floor input is the same compact field in both states — set once,
+  // applies to every door added afterwards. Distinct id so the
+  // browser stops grouping it with the AddDoorMenu in other doors.
+  const floorInput = (
+    <input
+      type="text"
+      placeholder="Floor"
+      value={floorDraft}
+      onChange={(e) => setFloorDraft(e.target.value)}
+      id={`add-door-floor-${jobId}`}
+      name={`add-door-floor-${jobId}`}
+      autoComplete="off"
+      autoCorrect="off"
+      spellCheck={false}
+      className="h-9 w-16 rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+    />
+  );
+
   if (bulkOpen) {
     return (
-      <div className="flex items-center gap-1">
+      <div className="flex flex-wrap items-center gap-1">
+        {floorInput}
         <input
           autoFocus
           type="text"
@@ -1533,7 +1997,7 @@ function AddDoorMenu({
               setBulkOpen(false);
             }
           }}
-          className="h-9 w-44 rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+          className="h-9 min-w-[10rem] flex-1 rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
         />
         <button
           type="button"
@@ -1572,6 +2036,7 @@ function AddDoorMenu({
 
   return (
     <div className="flex items-center gap-1">
+      {floorInput}
       <button
         type="button"
         onClick={() => setBulkOpen(true)}
@@ -1593,6 +2058,426 @@ function AddDoorMenu({
   );
 }
 
+function TemplatePicker({
+  templates,
+  selectedId,
+  onPick,
+  onCreate,
+  onDelete,
+}: {
+  templates: DoorTemplate[];
+  selectedId: string;
+  onPick: (id: string) => void;
+  onCreate: () => void;
+  onDelete: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const selected =
+    templates.find((t) => t.id === selectedId) ?? templates[0];
+
+  useEffect(() => {
+    if (!open) return;
+    function onDown(e: MouseEvent | TouchEvent) {
+      if (!wrapRef.current) return;
+      if (!wrapRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+    };
+  }, [open]);
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={
+          selected
+            ? `${selected.name} — ${selected.items.length} item${selected.items.length === 1 ? "" : "s"}`
+            : "Template"
+        }
+        className="flex h-9 max-w-[8rem] items-center gap-1 rounded-md border border-neutral-300 px-2 text-[11px] font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
+      >
+        <svg
+          className="h-3.5 w-3.5 flex-shrink-0"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+          <line x1="9" y1="13" x2="15" y2="13" />
+          <line x1="9" y1="17" x2="15" y2="17" />
+        </svg>
+        <span className="truncate">{selected?.name ?? "Template"}</span>
+        <svg
+          className="h-3 w-3 flex-shrink-0 text-neutral-400"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute right-0 top-full z-30 mt-1 w-56 overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+        >
+          <ul className="max-h-64 overflow-y-auto py-1">
+            {templates.map((t) => {
+              const isSel = t.id === selectedId;
+              return (
+                <li key={t.id} className="flex items-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onPick(t.id);
+                      setOpen(false);
+                    }}
+                    className={
+                      "flex-1 truncate px-3 py-2 text-left text-xs " +
+                      (isSel
+                        ? "bg-neutral-100 font-semibold text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100"
+                        : "text-neutral-700 dark:text-neutral-300")
+                    }
+                  >
+                    {isSel && <span className="mr-1">✓</span>}
+                    {t.name}
+                    <span className="ml-1 text-neutral-400">
+                      ({t.items.length})
+                    </span>
+                  </button>
+                  {t.editable && (
+                    <button
+                      type="button"
+                      onClick={() => onDelete(t.id)}
+                      aria-label={`Delete template ${t.name}`}
+                      className="flex h-8 w-8 items-center justify-center text-neutral-400 active:text-red-600"
+                    >
+                      <svg
+                        className="h-3.5 w-3.5"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <polyline points="3 6 5 6 21 6" />
+                        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                        <path d="M10 11v6M14 11v6" />
+                      </svg>
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+          <div className="border-t border-neutral-200 dark:border-neutral-700">
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                onCreate();
+              }}
+              className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-xs font-medium text-neutral-900 active:bg-neutral-100 dark:text-neutral-100 dark:active:bg-neutral-800"
+            >
+              <span className="text-base leading-none">+</span> Create
+              template…
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CreateTemplateModal({
+  onClose,
+  onSaved,
+}: {
+  onClose: () => void;
+  onSaved: (template: DoorTemplate) => void;
+}) {
+  const [name, setName] = useState("");
+  const [items, setItems] = useState<string[]>([""]);
+  const [secondaryItems, setSecondaryItems] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      alert("Give the template a name.");
+      return;
+    }
+    const cleanItems = items.map((s) => s.trim()).filter(Boolean);
+    const cleanSecondaries = secondaryItems
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (cleanItems.length === 0) {
+      alert("Add at least one item to pre-fill.");
+      return;
+    }
+    setSaving(true);
+    const supabase = createClient();
+    const { data: tpl, error } = await supabase
+      .from("job_templates")
+      .insert({ name: trimmedName })
+      .select("id, name")
+      .single();
+    if (error || !tpl) {
+      setSaving(false);
+      alert(`Couldn't save template: ${error?.message ?? "unknown error"}`);
+      return;
+    }
+    // Primary + secondary rows share a single ordered list — primaries
+    // come first so legacy code that ignores is_secondary still sees
+    // them in the expected order.
+    const itemRows = [
+      ...cleanItems.map((n, i) => ({
+        template_id: tpl.id,
+        name: n,
+        position: i,
+        is_secondary: false,
+      })),
+      ...cleanSecondaries.map((n, i) => ({
+        template_id: tpl.id,
+        name: n,
+        position: cleanItems.length + i,
+        is_secondary: true,
+      })),
+    ];
+    let itemsError = (
+      await supabase.from("job_template_items").insert(itemRows)
+    ).error;
+    // Fallback for pre-0036 databases. If we can't write
+    // is_secondary, drop it from every row and retry — but warn the
+    // user that secondaries won't persist until the migration runs.
+    if (itemsError && /is_secondary/i.test(itemsError.message)) {
+      if (cleanSecondaries.length > 0) {
+        setSaving(false);
+        alert(
+          "Run migration 0036 to enable optional secondaries. Save without them, or apply the migration in the Supabase SQL Editor first.",
+        );
+        return;
+      }
+      const retryRows = itemRows.map((r) => ({
+        template_id: r.template_id,
+        name: r.name,
+        position: r.position,
+      }));
+      itemsError = (
+        await supabase.from("job_template_items").insert(retryRows)
+      ).error;
+    }
+    if (itemsError) {
+      setSaving(false);
+      alert(
+        `Template created, but items failed to save: ${itemsError.message}`,
+      );
+      return;
+    }
+    setSaving(false);
+    onSaved({
+      id: tpl.id,
+      name: tpl.name,
+      items: cleanItems,
+      secondaryItems: cleanSecondaries,
+      editable: true,
+    });
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-xl dark:bg-neutral-900"
+      >
+        <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
+          <h2 className="text-base font-semibold">New template</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="-mr-1 flex h-8 w-8 items-center justify-center rounded-full text-neutral-500 active:bg-neutral-100 dark:active:bg-neutral-800"
+          >
+            <svg
+              className="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+        <div className="space-y-3 px-4 py-4">
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              Name
+            </label>
+            <input
+              autoFocus
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Card reader door"
+              className="mt-1 h-10 w-full rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-950"
+            />
+          </div>
+          <TemplateItemList
+            label="Items to pre-fill"
+            hint="Added to every door created with this template."
+            values={items}
+            onChange={setItems}
+            minOne
+          />
+          <TemplateItemList
+            label="Optional secondaries"
+            hint="Quick-add suggestions on the door — not pre-filled."
+            values={secondaryItems}
+            onChange={setSecondaryItems}
+          />
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-neutral-200 px-4 py-3 dark:border-neutral-800">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="h-9 rounded-md px-3 text-xs font-medium text-neutral-700 active:bg-neutral-100 dark:text-neutral-300 dark:active:bg-neutral-800"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving}
+            className="h-9 rounded-md bg-neutral-900 px-4 text-xs font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+          >
+            {saving ? "Saving…" : "Save template"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Item-list editor shared by the template modal's required and
+// secondary sections. `minOne` keeps at least one empty row so the
+// required list never collapses to zero, while the optional list
+// starts empty (an "+ Add" button reveals the first row).
+function TemplateItemList({
+  label,
+  hint,
+  values,
+  onChange,
+  minOne = false,
+}: {
+  label: string;
+  hint?: string;
+  values: string[];
+  onChange: (next: string[]) => void;
+  minOne?: boolean;
+}) {
+  function updateRow(idx: number, value: string) {
+    onChange(values.map((v, i) => (i === idx ? value : v)));
+  }
+  function addRow() {
+    onChange([...values, ""]);
+  }
+  function removeRow(idx: number) {
+    if (minOne && values.length <= 1) {
+      onChange([""]);
+      return;
+    }
+    onChange(values.filter((_, i) => i !== idx));
+  }
+
+  return (
+    <div>
+      <label className="block text-xs font-semibold uppercase tracking-wide text-neutral-500">
+        {label}
+      </label>
+      {hint && (
+        <p className="mt-0.5 text-[11px] text-neutral-400 dark:text-neutral-500">
+          {hint}
+        </p>
+      )}
+      {values.length > 0 && (
+        <ul className="mt-1 space-y-1.5">
+          {values.map((v, i) => (
+            <li key={i} className="flex items-center gap-1.5">
+              <input
+                type="text"
+                value={v}
+                onChange={(e) => updateRow(i, e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    if (i === values.length - 1) addRow();
+                  }
+                }}
+                placeholder={`Item ${i + 1}`}
+                className="h-9 flex-1 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-950"
+              />
+              <button
+                type="button"
+                onClick={() => removeRow(i)}
+                disabled={minOne && values.length === 1 && !v.trim()}
+                aria-label={`Remove item ${i + 1}`}
+                className="flex h-9 w-9 items-center justify-center rounded-md text-neutral-400 active:bg-neutral-100 disabled:opacity-30 dark:active:bg-neutral-800"
+              >
+                <svg
+                  className="h-4 w-4"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <button
+        type="button"
+        onClick={addRow}
+        className="mt-2 inline-flex h-8 items-center gap-1 rounded-md border border-neutral-300 px-2 text-xs font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
+      >
+        <span className="text-base leading-none">+</span> Add item
+      </button>
+    </div>
+  );
+}
+
 type DoorCardProps = {
   job: Job;
   door: JobDoor;
@@ -1600,6 +2485,7 @@ type DoorCardProps = {
   supabaseUrl: string;
   jobPhotos: JobPhoto[];
   itemPhotos: JobDoorItemPhoto[];
+  templates: DoorTemplate[];
   onDoorUpdate: (door: JobDoor) => void;
   onDoorDelete: (id: string) => void;
   onItemsChange: (doorId: string, next: JobDoorItem[]) => void;
@@ -1662,6 +2548,7 @@ function DoorCard({
   supabaseUrl,
   jobPhotos,
   itemPhotos,
+  templates,
   onDoorUpdate,
   onDoorDelete,
   onItemsChange,
@@ -1743,6 +2630,11 @@ function DoorCard({
   const tracker = useContext(SaveTrackerContext);
 
   async function commitField(patch: Partial<JobDoor>) {
+    // maybeSingle (not single) so a missing row doesn't reject with
+    // PostgREST's "JSON object requested, multiple (or no) rows
+    // returned" — the user reported seeing that raw error when
+    // saving a door name. If the row legitimately isn't there (deleted
+    // in another tab, RLS edge case), tell them in plain English.
     const { data, error } = await withTrack(tracker, async () => {
       const supabase = createClient();
       return supabase
@@ -1750,10 +2642,16 @@ function DoorCard({
         .update(patch)
         .eq("id", door.id)
         .select("*")
-        .single();
+        .maybeSingle();
     });
-    if (error || !data) {
-      alert(error?.message ?? "Couldn't save door.");
+    if (error) {
+      alert(`Couldn't save door: ${error.message}`);
+      return;
+    }
+    if (!data) {
+      alert(
+        "Couldn't save door — it may have been deleted from another tab. Refresh to sync.",
+      );
       return;
     }
     onDoorUpdate(data as JobDoor);
@@ -1798,30 +2696,70 @@ function DoorCard({
     onItemsChange(door.id, [...items, data as JobDoorItem]);
   }
 
-  async function removeItem(id: string) {
-    const result = await withTrack(tracker, () => deleteDoorItemAction(id));
-    if (!result.ok) {
-      alert(`Couldn't remove: ${result.error}`);
-      return;
+  const itemSoftDelete = useSoftDelete<JobDoorItem>({
+    delete: async (item) => {
+      const result = await withTrack(tracker, () =>
+        deleteDoorItemAction(item.id),
+      );
+      return result;
+    },
+    restore: async (snapshot) => {
+      const result = await withTrack(tracker, () =>
+        restoreDoorItemAction({
+          door_id: snapshot.door_id,
+          name: snapshot.name,
+          note: snapshot.note,
+          position: snapshot.position,
+          completed_at: snapshot.completed_at,
+          photo_storage_path: snapshot.photo_storage_path,
+          photo_uploaded_at: snapshot.photo_uploaded_at,
+        }),
+      );
+      if (!result.ok) return { ok: false, error: result.error };
+      const restored: JobDoorItem = {
+        ...snapshot,
+        id: result.itemId,
+        created_at: new Date().toISOString(),
+      };
+      return { ok: true, restored };
+    },
+    // Use latest items closure via the parent setter — onItemsChange
+    // replaces the whole list for the door, so we read the current
+    // items via the prop each call.
+    onOptimisticRemove: (id) =>
+      onItemsChange(
+        door.id,
+        items.filter((it) => it.id !== id),
+      ),
+    onRestore: (item) => onItemsChange(door.id, [...items, item]),
+  });
+
+  function requestRemoveItem(id: string) {
+    // The X next to an item is small; one tap arms, the same X turns
+    // into a Confirm pill. Mirrors the photo X flow.
+    if (itemSoftDelete.confirmingId === id) {
+      const target = items.find((it) => it.id === id);
+      if (target) void itemSoftDelete.confirm(target);
+    } else {
+      itemSoftDelete.arm(id);
     }
-    onItemsChange(
-      door.id,
-      items.filter((it) => it.id !== id),
-    );
   }
 
-  // A door can be wired up with more than one 5200 / 3220 exciter,
-  // so the chip for those stays available even after one is added.
-  // Everything else hides once it's present so the chip row doesn't
-  // grow stale.
-  const REPEATABLE = new Set(["5200 Exciter", "3220 Exciter"]);
   const usedNames = new Set(items.map((it) => it.name));
-  const quickAdds = [
-    ...HUGS_TEMPLATE.requiredItems,
-    ...HUGS_TEMPLATE.optionalItems,
-    "Door contact",
-    "REX",
-  ].filter((n) => REPEATABLE.has(n) || !usedNames.has(n));
+  // Quick-add suggestions are drawn from the door's template — HUGS
+  // surfaces both required + optional items, user templates surface
+  // their full list. "Door contact" and "REX" stay as universal
+  // fallbacks (they appear on basically every door regardless of
+  // template) when not already covered.
+  const doorTemplate = door.template_id
+    ? templates.find((t) => t.id === door.template_id)
+    : null;
+  const templateItems = doorTemplate
+    ? [...doorTemplate.items, ...doorTemplate.secondaryItems]
+    : [...HUGS_TEMPLATE.requiredItems, ...HUGS_TEMPLATE.optionalItems];
+  const quickAdds = Array.from(
+    new Set([...templateItems, "Door contact", "REX"]),
+  ).filter((n) => REPEATABLE_ITEMS.has(n) || !usedNames.has(n));
 
   const completedCount = items.filter((it) => it.completed_at).length;
 
@@ -1854,6 +2792,19 @@ function DoorCard({
         </button>
         <input
           ref={nameInputRef}
+          // Per-row id (and matching name) so iOS Safari treats each
+          // input as its own form field. Without these, a column of
+          // identical "Door name" inputs registers as one repeating
+          // autofill row and the OS misroutes typed characters /
+          // Enter taps into a sibling — the "text jumps to the
+          // previous box after ~8 entries" report.
+          id={`door-name-${door.id}`}
+          name={`door-name-${door.id}`}
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="words"
+          spellCheck={false}
+          enterKeyHint="done"
           className={inputClass + " flex-1"}
           value={nameDraft}
           onChange={(e) => setNameDraft(e.target.value)}
@@ -1863,6 +2814,16 @@ function DoorCard({
               commitField({ name: trimmed });
             } else if (!trimmed) {
               setNameDraft(door.name);
+            }
+          }}
+          onKeyDown={(e) => {
+            // Explicit Enter handler — blur commits via the handler
+            // above. Without this, Enter has no defined behavior on
+            // a free-standing input and iOS will pick one (often
+            // landing focus on a sibling).
+            if (e.key === "Enter") {
+              e.preventDefault();
+              e.currentTarget.blur();
             }
           }}
           placeholder="Door name"
@@ -1974,12 +2935,24 @@ function DoorCard({
             </span>
             <input
               className="h-8 flex-1 rounded border border-neutral-300 bg-white px-2 text-xs dark:border-neutral-700 dark:bg-neutral-900"
+              id={`door-floor-${door.id}`}
+              name={`door-floor-${door.id}`}
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
+              enterKeyHint="done"
               placeholder="optional"
               value={floorDraft}
               onChange={(e) => setFloorDraft(e.target.value)}
               onBlur={() => {
                 const next = floorDraft.trim() || null;
                 if (next !== door.floor) commitField({ floor: next });
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  e.currentTarget.blur();
+                }
               }}
             />
           </label>
@@ -2014,12 +2987,19 @@ function DoorCard({
                       items.map((x) => (x.id === updated.id ? updated : x)),
                     )
                   }
-                  onRemove={() => removeItem(it.id)}
+                  onRemove={() => requestRemoveItem(it.id)}
+                  removeArmed={itemSoftDelete.confirmingId === it.id}
                   onPhotoAdded={onItemPhotoAdded}
                   onPhotoDeleted={onItemPhotoDeleted}
                 />
               ))}
             </ul>
+            {itemSoftDelete.recentlyDeleted && (
+              <UndoBanner
+                message={`Removed "${itemSoftDelete.recentlyDeleted.name}".`}
+                onUndo={() => void itemSoftDelete.undo()}
+              />
+            )}
 
             {quickAdds.length > 0 && (
               <div className="flex flex-wrap gap-1.5 pt-1">
@@ -2045,6 +3025,11 @@ function DoorCard({
             </h3>
             <textarea
               className={textareaClass}
+              id={`door-notes-${door.id}`}
+              name={`door-notes-${door.id}`}
+              autoComplete="off"
+              autoCorrect="on"
+              spellCheck
               value={notesDraft}
               onChange={(e) => setNotesDraft(e.target.value)}
               onBlur={() => {
@@ -2070,6 +3055,309 @@ function DoorCard({
           </div>
 
         </>
+      )}
+    </div>
+  );
+}
+
+// Lightweight rendering for the synthetic "Miscellaneous" door that
+// the auto-detect import uses for gateways and other unlabeled
+// standalone equipment. Skipping the full DoorCard (drag handles,
+// photo strips, item-detail rows, etc) keeps opening the section
+// instant even with dozens of items, and avoids labelling it as a
+// "door" in the UI when it isn't one.
+function MiscellaneousSection({
+  door,
+  items,
+  onItemsChange,
+}: {
+  door: JobDoor;
+  items: JobDoorItem[];
+  onItemsChange: (items: JobDoorItem[]) => void;
+}) {
+  const tracker = useContext(SaveTrackerContext);
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState("");
+
+  // Items get grouped by name so a "Gateway × 4" pile shows as a
+  // single labelled group rather than four loose check rows.
+  const groups = useMemo(() => {
+    const map = new Map<string, JobDoorItem[]>();
+    for (const it of items) {
+      const key = it.name;
+      const list = map.get(key) ?? [];
+      list.push(it);
+      map.set(key, list);
+    }
+    return Array.from(map.entries()).sort((a, b) =>
+      a[0].localeCompare(b[0], undefined, { numeric: true }),
+    );
+  }, [items]);
+
+  async function toggleItem(item: JobDoorItem) {
+    const nextCompletedAt = item.completed_at
+      ? null
+      : new Date().toISOString();
+    const { data, error } = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("job_door_items")
+        .update({ completed_at: nextCompletedAt })
+        .eq("id", item.id)
+        .select("*")
+        .maybeSingle();
+    });
+    if (error || !data) {
+      alert(error?.message ?? "Couldn't update item — refresh to sync.");
+      return;
+    }
+    onItemsChange(items.map((it) => (it.id === item.id ? (data as JobDoorItem) : it)));
+  }
+
+  async function addItem(name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const position = items.length;
+    const { data, error } = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("job_door_items")
+        .insert({ door_id: door.id, name: trimmed, position })
+        .select("*")
+        .single();
+    });
+    if (error || !data) {
+      alert(error?.message ?? "Couldn't add item.");
+      return;
+    }
+    onItemsChange([...items, data as JobDoorItem]);
+    setNewName("");
+    setAdding(false);
+  }
+
+  const itemSoftDelete = useSoftDelete<JobDoorItem>({
+    delete: async (item) =>
+      withTrack(tracker, () => deleteDoorItemAction(item.id)),
+    restore: async (snapshot) => {
+      const result = await withTrack(tracker, () =>
+        restoreDoorItemAction({
+          door_id: snapshot.door_id,
+          name: snapshot.name,
+          note: snapshot.note,
+          position: snapshot.position,
+          completed_at: snapshot.completed_at,
+          photo_storage_path: snapshot.photo_storage_path,
+          photo_uploaded_at: snapshot.photo_uploaded_at,
+        }),
+      );
+      if (!result.ok) return { ok: false, error: result.error };
+      const restored: JobDoorItem = {
+        ...snapshot,
+        id: result.itemId,
+        created_at: new Date().toISOString(),
+      };
+      return { ok: true, restored };
+    },
+    onOptimisticRemove: (id) =>
+      onItemsChange(items.filter((it) => it.id !== id)),
+    onRestore: (item) => onItemsChange([...items, item]),
+  });
+
+  function requestRemoveItem(itemId: string) {
+    if (itemSoftDelete.confirmingId === itemId) {
+      const target = items.find((it) => it.id === itemId);
+      if (target) void itemSoftDelete.confirm(target);
+    } else {
+      itemSoftDelete.arm(itemId);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      {groups.length === 0 && !adding && (
+        <p className="rounded-lg border border-dashed border-neutral-300 px-4 py-4 text-center text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+          No miscellaneous equipment yet.
+        </p>
+      )}
+
+      {groups.map(([name, groupItems]) => {
+        const done = groupItems.filter((it) => it.completed_at).length;
+        return (
+          <div
+            key={name}
+            className="rounded-xl border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900"
+          >
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold">{name}</h3>
+              <span
+                className={
+                  "rounded-full px-2 py-0.5 text-[10px] font-medium " +
+                  (done === groupItems.length
+                    ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400"
+                    : "bg-neutral-200 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400")
+                }
+              >
+                {done}/{groupItems.length}
+              </span>
+            </div>
+            <ul className="space-y-1">
+              {groupItems.map((it, idx) => {
+                const isDone = !!it.completed_at;
+                return (
+                  <li
+                    key={it.id}
+                    className="flex items-center gap-2 text-sm"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => toggleItem(it)}
+                      aria-label={
+                        isDone
+                          ? `Mark ${name} #${idx + 1} not done`
+                          : `Mark ${name} #${idx + 1} done`
+                      }
+                      className={
+                        "flex h-5 w-5 flex-shrink-0 items-center justify-center rounded border " +
+                        (isDone
+                          ? "border-emerald-600 bg-emerald-600 text-white"
+                          : "border-neutral-300 bg-white dark:border-neutral-600 dark:bg-neutral-900")
+                      }
+                    >
+                      {isDone && (
+                        <svg
+                          className="h-3 w-3"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="3"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      )}
+                    </button>
+                    <span
+                      className={
+                        "flex-1 " +
+                        (isDone
+                          ? "text-neutral-400 line-through dark:text-neutral-500"
+                          : "")
+                      }
+                    >
+                      #{idx + 1}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => requestRemoveItem(it.id)}
+                      aria-label={
+                        itemSoftDelete.confirmingId === it.id
+                          ? `Confirm remove ${name} #${idx + 1}`
+                          : `Remove ${name} #${idx + 1}`
+                      }
+                      className={
+                        "flex items-center justify-center rounded transition " +
+                        (itemSoftDelete.confirmingId === it.id
+                          ? "h-7 gap-1 bg-red-600 px-2 text-[10px] font-semibold text-white shadow-md"
+                          : "h-7 w-7 text-neutral-400 active:text-red-600 dark:active:text-red-400")
+                      }
+                    >
+                      {itemSoftDelete.confirmingId === it.id ? (
+                        <>
+                          <svg
+                            className="h-3 w-3"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="3"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden
+                          >
+                            <polyline points="20 6 9 17 4 12" />
+                          </svg>
+                          ?
+                        </>
+                      ) : (
+                        <svg
+                          className="h-3.5 w-3.5"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden
+                        >
+                          <line x1="18" y1="6" x2="6" y2="18" />
+                          <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                      )}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+            <button
+              type="button"
+              onClick={() => addItem(name)}
+              className="mt-2 h-8 w-full rounded-md border border-dashed border-neutral-300 text-xs font-medium text-neutral-600 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800"
+            >
+              + Another {name}
+            </button>
+          </div>
+        );
+      })}
+
+      {itemSoftDelete.recentlyDeleted && (
+        <UndoBanner
+          message={`Removed "${itemSoftDelete.recentlyDeleted.name}".`}
+          onUndo={() => void itemSoftDelete.undo()}
+        />
+      )}
+
+      {adding ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void addItem(newName);
+          }}
+          className="flex gap-2"
+        >
+          <input
+            autoFocus
+            type="text"
+            placeholder="Category name (e.g. Gateways)"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            className="h-10 flex-1 rounded-lg border border-neutral-300 bg-white px-3 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+          />
+          <button
+            type="submit"
+            disabled={!newName.trim()}
+            className="h-10 rounded-lg bg-neutral-900 px-3 text-xs font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+          >
+            Add
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setAdding(false);
+              setNewName("");
+            }}
+            className="h-10 rounded-lg border border-neutral-300 px-3 text-xs font-medium dark:border-neutral-700"
+          >
+            Cancel
+          </button>
+        </form>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          className="h-10 w-full rounded-lg border border-dashed border-neutral-300 text-sm font-medium text-neutral-600 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800"
+        >
+          + New category
+        </button>
       )}
     </div>
   );
@@ -2113,6 +3401,7 @@ function DoorItemRow({
   supabaseUrl,
   onUpdate,
   onRemove,
+  removeArmed,
   onPhotoAdded,
   onPhotoDeleted,
 }: {
@@ -2123,16 +3412,42 @@ function DoorItemRow({
   supabaseUrl: string;
   onUpdate: (item: JobDoorItem) => void;
   onRemove: () => void;
+  // First tap arms; second tap actually removes. The parent owns
+  // both the arm-state timer and the undo banner — this row just
+  // renders the toggle visually.
+  removeArmed: boolean;
   onPhotoAdded: (photo: JobDoorItemPhoto) => void;
   onPhotoDeleted: (id: string) => void;
 }) {
   const tracker = useContext(SaveTrackerContext);
+  const photoViewer = useContext(PhotoViewerContext);
   const [noteEditing, setNoteEditing] = useState(false);
   const [noteDraft, setNoteDraft] = useState(item.note ?? "");
   const [syncedNote, setSyncedNote] = useState(item.note ?? "");
   const [uploading, setUploading] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
   const photoInput = useRef<HTMLInputElement>(null);
+
+  // Soft-delete photos with confirm-then-undo. Storage stays;
+  // restoreDoorItemPhoto re-inserts pointing at the same path.
+  const photoSoftDelete = useSoftDelete<JobDoorItemPhoto>({
+    delete: (photo) =>
+      withTrack(tracker, async () => {
+        const supabase = createClient();
+        return deleteDoorItemPhoto(supabase, photo);
+      }),
+    restore: async (snapshot) => {
+      const result = await withTrack(tracker, async () => {
+        const supabase = createClient();
+        return restoreDoorItemPhoto(supabase, snapshot);
+      });
+      return result.ok
+        ? { ok: true, restored: result.photo }
+        : { ok: false, error: result.error };
+    },
+    onOptimisticRemove: (id) => onPhotoDeleted(id),
+    onRestore: (photo) => onPhotoAdded(photo),
+  });
 
   if ((item.note ?? "") !== syncedNote) {
     if (noteDraft === syncedNote) setNoteDraft(item.note ?? "");
@@ -2147,48 +3462,44 @@ function DoorItemRow({
         .update({ note: next })
         .eq("id", item.id)
         .select("*")
-        .single();
+        .maybeSingle();
     });
     if (error || !data) {
-      alert(error?.message ?? "Couldn't save note.");
+      alert(error?.message ?? "Couldn't save note — refresh to sync.");
       return;
     }
     onUpdate(data as JobDoorItem);
   }
 
-  async function uploadPhoto(file: File) {
+  async function uploadPhotos(files: FileList | File[]) {
     setUploading(true);
-    const result = await withTrack(tracker, async () => {
-      const supabase = createClient();
-      return uploadDoorItemPhoto({
-        supabase,
-        file,
-        jobId: job.id,
-        doorId: door.id,
-        itemId: item.id,
-        nextPosition: photos.length,
+    const list = Array.from(files);
+    // Serial upload — keeps the position counter monotonic and avoids
+    // hammering the bucket with parallel writes. Per-file errors
+    // bubble up via alert but don't stop the rest of the batch.
+    for (let i = 0; i < list.length; i++) {
+      const file = list[i];
+      const result = await withTrack(tracker, async () => {
+        const supabase = createClient();
+        return uploadDoorItemPhoto({
+          supabase,
+          file,
+          jobId: job.id,
+          doorId: door.id,
+          itemId: item.id,
+          nextPosition: photos.length + i,
+        });
       });
-    });
+      if (!result.ok) {
+        alert(`${file.name}: ${result.error}`);
+        continue;
+      }
+      onPhotoAdded(result.photo);
+    }
     if (photoInput.current) photoInput.current.value = "";
     setUploading(false);
-    if (!result.ok) {
-      alert(result.error);
-      return;
-    }
-    onPhotoAdded(result.photo);
   }
 
-  async function removePhoto(photo: JobDoorItemPhoto) {
-    const result = await withTrack(tracker, async () => {
-      const supabase = createClient();
-      return deleteDoorItemPhoto(supabase, photo);
-    });
-    if (!result.ok) {
-      alert(result.error);
-      return;
-    }
-    onPhotoDeleted(photo.id);
-  }
 
   async function toggleComplete() {
     const nextCompletedAt = item.completed_at ? null : new Date().toISOString();
@@ -2199,10 +3510,10 @@ function DoorItemRow({
         .update({ completed_at: nextCompletedAt })
         .eq("id", item.id)
         .select("*")
-        .single();
+        .maybeSingle();
     });
     if (error || !data) {
-      alert(error?.message ?? "Couldn't update item.");
+      alert(error?.message ?? "Couldn't update item — refresh to sync.");
       return;
     }
     onUpdate(data as JobDoorItem);
@@ -2251,11 +3562,15 @@ function DoorItemRow({
         {hasPhotos && (
           <div className="flex flex-shrink-0 -space-x-1">
             {photos.slice(0, 3).map((p) => (
-              <a
+              <button
+                type="button"
                 key={p.id}
-                href={publicJobFileUrl(supabaseUrl, p.storage_path)}
-                target="_blank"
-                rel="noopener noreferrer"
+                onClick={() =>
+                  photoViewer.open(
+                    publicJobFileUrl(supabaseUrl, p.storage_path),
+                    item.name,
+                  )
+                }
                 aria-label={`View ${item.name} photo`}
                 className="block h-8 w-8 overflow-hidden rounded border border-white bg-white dark:border-neutral-800 dark:bg-neutral-800"
               >
@@ -2265,7 +3580,7 @@ function DoorItemRow({
                   alt=""
                   className="h-full w-full object-cover"
                 />
-              </a>
+              </button>
             ))}
             {photos.length > 3 && (
               <span className="flex h-8 w-8 items-center justify-center rounded border border-white bg-neutral-200 text-[10px] font-semibold text-neutral-700 dark:border-neutral-800 dark:bg-neutral-700 dark:text-neutral-200">
@@ -2285,31 +3600,23 @@ function DoorItemRow({
         <button
           type="button"
           onClick={() => setActionsOpen((v) => !v)}
-          aria-label={`More actions for ${item.name}`}
+          aria-label={
+            actionsOpen
+              ? `Hide actions for ${item.name}`
+              : `Show actions for ${item.name}`
+          }
           aria-expanded={actionsOpen}
           className="flex h-8 w-8 items-center justify-center rounded text-neutral-500 active:bg-neutral-100 dark:text-neutral-400 dark:active:bg-neutral-800"
         >
+          {/* Chevron that rotates open instead of a static + — the +
+              didn't change to a − when the actions panel opened so it
+              read like an 'add' affordance. Same iconography as the
+              door / floor / section collapsibles. */}
           <svg
-            className="h-4 w-4"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <line x1="12" y1="5" x2="12" y2="19" />
-            <line x1="5" y1="12" x2="19" y2="12" />
-          </svg>
-        </button>
-        <button
-          type="button"
-          onClick={onRemove}
-          aria-label={`Remove ${item.name}`}
-          className="flex h-8 w-8 items-center justify-center rounded text-neutral-400 active:text-red-600 dark:active:text-red-400"
-        >
-          <svg
-            className="h-4 w-4"
+            className={
+              "h-4 w-4 transition-transform " +
+              (actionsOpen ? "rotate-90" : "")
+            }
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -2317,9 +3624,53 @@ function DoorItemRow({
             strokeLinecap="round"
             strokeLinejoin="round"
           >
-            <line x1="18" y1="6" x2="6" y2="18" />
-            <line x1="6" y1="6" x2="18" y2="18" />
+            <polyline points="9 6 15 12 9 18" />
           </svg>
+        </button>
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={
+            removeArmed ? `Confirm remove ${item.name}` : `Remove ${item.name}`
+          }
+          className={
+            "flex items-center justify-center rounded transition " +
+            (removeArmed
+              ? "h-8 gap-1 bg-red-600 px-2 text-[10px] font-semibold text-white shadow-md"
+              : "h-8 w-8 text-neutral-400 active:text-red-600 dark:active:text-red-400")
+          }
+        >
+          {removeArmed ? (
+            <>
+              <svg
+                className="h-3 w-3"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+              Remove?
+            </>
+          ) : (
+            <svg
+              className="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          )}
         </button>
       </div>
 
@@ -2398,10 +3749,16 @@ function DoorItemRow({
                   key={p.id}
                   className="group relative aspect-square overflow-hidden rounded border border-neutral-200 dark:border-neutral-800"
                 >
-                  <a
-                    href={publicJobFileUrl(supabaseUrl, p.storage_path)}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    onClick={() =>
+                      photoViewer.open(
+                        publicJobFileUrl(supabaseUrl, p.storage_path),
+                        item.name,
+                      )
+                    }
+                    aria-label={`View ${item.name} photo`}
+                    className="block h-full w-full"
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
@@ -2409,26 +3766,13 @@ function DoorItemRow({
                       alt=""
                       className="h-full w-full object-cover"
                     />
-                  </a>
-                  <button
-                    type="button"
-                    onClick={() => void removePhoto(p)}
-                    aria-label="Delete photo"
-                    className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white"
-                  >
-                    <svg
-                      className="h-3 w-3"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="3"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <line x1="18" y1="6" x2="6" y2="18" />
-                      <line x1="6" y1="6" x2="18" y2="18" />
-                    </svg>
                   </button>
+                  <PhotoDeleteToggle
+                    photoId={p.id}
+                    armed={photoSoftDelete.confirmingId === p.id}
+                    onArm={() => photoSoftDelete.arm(p.id)}
+                    onConfirm={() => void photoSoftDelete.confirm(p)}
+                  />
                 </div>
               ))}
             </div>
@@ -2440,13 +3784,86 @@ function DoorItemRow({
         ref={photoInput}
         type="file"
         accept="image/*"
+        multiple
         className="hidden"
         onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) uploadPhoto(f);
+          if (e.target.files && e.target.files.length > 0) {
+            void uploadPhotos(e.target.files);
+          }
         }}
       />
+
+      {photoSoftDelete.recentlyDeleted && (
+        <UndoBanner
+          message="Photo deleted."
+          onUndo={() => void photoSoftDelete.undo()}
+        />
+      )}
     </li>
+  );
+}
+
+// Two-state X button used by every photo grid. Default state is the
+// small black X in the corner; armed state is a red 'Delete?' pill
+// that needs a second tap to actually confirm. Lives at the top of
+// the file so the four photo flows (item / door / job / panel) can
+// share it without duplicating SVG.
+function PhotoDeleteToggle({
+  photoId,
+  armed,
+  onArm,
+  onConfirm,
+}: {
+  photoId: string;
+  armed: boolean;
+  onArm: () => void;
+  onConfirm: () => void;
+}) {
+  if (armed) {
+    return (
+      <button
+        type="button"
+        onClick={onConfirm}
+        aria-label={`Confirm delete photo ${photoId}`}
+        className="absolute right-0.5 top-0.5 flex h-7 items-center gap-1 rounded-full bg-red-600 px-2 text-[10px] font-semibold text-white shadow-md"
+      >
+        <svg
+          className="h-3 w-3"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+        Delete?
+      </button>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onArm}
+      aria-label="Delete photo"
+      className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white"
+    >
+      <svg
+        className="h-3 w-3"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <line x1="18" y1="6" x2="6" y2="18" />
+        <line x1="6" y1="6" x2="18" y2="18" />
+      </svg>
+    </button>
   );
 }
 
@@ -2466,6 +3883,7 @@ function JobPhotoSection({
   onDeleted: (id: string) => void;
 }) {
   const tracker = useContext(SaveTrackerContext);
+  const photoViewer = useContext(PhotoViewerContext);
   const fileInput = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2475,35 +3893,45 @@ function JobPhotoSection({
   }
 
   async function onChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
     setUploading(true);
     setError(null);
-    const result = await withTrack(tracker, async () => {
-      const supabase = createClient();
-      return uploadJobPhoto({ supabase, file, jobId, doorId });
-    });
+    let firstError: string | null = null;
+    for (const file of Array.from(files)) {
+      const result = await withTrack(tracker, async () => {
+        const supabase = createClient();
+        return uploadJobPhoto({ supabase, file, jobId, doorId });
+      });
+      if (!result.ok) {
+        if (!firstError) firstError = `${file.name}: ${result.error}`;
+        continue;
+      }
+      onAdded(result.photo);
+    }
     if (fileInput.current) fileInput.current.value = "";
     setUploading(false);
-    if (!result.ok) {
-      setError(result.error);
-      return;
-    }
-    onAdded(result.photo);
+    if (firstError) setError(firstError);
   }
 
-  async function remove(photo: JobPhoto) {
-    if (!confirm("Delete this photo?")) return;
-    const result = await withTrack(tracker, async () => {
-      const supabase = createClient();
-      return deleteJobPhoto(supabase, photo);
-    });
-    if (!result.ok) {
-      setError(result.error);
-      return;
-    }
-    onDeleted(photo.id);
-  }
+  const softDelete = useSoftDelete<JobPhoto>({
+    delete: (photo) =>
+      withTrack(tracker, async () => {
+        const supabase = createClient();
+        return deleteJobPhoto(supabase, photo);
+      }),
+    restore: async (snapshot) => {
+      const result = await withTrack(tracker, async () => {
+        const supabase = createClient();
+        return restoreJobPhoto(supabase, snapshot);
+      });
+      return result.ok
+        ? { ok: true, restored: result.photo }
+        : { ok: false, error: result.error };
+    },
+    onOptimisticRemove: (id) => onDeleted(id),
+    onRestore: (photo) => onAdded(photo),
+  });
 
   return (
     <div className="space-y-2">
@@ -2515,10 +3943,16 @@ function JobPhotoSection({
               key={p.id}
               className="group relative aspect-square overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-800"
             >
-              <a
-                href={publicJobFileUrl(supabaseUrl, p.storage_path)}
-                target="_blank"
-                rel="noopener noreferrer"
+              <button
+                type="button"
+                onClick={() =>
+                  photoViewer.open(
+                    publicJobFileUrl(supabaseUrl, p.storage_path),
+                    p.caption ?? "Job photo",
+                  )
+                }
+                aria-label={p.caption ?? "View photo"}
+                className="block h-full w-full"
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
@@ -2526,26 +3960,13 @@ function JobPhotoSection({
                   alt={p.caption ?? "Job photo"}
                   className="h-full w-full object-cover"
                 />
-              </a>
-              <button
-                type="button"
-                onClick={() => remove(p)}
-                aria-label="Delete photo"
-                className="absolute right-1 top-1 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-white active:bg-black/80"
-              >
-                <svg
-                  className="h-3.5 w-3.5"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
               </button>
+              <PhotoDeleteToggle
+                photoId={p.id}
+                armed={softDelete.confirmingId === p.id}
+                onArm={() => softDelete.arm(p.id)}
+                onConfirm={() => void softDelete.confirm(p)}
+              />
             </div>
           ))}
         </div>
@@ -2554,6 +3975,7 @@ function JobPhotoSection({
         ref={fileInput}
         type="file"
         accept="image/*"
+        multiple
         className="hidden"
         onChange={onChange}
       />
@@ -2565,6 +3987,12 @@ function JobPhotoSection({
       >
         {uploading ? "Uploading..." : "+ Add photo"}
       </button>
+      {softDelete.recentlyDeleted && (
+        <UndoBanner
+          message="Photo deleted."
+          onUndo={() => void softDelete.undo()}
+        />
+      )}
     </div>
   );
 }
@@ -2599,6 +4027,7 @@ function PanelCard({
   onCreateAndAddDoors: (names: string[]) => Promise<boolean>;
 }) {
   const tracker = useContext(SaveTrackerContext);
+  const photoViewer = useContext(PhotoViewerContext);
   const [nameDraft, setNameDraft] = useState(panel.name);
   const [commDraft, setCommDraft] = useState(panel.comm_room ?? "");
   const [syncedName, setSyncedName] = useState(panel.name);
@@ -2628,10 +4057,13 @@ function PanelCard({
         .update(patch)
         .eq("id", panel.id)
         .select("*")
-        .single();
+        .maybeSingle();
     });
     if (error || !data) {
-      alert(error?.message ?? "Couldn't save panel.");
+      alert(
+        error?.message ??
+          "Couldn't save panel — it may have been deleted. Refresh to sync.",
+      );
       return;
     }
     onPanelUpdate(data as JobPanel);
@@ -2712,38 +4144,49 @@ function PanelCard({
     }
   }
 
-  async function uploadPhoto(file: File) {
+  async function uploadPhotos(files: FileList | File[]) {
     setUploading(true);
-    const result = await withTrack(tracker, async () => {
-      const supabase = createClient();
-      return uploadPanelPhoto({
-        supabase,
-        file,
-        jobId,
-        panelId: panel.id,
-        nextPosition: photos.length,
+    const list = Array.from(files);
+    for (let i = 0; i < list.length; i++) {
+      const file = list[i];
+      const result = await withTrack(tracker, async () => {
+        const supabase = createClient();
+        return uploadPanelPhoto({
+          supabase,
+          file,
+          jobId,
+          panelId: panel.id,
+          nextPosition: photos.length + i,
+        });
       });
-    });
+      if (!result.ok) {
+        alert(`${file.name}: ${result.error}`);
+        continue;
+      }
+      onPanelPhotoAdded(result.photo);
+    }
     if (photoInput.current) photoInput.current.value = "";
     setUploading(false);
-    if (!result.ok) {
-      alert(result.error);
-      return;
-    }
-    onPanelPhotoAdded(result.photo);
   }
 
-  async function removePhoto(photo: JobPanelPhoto) {
-    const result = await withTrack(tracker, async () => {
-      const supabase = createClient();
-      return deletePanelPhoto(supabase, photo);
-    });
-    if (!result.ok) {
-      alert(result.error);
-      return;
-    }
-    onPanelPhotoDeleted(photo.id);
-  }
+  const photoSoftDelete = useSoftDelete<JobPanelPhoto>({
+    delete: (photo) =>
+      withTrack(tracker, async () => {
+        const supabase = createClient();
+        return deletePanelPhoto(supabase, photo);
+      }),
+    restore: async (snapshot) => {
+      const result = await withTrack(tracker, async () => {
+        const supabase = createClient();
+        return restorePanelPhoto(supabase, snapshot);
+      });
+      return result.ok
+        ? { ok: true, restored: result.photo }
+        : { ok: false, error: result.error };
+    },
+    onOptimisticRemove: (id) => onPanelPhotoDeleted(id),
+    onRestore: (photo) => onPanelPhotoAdded(photo),
+  });
 
   const doorMap = new Map(allDoors.map((d) => [d.id, d]));
   const linkedDoors = panelDoorIds
@@ -2935,10 +4378,16 @@ function PanelCard({
                 key={p.id}
                 className="group relative aspect-square overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-800"
               >
-                <a
-                  href={publicJobFileUrl(supabaseUrl, p.storage_path)}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <button
+                  type="button"
+                  onClick={() =>
+                    photoViewer.open(
+                      publicJobFileUrl(supabaseUrl, p.storage_path),
+                      `${panel.name} photo`,
+                    )
+                  }
+                  aria-label={`View ${panel.name} photo`}
+                  className="block h-full w-full"
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
@@ -2946,38 +4395,33 @@ function PanelCard({
                     alt={`${panel.name} photo`}
                     className="h-full w-full object-cover"
                   />
-                </a>
-                <button
-                  type="button"
-                  onClick={() => void removePhoto(p)}
-                  aria-label="Delete photo"
-                  className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-black/60 text-white"
-                >
-                  <svg
-                    className="h-3 w-3"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="3"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
                 </button>
+                <PhotoDeleteToggle
+                  photoId={p.id}
+                  armed={photoSoftDelete.confirmingId === p.id}
+                  onArm={() => photoSoftDelete.arm(p.id)}
+                  onConfirm={() => void photoSoftDelete.confirm(p)}
+                />
               </div>
             ))}
           </div>
+        )}
+        {photoSoftDelete.recentlyDeleted && (
+          <UndoBanner
+            message="Photo deleted."
+            onUndo={() => void photoSoftDelete.undo()}
+          />
         )}
         <input
           ref={photoInput}
           type="file"
           accept="image/*"
+          multiple
           className="hidden"
           onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) void uploadPhoto(f);
+            if (e.target.files && e.target.files.length > 0) {
+              void uploadPhotos(e.target.files);
+            }
           }}
         />
         <button
@@ -2999,19 +4443,209 @@ function SiteMapBody({
   onJobUpdate,
   supabaseUrl,
   onOpenAutoDetect,
+  extras,
+  onExtraAdded,
+  onExtraRemoved,
+  onExtraRenamed,
 }: {
   job: Job;
   onJobUpdate: (job: Job) => void;
   supabaseUrl: string;
   onOpenAutoDetect: () => void;
+  extras: JobSiteMap[];
+  onExtraAdded: (map: JobSiteMap) => void;
+  onExtraRemoved: (id: string) => void;
+  onExtraRenamed: (map: JobSiteMap) => void;
 }) {
+  const tracker = useContext(SaveTrackerContext);
   const fileInput = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Holds the storage path of whichever PDF the user opened
+  // fullscreen, or null when the modal is closed.
+  const [fullscreenSrc, setFullscreenSrc] = useState<string | null>(null);
+  // External link (OneDrive / Google Drive / Dropbox / etc) for the
+  // case where the PDF is too large to upload. Editable draft +
+  // synced value pattern so the input doesn't fight realtime updates.
+  const [urlDraft, setUrlDraft] = useState(job.site_map_url ?? "");
+  const [syncedUrl, setSyncedUrl] = useState(job.site_map_url ?? "");
+  if ((job.site_map_url ?? "") !== syncedUrl) {
+    if (urlDraft === syncedUrl) setUrlDraft(job.site_map_url ?? "");
+    setSyncedUrl(job.site_map_url ?? "");
+  }
+
+  // Combine the primary map and the extras into one list. The primary
+  // is the one bound to the annotation editor; everything else is
+  // view-only. Using a synthetic id "__primary" so the dropdown's
+  // value attribute can survive primary uploads with new storage_paths.
+  type ActivePdf = {
+    key: string;
+    label: string;
+    storagePath: string;
+    isPrimary: boolean;
+  };
+  const allPdfs = useMemo<ActivePdf[]>(() => {
+    const list: ActivePdf[] = [];
+    if (job.site_map_path) {
+      list.push({
+        key: "__primary",
+        // Primary takes its label from jobs.site_map_label, falling
+        // back to a hint about its editor role so the dropdown row
+        // still reads as something.
+        label: job.site_map_label?.trim() || "Primary (annotatable)",
+        storagePath: job.site_map_path,
+        isPrimary: true,
+      });
+    }
+    for (const m of extras) {
+      list.push({
+        key: m.id,
+        label: m.label?.trim() || "Untitled PDF",
+        storagePath: m.storage_path,
+        isPrimary: false,
+      });
+    }
+    return list;
+  }, [job.site_map_path, job.site_map_label, extras]);
+
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  // Resolve the active PDF — fall back to the first one if the saved
+  // selection went away (e.g. an extra got deleted).
+  const selected =
+    allPdfs.find((p) => p.key === selectedKey) ?? allPdfs[0] ?? null;
+  const selectedExtra = selected?.isPrimary
+    ? null
+    : extras.find((m) => m.id === selected?.key) ?? null;
+  // The "renameable target": either the primary (label lives on
+  // jobs.site_map_label) or an extra (label lives on job_site_maps.label).
+  // Used to drive the same input for both cases.
+  const renameTargetId = selected?.isPrimary ? "__primary" : selectedExtra?.id ?? null;
+  const renameTargetCurrentLabel = selected?.isPrimary
+    ? job.site_map_label ?? ""
+    : selectedExtra?.label ?? "";
+
+  // Editable label for the selected PDF. Synced-draft pattern so the
+  // input doesn't fight realtime updates from another tab.
+  const [labelDraft, setLabelDraft] = useState(renameTargetCurrentLabel);
+  const [labelSyncId, setLabelSyncId] = useState<string | null>(
+    renameTargetId,
+  );
+  if (renameTargetId !== labelSyncId) {
+    setLabelSyncId(renameTargetId);
+    setLabelDraft(renameTargetCurrentLabel);
+  }
+
+  async function commitLabel() {
+    if (!selected) return;
+    const next = labelDraft.trim() || null;
+    if (selected.isPrimary) {
+      if (next === (job.site_map_label ?? null)) return;
+      const { data, error: dbError } = await withTrack(tracker, async () => {
+        const supabase = createClient();
+        return supabase
+          .from("jobs")
+          .update({ site_map_label: next })
+          .eq("id", job.id)
+          .select("*")
+          .maybeSingle();
+      });
+      if (dbError || !data) {
+        setError(dbError?.message ?? "Couldn't rename.");
+        return;
+      }
+      onJobUpdate(data as Job);
+      return;
+    }
+    if (!selectedExtra) return;
+    if (next === (selectedExtra.label ?? null)) return;
+    const result = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return renameExtraSiteMap(supabase, selectedExtra.id, next);
+    });
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    onExtraRenamed(result.siteMap);
+  }
+
+  async function commitUrl(value: string | null) {
+    const { data, error: dbError } = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("jobs")
+        .update({ site_map_url: value })
+        .eq("id", job.id)
+        .select("*")
+        .maybeSingle();
+    });
+    if (dbError || !data) {
+      setError(dbError?.message ?? "Couldn't save link.");
+      return;
+    }
+    onJobUpdate(data as Job);
+  }
 
   async function onChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
+    if (fileInput.current) fileInput.current.value = "";
     if (!file) return;
+    setUploading(true);
+    setError(null);
+    // First upload becomes the primary so the editor has something to
+    // anchor to. Subsequent uploads go straight to extras and never
+    // overwrite the primary by surprise.
+    if (!job.site_map_path) {
+      const supabase = createClient();
+      const result = await uploadSiteMap({
+        supabase,
+        file,
+        jobId: job.id,
+        oldStoragePath: null,
+      });
+      setUploading(false);
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      onJobUpdate({
+        ...job,
+        site_map_path: result.storage_path,
+        site_map_uploaded_at: result.uploaded_at,
+      });
+      setSelectedKey("__primary");
+      return;
+    }
+    // Has primary already — anything else becomes an extra.
+    const result = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return uploadExtraSiteMap({
+        supabase,
+        file,
+        jobId: job.id,
+        nextPosition: extras.length,
+      });
+    });
+    setUploading(false);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    onExtraAdded(result.siteMap);
+    setSelectedKey(result.siteMap.id);
+  }
+
+  async function replaceSelected() {
+    fileInput.current?.click();
+  }
+
+  async function replacePrimary(e: React.ChangeEvent<HTMLInputElement>) {
+    // Used by the Replace button when the primary is the active map —
+    // bypasses the "becomes an extra" branch in onChange by feeding a
+    // dedicated input.
+    const file = e.target.files?.[0];
+    if (replaceInput.current) replaceInput.current.value = "";
+    if (!file || !job.site_map_path) return;
     setUploading(true);
     setError(null);
     const supabase = createClient();
@@ -3021,7 +4655,6 @@ function SiteMapBody({
       jobId: job.id,
       oldStoragePath: job.site_map_path,
     });
-    if (fileInput.current) fileInput.current.value = "";
     setUploading(false);
     if (!result.ok) {
       setError(result.error);
@@ -3034,86 +4667,70 @@ function SiteMapBody({
     });
   }
 
-  async function remove() {
-    if (!job.site_map_path) return;
-    if (!confirm("Remove the site map PDF?")) return;
-    const supabase = createClient();
-    const result = await deleteSiteMap(supabase, job.id, job.site_map_path);
-    if (!result.ok) {
-      setError(result.error);
+  // Two-tap + undo for extras. The primary still goes through the
+  // legacy confirm() since restoring a primary properly would mean
+  // reviving the jobs.site_map_path link, which is one-of and
+  // tightly coupled to the annotation editor.
+  const extraSoftDelete = useSoftDelete<JobSiteMap>({
+    delete: (siteMap) =>
+      withTrack(tracker, async () => {
+        const supabase = createClient();
+        return deleteExtraSiteMap(supabase, siteMap);
+      }),
+    restore: async (snapshot) => {
+      const result = await withTrack(tracker, async () => {
+        const supabase = createClient();
+        return restoreExtraSiteMap(supabase, snapshot);
+      });
+      return result.ok
+        ? { ok: true, restored: result.siteMap }
+        : { ok: false, error: result.error };
+    },
+    onOptimisticRemove: (id) => onExtraRemoved(id),
+    onRestore: (siteMap) => onExtraAdded(siteMap),
+    undoTtlMs: 10000,
+  });
+
+  async function removeSelected() {
+    if (!selected) return;
+    if (selected.isPrimary) {
+      if (!confirm("Remove the primary site map?")) return;
+      const supabase = createClient();
+      const result = await deleteSiteMap(
+        supabase,
+        job.id,
+        selected.storagePath,
+      );
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      onJobUpdate({
+        ...job,
+        site_map_path: null,
+        site_map_uploaded_at: null,
+      });
+      setSelectedKey(null);
       return;
     }
-    onJobUpdate({ ...job, site_map_path: null, site_map_uploaded_at: null });
+    if (!selectedExtra) return;
+    // Two-tap on the visible Remove button: first tap arms, second
+    // tap confirms.
+    if (extraSoftDelete.confirmingId === selectedExtra.id) {
+      await extraSoftDelete.confirm(selectedExtra);
+      setSelectedKey(null);
+    } else {
+      extraSoftDelete.arm(selectedExtra.id);
+    }
   }
+
+  const replaceInput = useRef<HTMLInputElement>(null);
 
   return (
     <>
       {error && <ErrorBanner message={error} />}
-      {job.site_map_path ? (
-        <div className="space-y-2">
-          <object
-            data={publicJobFileUrl(supabaseUrl, job.site_map_path) + "#view=FitH"}
-            type="application/pdf"
-            className="h-[65vh] w-full rounded-lg border border-neutral-200 bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-950"
-            aria-label="Site map PDF"
-          >
-            <a
-              href={publicJobFileUrl(supabaseUrl, job.site_map_path)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex h-full w-full items-center justify-center p-6 text-center text-sm text-neutral-600 dark:text-neutral-400"
-            >
-              Your browser can&apos;t render PDFs inline. Tap to open.
-            </a>
-          </object>
-          <a
-            href={publicJobFileUrl(supabaseUrl, job.site_map_path)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="block text-center text-[11px] font-medium text-neutral-500 underline-offset-2 active:text-neutral-900 hover:underline dark:text-neutral-400 dark:active:text-neutral-100"
-          >
-            Open fullscreen
-          </a>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              disabled={uploading}
-              onClick={() => fileInput.current?.click()}
-              className="h-10 flex-1 rounded-lg border border-neutral-300 text-sm font-medium text-neutral-700 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300"
-            >
-              {uploading ? "Uploading..." : "Replace PDF"}
-            </button>
-            <button
-              type="button"
-              onClick={remove}
-              className="h-10 rounded-lg border border-red-300 px-3 text-sm font-medium text-red-600 dark:border-red-900 dark:text-red-400"
-            >
-              Remove
-            </button>
-          </div>
-          <button
-            type="button"
-            onClick={onOpenAutoDetect}
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 text-sm font-medium text-white active:scale-[0.98] dark:bg-indigo-500"
-          >
-            <svg
-              className="h-4 w-4"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" />
-            </svg>
-            Auto-detect doors from PDF
-            <span className="ml-1 text-[10px] font-normal italic opacity-80">
-              Beta
-            </span>
-          </button>
-        </div>
-      ) : (
+
+      {allPdfs.length === 0 ? (
         <button
           type="button"
           disabled={uploading}
@@ -3122,7 +4739,227 @@ function SiteMapBody({
         >
           {uploading ? "Uploading..." : "+ Upload site map PDF"}
         </button>
+      ) : (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <label className="sr-only" htmlFor="active-pdf-select">
+              Active PDF
+            </label>
+            <div className="relative flex-1">
+              <select
+                id="active-pdf-select"
+                value={selected?.key ?? ""}
+                onChange={(e) => setSelectedKey(e.target.value)}
+                className="block h-10 w-full appearance-none rounded-lg border border-neutral-300 bg-white pl-3 pr-8 text-sm font-medium text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50"
+              >
+                {allPdfs.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+              <svg
+                className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-500"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </div>
+            <span className="rounded-full bg-neutral-100 px-2 py-1 text-[10px] font-medium text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400">
+              {allPdfs.length} {allPdfs.length === 1 ? "PDF" : "PDFs"}
+            </span>
+          </div>
+
+          {selected && (
+            <label className="block">
+              <span className="mb-1 block text-[11px] font-medium text-neutral-500 dark:text-neutral-400">
+                Name
+              </span>
+              <input
+                type="text"
+                id={`pdf-label-${renameTargetId ?? "none"}`}
+                name={`pdf-label-${renameTargetId ?? "none"}`}
+                autoComplete="off"
+                autoCorrect="off"
+                spellCheck={false}
+                enterKeyHint="done"
+                placeholder={
+                  selected.isPrimary
+                    ? "e.g. Floor 1 plan (leave blank to keep default)"
+                    : "e.g. Riser diagram, Floor 2 plan"
+                }
+                value={labelDraft}
+                onChange={(e) => setLabelDraft(e.target.value)}
+                onBlur={() => void commitLabel()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    (e.target as HTMLInputElement).blur();
+                  }
+                }}
+                className="block h-9 w-full rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50"
+              />
+            </label>
+          )}
+
+          {selected && (
+            <>
+              <object
+                key={selected.storagePath}
+                data={
+                  publicJobFileUrl(supabaseUrl, selected.storagePath) +
+                  "#view=FitH"
+                }
+                type="application/pdf"
+                className="h-[65vh] w-full rounded-lg border border-neutral-200 bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-950"
+                aria-label={`Site map: ${selected.label}`}
+              >
+                <a
+                  href={publicJobFileUrl(supabaseUrl, selected.storagePath)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex h-full w-full items-center justify-center p-6 text-center text-sm text-neutral-600 dark:text-neutral-400"
+                >
+                  Your browser can&apos;t render PDFs inline. Tap to open.
+                </a>
+              </object>
+              <button
+                type="button"
+                onClick={() => setFullscreenSrc(selected.storagePath)}
+                className="block w-full text-center text-[11px] font-medium text-neutral-500 underline-offset-2 active:text-neutral-900 hover:underline dark:text-neutral-400 dark:active:text-neutral-100"
+              >
+                Open fullscreen
+              </button>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={uploading}
+                  onClick={() => {
+                    if (selected.isPrimary) replaceInput.current?.click();
+                    else void replaceSelected();
+                  }}
+                  className="h-10 flex-1 rounded-lg border border-neutral-300 text-sm font-medium text-neutral-700 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300"
+                >
+                  {uploading
+                    ? "Uploading..."
+                    : selected.isPrimary
+                      ? "Replace PDF"
+                      : "Add new PDF"}
+                </button>
+                <button
+                  type="button"
+                  onClick={removeSelected}
+                  className={
+                    "h-10 rounded-lg px-3 text-sm font-medium transition " +
+                    (selectedExtra &&
+                    extraSoftDelete.confirmingId === selectedExtra.id
+                      ? "bg-red-600 text-white shadow-md"
+                      : "border border-red-300 text-red-600 dark:border-red-900 dark:text-red-400")
+                  }
+                >
+                  {selectedExtra &&
+                  extraSoftDelete.confirmingId === selectedExtra.id
+                    ? "Confirm?"
+                    : "Remove"}
+                </button>
+              </div>
+              {selected.isPrimary && (
+                <button
+                  type="button"
+                  onClick={onOpenAutoDetect}
+                  className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 text-sm font-medium text-white active:scale-[0.98] dark:bg-indigo-500"
+                >
+                  <svg
+                    className="h-4 w-4"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" />
+                  </svg>
+                  Auto-detect doors from PDF
+                  <span className="ml-1 text-[10px] font-normal italic opacity-80">
+                    Beta
+                  </span>
+                </button>
+              )}
+              {!selected.isPrimary && (
+                <p className="text-center text-[11px] italic text-neutral-500 dark:text-neutral-400">
+                  Annotation editor is scoped to the primary PDF.
+                </p>
+              )}
+            </>
+          )}
+
+          {/* Always-visible "Add another PDF" handle so multi-map jobs
+              don't have to switch views to add a third sheet. */}
+          <button
+            type="button"
+            disabled={uploading}
+            onClick={() => fileInput.current?.click()}
+            className="h-10 w-full rounded-lg border border-dashed border-neutral-300 text-xs font-medium text-neutral-600 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-400"
+          >
+            {uploading ? "Uploading..." : "+ Add another PDF"}
+          </button>
+        </div>
       )}
+
+      <div className="mt-1 rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
+        <label className="block">
+          <span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+            External link
+          </span>
+          <span className="mb-2 block text-[11px] text-neutral-500 dark:text-neutral-400">
+            For maps too large to upload. Paste a OneDrive / Google
+            Drive / Dropbox share link — opens in a new tab.
+          </span>
+          <input
+            type="url"
+            inputMode="url"
+            placeholder="https://…"
+            value={urlDraft}
+            onChange={(e) => setUrlDraft(e.target.value)}
+            onBlur={() => {
+              const next = urlDraft.trim() || null;
+              if (next !== job.site_map_url) void commitUrl(next);
+            }}
+            className="block h-10 w-full rounded-md border border-neutral-300 bg-white px-3 text-sm text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50"
+          />
+        </label>
+        {job.site_map_url && (
+          <a
+            href={job.site_map_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-2 flex h-9 items-center justify-center gap-1 rounded-md bg-neutral-900 text-xs font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
+          >
+            <svg
+              className="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              <polyline points="15 3 21 3 21 9" />
+              <line x1="10" y1="14" x2="21" y2="3" />
+            </svg>
+            Open link
+          </a>
+        )}
+      </div>
+
       <input
         ref={fileInput}
         type="file"
@@ -3130,7 +4967,439 @@ function SiteMapBody({
         className="hidden"
         onChange={onChange}
       />
+      <input
+        ref={replaceInput}
+        type="file"
+        accept="application/pdf"
+        className="hidden"
+        onChange={replacePrimary}
+      />
+
+      {extraSoftDelete.recentlyDeleted && (
+        <UndoBanner
+          message={`Removed PDF "${
+            extraSoftDelete.recentlyDeleted.label?.trim() || "Untitled"
+          }".`}
+          onUndo={() => void extraSoftDelete.undo()}
+        />
+      )}
+
+      {fullscreenSrc && (
+        <PdfFullscreenModal
+          src={publicJobFileUrl(supabaseUrl, fullscreenSrc)}
+          label={
+            allPdfs.find((p) => p.storagePath === fullscreenSrc)?.label ??
+            "Site map"
+          }
+          onClose={() => setFullscreenSrc(null)}
+        />
+      )}
     </>
+  );
+}
+
+function WorkedOnSection({
+  job,
+  derivedWorkers,
+  memberSuggestions,
+  onJobUpdate,
+}: {
+  job: Job;
+  derivedWorkers: string[];
+  memberSuggestions: string[];
+  onJobUpdate: (job: Job) => void;
+}) {
+  const tracker = useContext(SaveTrackerContext);
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const manual = job.manual_workers ?? [];
+  // Suppress a derived entry when the same person is also in the
+  // manual list (case-insensitive on the email local-part vs the
+  // typed name) so we don't list "Mark" twice for someone who got
+  // re-added by hand.
+  const manualLower = new Set(manual.map((n) => n.trim().toLowerCase()));
+  const visibleDerived = derivedWorkers.filter((email) => {
+    const local = email.split("@")[0]?.trim().toLowerCase() ?? "";
+    return !manualLower.has(local) && !manualLower.has(email.toLowerCase());
+  });
+
+  async function commitWorkers(next: string[]) {
+    setPending(true);
+    setError(null);
+    const { data, error: dbError } = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("jobs")
+        .update({ manual_workers: next })
+        .eq("id", job.id)
+        .select("*")
+        .maybeSingle();
+    });
+    setPending(false);
+    if (dbError || !data) {
+      setError(dbError?.message ?? "Couldn't save.");
+      return;
+    }
+    onJobUpdate(data as Job);
+  }
+
+  async function addWorker() {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    const lower = trimmed.toLowerCase();
+    if (manual.some((n) => n.trim().toLowerCase() === lower)) {
+      setError(`${trimmed} is already on the list.`);
+      return;
+    }
+    await commitWorkers([...manual, trimmed]);
+    setNewName("");
+    setAdding(false);
+  }
+
+  // Two-tap + undo for manual workers. The "snapshot" the soft-delete
+  // hook needs has an id, so wrap each name in a synthetic { id, name }
+  // pair keyed by the name itself (manual_workers dedupes by string).
+  type WorkerSnapshot = { id: string; name: string; index: number };
+  const workerSoftDelete = useSoftDelete<WorkerSnapshot>({
+    delete: async (snapshot) => {
+      const supabase = createClient();
+      const { error } = await withTrack(tracker, async () =>
+        supabase
+          .from("jobs")
+          .update({
+            manual_workers: manual.filter((n) => n !== snapshot.name),
+          })
+          .eq("id", job.id),
+      );
+      return error ? { ok: false, error: error.message } : { ok: true };
+    },
+    restore: async (snapshot) => {
+      const supabase = createClient();
+      const { data, error } = await withTrack(tracker, async () =>
+        supabase
+          .from("jobs")
+          .update({
+            manual_workers: [
+              ...manual.slice(0, snapshot.index),
+              snapshot.name,
+              ...manual.slice(snapshot.index),
+            ],
+          })
+          .eq("id", job.id)
+          .select("*")
+          .single(),
+      );
+      if (error || !data) {
+        return { ok: false, error: error?.message ?? "Couldn't restore." };
+      }
+      onJobUpdate(data as Job);
+      return { ok: true, restored: snapshot };
+    },
+    // Reading parent state via job + onJobUpdate; the synthetic id
+    // makes the hook's contract happy without persisting it.
+    onOptimisticRemove: () => {
+      // No-op — the delete path already updates jobs.manual_workers
+      // via Supabase, which arrives back through the realtime job
+      // UPDATE subscription. Nothing extra to do client-side here.
+    },
+    onRestore: () => {
+      // Same — restore writes through jobs and the row update fans
+      // back via realtime.
+    },
+  });
+
+  function requestRemoveWorker(name: string) {
+    const id = `worker:${name}`;
+    if (workerSoftDelete.confirmingId === id) {
+      const index = manual.indexOf(name);
+      void workerSoftDelete.confirm({ id, name, index });
+    } else {
+      workerSoftDelete.arm(id);
+    }
+  }
+
+  if (
+    visibleDerived.length === 0 &&
+    manual.length === 0 &&
+    !adding
+  ) {
+    return (
+      <div className="space-y-2">
+        <p className="text-xs italic text-neutral-500 dark:text-neutral-400">
+          Whoever edits this job will appear here automatically. Add
+          helpers who don&apos;t have accounts with the button below.
+        </p>
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          className="h-10 w-full rounded-lg border border-dashed border-neutral-300 text-sm font-medium text-neutral-600 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800"
+        >
+          + Add a name
+        </button>
+        {error && <ErrorBanner message={error} />}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <ul className="space-y-1.5">
+        {visibleDerived.map((email) => (
+          <li
+            key={`derived:${email}`}
+            className="flex items-center gap-2 rounded-md border border-neutral-200 bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+          >
+            <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-neutral-100 text-[10px] font-semibold uppercase text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+              {firstNameFromEmail(email).slice(0, 2)}
+            </span>
+            <span className="flex-1 truncate text-sm font-medium">
+              {firstNameFromEmail(email)}
+            </span>
+            <span
+              className="text-[10px] font-medium uppercase tracking-wide text-neutral-400 dark:text-neutral-500"
+              title="Picked up from the job activity log"
+            >
+              from activity
+            </span>
+          </li>
+        ))}
+        {manual.map((name) => (
+          <li
+            key={`manual:${name}`}
+            className="flex items-center gap-2 rounded-md border border-neutral-200 bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
+          >
+            <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-neutral-100 text-[10px] font-semibold uppercase text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+              {name.trim().slice(0, 2)}
+            </span>
+            <span className="flex-1 truncate text-sm font-medium">{name}</span>
+            <button
+              type="button"
+              onClick={() => requestRemoveWorker(name)}
+              disabled={pending}
+              aria-label={
+                workerSoftDelete.confirmingId === `worker:${name}`
+                  ? `Confirm remove ${name}`
+                  : `Remove ${name}`
+              }
+              className={
+                "flex flex-shrink-0 items-center justify-center rounded transition disabled:opacity-50 " +
+                (workerSoftDelete.confirmingId === `worker:${name}`
+                  ? "h-7 gap-1 bg-red-600 px-2 text-[10px] font-semibold text-white shadow-md"
+                  : "h-7 w-7 text-neutral-400 active:text-red-600 dark:active:text-red-400")
+              }
+            >
+              {workerSoftDelete.confirmingId === `worker:${name}` ? (
+                <>
+                  <svg
+                    className="h-3 w-3"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden
+                  >
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  ?
+                </>
+              ) : (
+                <svg
+                  className="h-3.5 w-3.5"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              )}
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      {workerSoftDelete.recentlyDeleted && (
+        <UndoBanner
+          message={`Removed "${workerSoftDelete.recentlyDeleted.name}".`}
+          onUndo={() => void workerSoftDelete.undo()}
+        />
+      )}
+
+      {adding ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void addWorker();
+          }}
+          className="flex gap-2"
+        >
+          <MemberCombo
+            value={newName}
+            onChange={setNewName}
+            suggestions={memberSuggestions.filter((s) => {
+              const lower = s.toLowerCase();
+              if (manualLower.has(lower)) return false;
+              return !visibleDerived.some(
+                (e) =>
+                  firstNameFromEmail(e).toLowerCase() === lower ||
+                  e.toLowerCase() === lower,
+              );
+            })}
+          />
+          <button
+            type="submit"
+            disabled={pending || !newName.trim()}
+            className="h-10 rounded-md bg-neutral-900 px-3 text-xs font-medium text-white disabled:opacity-60 dark:bg-neutral-100 dark:text-neutral-900"
+          >
+            {pending ? "…" : "Add"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setAdding(false);
+              setNewName("");
+              setError(null);
+            }}
+            disabled={pending}
+            className="h-10 rounded-md border border-neutral-300 px-3 text-xs font-medium dark:border-neutral-700"
+          >
+            Cancel
+          </button>
+        </form>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          className="h-9 w-full rounded-md border border-dashed border-neutral-300 text-xs font-medium text-neutral-600 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800"
+        >
+          + Add a name
+        </button>
+      )}
+
+      {error && <ErrorBanner message={error} />}
+    </div>
+  );
+}
+
+// Inline combo input for the Worked-on add row. Unlike the shared
+// Combobox, it stays closed on focus — the user has to either start
+// typing (autocomplete) or tap the chevron (full member list). The
+// chevron sits inside the input so the visible field width matches
+// a normal text input. Tapping a suggestion fills the value; the
+// outer form's Add button still commits.
+function MemberCombo({
+  value,
+  onChange,
+  suggestions,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  suggestions: string[];
+}) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const filtered = useMemo(() => {
+    const trimmed = value.trim().toLowerCase();
+    if (!trimmed) return suggestions.slice(0, 50);
+    return suggestions
+      .filter((s) => s.toLowerCase().includes(trimmed))
+      .slice(0, 50);
+  }, [value, suggestions]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDown(e: MouseEvent | TouchEvent) {
+      if (!containerRef.current) return;
+      if (!containerRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown, { passive: true });
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+    };
+  }, [open]);
+
+  function pick(name: string) {
+    onChange(name);
+    setOpen(false);
+    inputRef.current?.focus();
+  }
+
+  return (
+    <div ref={containerRef} className="relative flex-1">
+      <input
+        ref={inputRef}
+        autoFocus
+        type="text"
+        placeholder="Name"
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+          // Open as soon as the user starts typing — but only if the
+          // field actually has content. Otherwise typing then erasing
+          // would leave the full list hovering open uninvited.
+          setOpen(e.target.value.length > 0);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") setOpen(false);
+        }}
+        autoComplete="off"
+        className="block h-10 w-full rounded-md border border-neutral-300 bg-white pl-3 pr-9 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+      />
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-label={open ? "Close member list" : "Open member list"}
+        aria-expanded={open}
+        className="absolute right-0 top-0 flex h-10 w-9 items-center justify-center text-neutral-400 active:text-neutral-700 dark:active:text-neutral-200"
+      >
+        <svg
+          className={"h-4 w-4 transition-transform " + (open ? "rotate-180" : "")}
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+      {open && filtered.length > 0 && (
+        <ul
+          role="listbox"
+          className="absolute left-0 right-0 z-30 mt-1 max-h-48 overflow-auto rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+        >
+          {filtered.map((s) => (
+            <li key={s} role="option">
+              <button
+                type="button"
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  pick(s);
+                }}
+                className="block w-full px-3 py-2 text-left text-sm transition active:bg-neutral-100 hover:bg-neutral-100 dark:active:bg-neutral-800 dark:hover:bg-neutral-800"
+              >
+                {s}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -3143,34 +5412,83 @@ function DeleteJobSection({
 }) {
   const router = useRouter();
   const [pending, setPending] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  async function onDelete() {
-    if (
-      !confirm(
-        `Delete "${jobName}"? This removes all doors, items, photos, and the site map.`,
-      )
-    )
-      return;
+  async function onConfirm() {
     setPending(true);
-    const result = await deleteJobAction(jobId);
-    if (!result.ok) {
-      alert(result.error);
+    setError(null);
+    try {
+      const result = await deleteJobAction(jobId);
+      if (!result.ok) {
+        setError(result.error);
+        setPending(false);
+        return;
+      }
+      // replace, not push — the current /jobs/[id] URL is now a 404
+      // and we don't want it sitting in the back stack. Skipping
+      // router.refresh() too: replacing routes already runs a fresh
+      // server render of /jobs, and pairing it with refresh() was
+      // racing the navigation (the refresh would re-render the
+      // current page's server component, hit notFound() on the
+      // deleted row, and the resulting transition stalled — which is
+      // why the button visibly stuck on "Deleting…").
+      router.replace("/jobs");
+      // Belt-and-suspenders: if for any reason the route transition
+      // doesn't unmount us within a moment, drop pending so the
+      // button isn't permanently stuck.
+      window.setTimeout(() => setPending(false), 1500);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't delete.");
       setPending(false);
-      return;
     }
-    router.push("/jobs");
-    router.refresh();
+  }
+
+  if (confirming) {
+    return (
+      <section className="space-y-2 rounded-lg border border-red-300 bg-red-50 p-3 dark:border-red-900 dark:bg-red-950/30">
+        <p className="text-sm text-red-900 dark:text-red-100">
+          Delete <strong>{jobName}</strong>? This removes every door,
+          item, photo, panel, and the site map.
+        </p>
+        {error && (
+          <p className="rounded bg-white/70 px-2 py-1 text-xs text-red-700 dark:bg-red-950 dark:text-red-300">
+            {error}
+          </p>
+        )}
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setConfirming(false);
+              setError(null);
+            }}
+            disabled={pending}
+            className="h-10 flex-1 rounded-lg border border-neutral-300 bg-white text-sm font-medium dark:border-neutral-700 dark:bg-neutral-900"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={pending}
+            className="h-10 flex-1 rounded-lg bg-red-600 text-sm font-medium text-white disabled:opacity-60"
+          >
+            {pending ? "Deleting..." : "Yes, delete"}
+          </button>
+        </div>
+      </section>
+    );
   }
 
   return (
     <section className="pt-2">
       <button
         type="button"
-        onClick={onDelete}
-        disabled={pending}
-        className="h-12 w-full rounded-lg border border-red-300 text-sm font-medium text-red-600 transition active:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:active:bg-red-950/40"
+        onClick={() => setConfirming(true)}
+        className="h-12 w-full rounded-lg border border-red-300 text-sm font-medium text-red-600 transition active:bg-red-50 dark:border-red-900 dark:text-red-400 dark:active:bg-red-950/40"
       >
-        {pending ? "Deleting..." : "Delete job"}
+        Delete job
       </button>
     </section>
   );

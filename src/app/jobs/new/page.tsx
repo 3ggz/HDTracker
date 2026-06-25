@@ -19,8 +19,13 @@ export default function NewJobPage() {
 
     const formData = new FormData(e.currentTarget);
     const name = (formData.get("name") as string | null)?.trim();
+    const number = (formData.get("number") as string | null)?.trim();
     if (!name) {
       setError("Give it a name first.");
+      return;
+    }
+    if (!number) {
+      setError("Job number is required.");
       return;
     }
 
@@ -30,7 +35,7 @@ export default function NewJobPage() {
       .from("jobs")
       .insert({
         name,
-        number: (formData.get("number") as string | null)?.trim() || null,
+        number,
         address: (formData.get("address") as string | null)?.trim() || null,
       })
       .select("id")
@@ -83,8 +88,8 @@ export default function NewJobPage() {
           />
         </Field>
 
-        <Field label="Job number" hint="Optional">
-          <input name="number" type="text" className={inputClass} />
+        <Field label="Job number" required>
+          <input name="number" type="text" required className={inputClass} />
         </Field>
 
         <Field label="Address" hint="Optional">
