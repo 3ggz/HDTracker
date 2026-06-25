@@ -59,6 +59,7 @@ import {
 import { firstNameFromEmail } from "@/lib/email";
 import { useSoftDelete } from "@/lib/use-soft-delete";
 import { PdfFullscreenModal } from "./PdfFullscreenModal";
+import { PhotoFullscreenModal } from "./PhotoFullscreenModal";
 import { UndoBanner } from "./UndoBanner";
 import {
   deleteDoorAction,
@@ -88,6 +89,18 @@ const REPEATABLE_ITEMS = new Set(["5200 Exciter", "3220 Exciter"]);
 type SaveTracker = { begin: () => void; end: () => void };
 const noopTracker: SaveTracker = { begin: () => {}, end: () => {} };
 const SaveTrackerContext = createContext<SaveTracker>(noopTracker);
+
+// Photo viewer context so any nested photo grid (item photos, door
+// photos, panel photos, job photos) can open the in-app fullscreen
+// modal without each one carrying its own state + modal. Click
+// handlers call `open(src, label)`; the provider lives at the top
+// of JobDetailClient and renders the modal once.
+type PhotoViewerContextValue = {
+  open: (src: string, label?: string) => void;
+};
+const PhotoViewerContext = createContext<PhotoViewerContextValue>({
+  open: () => {},
+});
 async function withTrack<T>(
   tracker: SaveTracker,
   fn: () => Promise<T>,
@@ -167,6 +180,13 @@ export function JobDetailClient({
   const [selectedTemplateId, setSelectedTemplateId] =
     useState<string>(HUGS_TEMPLATE_ID);
   const [createTemplateOpen, setCreateTemplateOpen] = useState(false);
+
+  // In-app fullscreen photo viewer. Anything that used to be an
+  // `<a target="_blank">` thumbnail now opens this modal instead so
+  // the iOS back button stays on the job page.
+  const [viewerPhoto, setViewerPhoto] = useState<
+    { src: string; label: string | null } | null
+  >(null);
 
   // Restore last-used template id from localStorage once on mount.
   // Falls back to HUGS if the stored id no longer resolves (template
@@ -800,8 +820,16 @@ export function JobDetailClient({
     void persistDoorOrder(sorted);
   }
 
+  const photoViewer = useMemo<PhotoViewerContextValue>(
+    () => ({
+      open: (src, label) => setViewerPhoto({ src, label: label ?? null }),
+    }),
+    [],
+  );
+
   return (
     <SaveTrackerContext.Provider value={saveTracker}>
+    <PhotoViewerContext.Provider value={photoViewer}>
     <main className="mx-auto w-full max-w-md flex-1 space-y-3 px-4 pb-32 pt-4">
       {lastDeletedDoor && (
         <div className="sticky top-14 z-40 -mx-4 mb-2 flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 shadow-sm dark:border-amber-900/50 dark:bg-amber-950/60">
@@ -1511,7 +1539,16 @@ export function JobDetailClient({
           }}
         />
       )}
+
+      {viewerPhoto && (
+        <PhotoFullscreenModal
+          src={viewerPhoto.src}
+          label={viewerPhoto.label ?? undefined}
+          onClose={() => setViewerPhoto(null)}
+        />
+      )}
     </main>
+    </PhotoViewerContext.Provider>
     </SaveTrackerContext.Provider>
   );
 }
@@ -3383,6 +3420,7 @@ function DoorItemRow({
   onPhotoDeleted: (id: string) => void;
 }) {
   const tracker = useContext(SaveTrackerContext);
+  const photoViewer = useContext(PhotoViewerContext);
   const [noteEditing, setNoteEditing] = useState(false);
   const [noteDraft, setNoteDraft] = useState(item.note ?? "");
   const [syncedNote, setSyncedNote] = useState(item.note ?? "");
@@ -3524,11 +3562,15 @@ function DoorItemRow({
         {hasPhotos && (
           <div className="flex flex-shrink-0 -space-x-1">
             {photos.slice(0, 3).map((p) => (
-              <a
+              <button
+                type="button"
                 key={p.id}
-                href={publicJobFileUrl(supabaseUrl, p.storage_path)}
-                target="_blank"
-                rel="noopener noreferrer"
+                onClick={() =>
+                  photoViewer.open(
+                    publicJobFileUrl(supabaseUrl, p.storage_path),
+                    item.name,
+                  )
+                }
                 aria-label={`View ${item.name} photo`}
                 className="block h-8 w-8 overflow-hidden rounded border border-white bg-white dark:border-neutral-800 dark:bg-neutral-800"
               >
@@ -3538,7 +3580,7 @@ function DoorItemRow({
                   alt=""
                   className="h-full w-full object-cover"
                 />
-              </a>
+              </button>
             ))}
             {photos.length > 3 && (
               <span className="flex h-8 w-8 items-center justify-center rounded border border-white bg-neutral-200 text-[10px] font-semibold text-neutral-700 dark:border-neutral-800 dark:bg-neutral-700 dark:text-neutral-200">
@@ -3707,10 +3749,16 @@ function DoorItemRow({
                   key={p.id}
                   className="group relative aspect-square overflow-hidden rounded border border-neutral-200 dark:border-neutral-800"
                 >
-                  <a
-                    href={publicJobFileUrl(supabaseUrl, p.storage_path)}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    onClick={() =>
+                      photoViewer.open(
+                        publicJobFileUrl(supabaseUrl, p.storage_path),
+                        item.name,
+                      )
+                    }
+                    aria-label={`View ${item.name} photo`}
+                    className="block h-full w-full"
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
@@ -3718,7 +3766,7 @@ function DoorItemRow({
                       alt=""
                       className="h-full w-full object-cover"
                     />
-                  </a>
+                  </button>
                   <PhotoDeleteToggle
                     photoId={p.id}
                     armed={photoSoftDelete.confirmingId === p.id}
@@ -3835,6 +3883,7 @@ function JobPhotoSection({
   onDeleted: (id: string) => void;
 }) {
   const tracker = useContext(SaveTrackerContext);
+  const photoViewer = useContext(PhotoViewerContext);
   const fileInput = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -3894,10 +3943,16 @@ function JobPhotoSection({
               key={p.id}
               className="group relative aspect-square overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-800"
             >
-              <a
-                href={publicJobFileUrl(supabaseUrl, p.storage_path)}
-                target="_blank"
-                rel="noopener noreferrer"
+              <button
+                type="button"
+                onClick={() =>
+                  photoViewer.open(
+                    publicJobFileUrl(supabaseUrl, p.storage_path),
+                    p.caption ?? "Job photo",
+                  )
+                }
+                aria-label={p.caption ?? "View photo"}
+                className="block h-full w-full"
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
@@ -3905,7 +3960,7 @@ function JobPhotoSection({
                   alt={p.caption ?? "Job photo"}
                   className="h-full w-full object-cover"
                 />
-              </a>
+              </button>
               <PhotoDeleteToggle
                 photoId={p.id}
                 armed={softDelete.confirmingId === p.id}
@@ -3972,6 +4027,7 @@ function PanelCard({
   onCreateAndAddDoors: (names: string[]) => Promise<boolean>;
 }) {
   const tracker = useContext(SaveTrackerContext);
+  const photoViewer = useContext(PhotoViewerContext);
   const [nameDraft, setNameDraft] = useState(panel.name);
   const [commDraft, setCommDraft] = useState(panel.comm_room ?? "");
   const [syncedName, setSyncedName] = useState(panel.name);
@@ -4322,10 +4378,16 @@ function PanelCard({
                 key={p.id}
                 className="group relative aspect-square overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-800"
               >
-                <a
-                  href={publicJobFileUrl(supabaseUrl, p.storage_path)}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <button
+                  type="button"
+                  onClick={() =>
+                    photoViewer.open(
+                      publicJobFileUrl(supabaseUrl, p.storage_path),
+                      `${panel.name} photo`,
+                    )
+                  }
+                  aria-label={`View ${panel.name} photo`}
+                  className="block h-full w-full"
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
@@ -4333,7 +4395,7 @@ function PanelCard({
                     alt={`${panel.name} photo`}
                     className="h-full w-full object-cover"
                   />
-                </a>
+                </button>
                 <PhotoDeleteToggle
                   photoId={p.id}
                   armed={photoSoftDelete.confirmingId === p.id}
