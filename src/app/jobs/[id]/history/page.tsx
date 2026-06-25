@@ -3,11 +3,13 @@ import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import {
   describeJobActivity,
-  formatRelativeTime,
-  groupActivitiesByDay,
   jobActivityActorName,
   type JobActivity,
 } from "@/lib/job-activity";
+import {
+  ActivityHistoryList,
+  type ActivityEntry,
+} from "@/components/ActivityHistoryList";
 
 export default async function JobHistoryPage({
   params,
@@ -30,7 +32,12 @@ export default async function JobHistoryPage({
   if (error || !job) notFound();
 
   const items = (activities ?? []) as JobActivity[];
-  const groups = groupActivitiesByDay(items);
+  const entries: ActivityEntry[] = items.map((a) => ({
+    id: a.id,
+    created_at: a.created_at,
+    actor: jobActivityActorName(a),
+    description: describeJobActivity(a),
+  }));
 
   return (
     <>
@@ -61,53 +68,16 @@ export default async function JobHistoryPage({
       </header>
 
       <section className="mx-auto w-full max-w-md flex-1 px-4 py-4">
-        {activityError && (
+        {activityError ? (
           <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-300">
             Couldn&apos;t load history: {activityError.message}
           </p>
+        ) : (
+          <ActivityHistoryList
+            entries={entries}
+            emptyMessage="Nothing here yet. Edits to this job's doors, equipment, and photos will show up here once they happen."
+          />
         )}
-
-        {!activityError && items.length === 0 && (
-          <p className="mt-12 text-center text-sm text-neutral-500 dark:text-neutral-400">
-            Nothing here yet. Edits to this job&apos;s doors, equipment, and
-            photos will show up here once they happen.
-          </p>
-        )}
-
-        {groups.map((group) => (
-          <div key={group.label} className="mb-6">
-            <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-              {group.label}
-            </h2>
-            <ul className="overflow-hidden rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-              {group.activities.map((activity, i) => (
-                <li
-                  key={activity.id}
-                  className={`flex items-start gap-3 px-4 py-3 ${
-                    i > 0
-                      ? "border-t border-neutral-200 dark:border-neutral-800"
-                      : ""
-                  }`}
-                >
-                  <div className="w-16 flex-shrink-0 leading-tight">
-                    <time
-                      dateTime={activity.created_at}
-                      className="block text-xs tabular-nums text-neutral-500 dark:text-neutral-400"
-                    >
-                      {formatRelativeTime(activity.created_at)}
-                    </time>
-                    <span className="mt-0.5 block text-[10px] text-neutral-400 dark:text-neutral-500">
-                      {jobActivityActorName(activity)}
-                    </span>
-                  </div>
-                  <p className="min-w-0 flex-1 text-sm text-neutral-800 dark:text-neutral-200">
-                    {describeJobActivity(activity)}
-                  </p>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ))}
       </section>
     </>
   );
