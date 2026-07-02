@@ -15,7 +15,7 @@ const HIDE_EXACT = new Set([
   "/signin",
   "/pending-approval",
 ]);
-const HIDE_PREFIX = ["/forgot-password"];
+const HIDE_PREFIX = ["/forgot-password", "/share"];
 
 export function HomeFab() {
   const pathname = usePathname();

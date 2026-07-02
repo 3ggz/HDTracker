@@ -10,6 +10,7 @@ export type Job = {
   site_map_label: string | null;
   completed_at: string | null;
   manual_workers: string[];
+  share_token: string;
   created_at: string;
   updated_at: string;
 };
@@ -32,12 +33,21 @@ export type JobDoorItem = {
   door_id: string;
   name: string;
   note: string | null;
+  ip_address: string | null;
+  mac_address: string | null;
   photo_storage_path: string | null;
   photo_uploaded_at: string | null;
   completed_at: string | null;
   position: number;
   created_at: string;
 };
+
+// Items eligible for IP + MAC address fields. 5500 exciters are the
+// networked device on a HUGS door; extend this test if more device
+// families grow network config later.
+export function itemSupportsNetworkFields(name: string): boolean {
+  return /5500/.test(name);
+}
 
 export type JobPanel = {
   id: string;

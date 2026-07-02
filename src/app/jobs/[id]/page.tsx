@@ -159,7 +159,7 @@ export default async function JobDetailPage({
       : supabase
           .from("job_door_items")
           .select(
-            "id, door_id, name, note, photo_storage_path, photo_uploaded_at, completed_at, position, created_at",
+            "id, door_id, name, note, ip_address, mac_address, photo_storage_path, photo_uploaded_at, completed_at, position, created_at",
           )
           .in("door_id", doorIds)
           .order("position", { ascending: true })
