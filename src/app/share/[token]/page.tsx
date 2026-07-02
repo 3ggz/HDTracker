@@ -101,11 +101,8 @@ export default async function SharedJobPage({
   return (
     <>
       <style>{`
-        /* margin:0 removes the browser's injected URL footer and
-           "page 1 of 2" counter; padding restores the page margin. */
-        @page { margin: 0; }
+        @page { margin: 0.4in; }
         @media print {
-          main { padding: 0.4in !important; }
           .share-toolbar { display: none !important; }
           .avoid-break { page-break-inside: avoid; break-inside: avoid; }
           li { page-break-inside: avoid; break-inside: avoid; }

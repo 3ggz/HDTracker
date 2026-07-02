@@ -86,14 +86,13 @@ export function JobPrintView({
   return (
     <>
       <style>{`
-        /* margin:0 leaves the browser no header/footer margin box to
-           draw its injected page URL ("link at the bottom") or
-           "page 1 of 2" counter into, so they disappear. We put the
-           page's breathing room back as padding on the article
-           instead (!important to beat the Tailwind px-4/py-4). */
-        @page { margin: 0; }
+        /* Keep a real page margin. Zeroing it (to hide the browser's
+           injected URL/page-counter) makes Chrome rasterize every
+           page to a full-page bitmap — ballooning a photo report from
+           ~6 MB to ~27 MB. Not worth it; the header/footer is a
+           one-time "Headers and footers" toggle in the print dialog. */
+        @page { margin: 0.4in; }
         @media print {
-          article { padding: 0.4in !important; }
           .print-toolbar { display: none !important; }
           a { color: inherit; text-decoration: none; }
           .page-break { page-break-before: always; }
