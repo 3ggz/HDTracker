@@ -25,14 +25,35 @@ export function JobPrintView({
 }) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 
+  // Export date is stamped once on mount (not during render — that
+  // trips the react-hooks purity lint and would also change on every
+  // re-render). Drives both the visible header and the filename.
+  const [exportedAt, setExportedAt] = useState("");
+
   // The browser's "Save as PDF" defaults its filename to document.title.
-  // Set it to the job name (sanitized for filesystem-friendliness) so
-  // the saved file lands as "Acme HQ.pdf" instead of "localhost-3000.pdf".
+  // Set it to the job name + export date (sanitized for filesystem-
+  // friendliness) so the saved file lands as
+  // "Acme HQ (1234) - Jan 5 2026.pdf" instead of "localhost-3000.pdf".
   useEffect(() => {
+    const now = new Date();
+    // "Jan 5, 2026" style, but comma-free so it's filename-safe.
+    const dateStr = now
+      .toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      })
+      .replace(/,/g, "");
+    // Capturing the mount-time export date is a legit external sync,
+    // not a cascading-render smell.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setExportedAt(dateStr);
+
     const prior = document.title;
     const safeName =
       job.name.replace(/[\\/:*?"<>|]+/g, "-").trim() || "Job report";
-    document.title = job.number ? `${safeName} (${job.number})` : safeName;
+    const numberPart = job.number ? ` (${job.number})` : "";
+    document.title = `${safeName}${numberPart} - ${dateStr}`;
     return () => {
       document.title = prior;
     };
@@ -65,8 +86,14 @@ export function JobPrintView({
   return (
     <>
       <style>{`
-        @page { margin: 0.4in; }
+        /* margin:0 leaves the browser no header/footer margin box to
+           draw its injected page URL ("link at the bottom") or
+           "page 1 of 2" counter into, so they disappear. We put the
+           page's breathing room back as padding on the article
+           instead (!important to beat the Tailwind px-4/py-4). */
+        @page { margin: 0; }
         @media print {
+          article { padding: 0.4in !important; }
           .print-toolbar { display: none !important; }
           a { color: inherit; text-decoration: none; }
           .page-break { page-break-before: always; }
@@ -187,6 +214,11 @@ export function JobPrintView({
               {new Date(job.created_at).toLocaleDateString()} →{" "}
               {new Date(job.updated_at).toLocaleDateString()}
             </span>
+            {exportedAt && (
+              <span className="text-neutral-500">
+                <span className="font-semibold">Exported:</span> {exportedAt}
+              </span>
+            )}
           </div>
           {job.notes && (
             <p className="mt-1 whitespace-pre-wrap text-[11px]">

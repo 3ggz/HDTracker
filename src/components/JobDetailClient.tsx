@@ -5336,10 +5336,22 @@ function NetlistPrintSheet({
   }
   const showDevice = Array.from(doorCounts.values()).some((n) => n > 1);
 
+  const [exportedAt, setExportedAt] = useState("");
+
   useEffect(() => {
+    const dateStr = new Date()
+      .toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      })
+      .replace(/,/g, "");
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setExportedAt(dateStr);
+
     const priorTitle = document.title;
     const safeName = job.name.replace(/[\\/:*?"<>|]+/g, "-").trim() || "Job";
-    document.title = `${safeName} IP-MAC list`;
+    document.title = `${safeName} IP-MAC list - ${dateStr}`;
     document.body.classList.add("print-netlist");
     const done = () => onDone();
     window.addEventListener("afterprint", done);
@@ -5361,9 +5373,12 @@ function NetlistPrintSheet({
     <div className="netlist-sheet">
       <style>{`
         .netlist-sheet { display: none; }
+        /* margin:0 removes the browser's injected URL footer and
+           "page 1 of 2" counter; padding restores the page margin. */
+        @page { margin: 0; }
         @media print {
           body.print-netlist > *:not(.netlist-sheet) { display: none !important; }
-          body.print-netlist .netlist-sheet { display: block !important; }
+          body.print-netlist .netlist-sheet { display: block !important; padding: 0.5in; }
           .netlist-sheet tr { break-inside: avoid; page-break-inside: avoid; }
         }
       `}</style>
@@ -5381,6 +5396,7 @@ function NetlistPrintSheet({
         <p style={{ margin: "2px 0 12px", color: "#525252" }}>
           {job.number ? `#${job.number} · ` : ""}IP / MAC list ·{" "}
           {rows.length} {rows.length === 1 ? "device" : "devices"}
+          {exportedAt ? ` · Exported ${exportedAt}` : ""}
         </p>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>

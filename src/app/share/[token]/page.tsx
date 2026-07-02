@@ -90,11 +90,22 @@ export default async function SharedJobPage({
   const jobPhotos = ((photos ?? []) as JobPhoto[]).filter((p) => !p.door_id);
   const typedJob = job as Job;
 
+  const exportedAt = new Date()
+    .toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    })
+    .replace(/,/g, "");
+
   return (
     <>
       <style>{`
-        @page { margin: 0.4in; }
+        /* margin:0 removes the browser's injected URL footer and
+           "page 1 of 2" counter; padding restores the page margin. */
+        @page { margin: 0; }
         @media print {
+          main { padding: 0.4in !important; }
           .share-toolbar { display: none !important; }
           .avoid-break { page-break-inside: avoid; break-inside: avoid; }
           li { page-break-inside: avoid; break-inside: avoid; }
@@ -114,10 +125,22 @@ export default async function SharedJobPage({
             {typedJob.name}
           </h1>
         </div>
-        <ExportPdfButton />
+        <ExportPdfButton
+          documentTitle={`${typedJob.name}${typedJob.number ? ` (${typedJob.number})` : ""} - ${exportedAt}`}
+        />
       </header>
 
       <main className="mx-auto w-full max-w-md flex-1 space-y-3 px-4 pb-12 pt-4">
+        {/* Print-only title block — the sticky header is hidden in
+            print, so without this the PDF would have no job name. */}
+        <div className="hidden print:mb-2 print:block">
+          <h2 className="text-lg font-bold leading-tight">{typedJob.name}</h2>
+          <p className="mt-0.5 text-xs text-neutral-500">
+            {typedJob.number && <>#{typedJob.number} · </>}Exported{" "}
+            {exportedAt}
+          </p>
+        </div>
+
         <section className="avoid-break rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
           {(typedJob.number || typedJob.address) && (
             <div className="mb-3 space-y-0.5 text-sm">
