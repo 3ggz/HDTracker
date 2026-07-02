@@ -5373,12 +5373,10 @@ function NetlistPrintSheet({
     <div className="netlist-sheet">
       <style>{`
         .netlist-sheet { display: none; }
-        /* margin:0 removes the browser's injected URL footer and
-           "page 1 of 2" counter; padding restores the page margin. */
-        @page { margin: 0; }
+        @page { margin: 0.5in; }
         @media print {
           body.print-netlist > *:not(.netlist-sheet) { display: none !important; }
-          body.print-netlist .netlist-sheet { display: block !important; padding: 0.5in; }
+          body.print-netlist .netlist-sheet { display: block !important; }
           .netlist-sheet tr { break-inside: avoid; page-break-inside: avoid; }
         }
       `}</style>

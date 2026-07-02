@@ -66,11 +66,8 @@ export default async function JobNetListPage({
   return (
     <>
       <style>{`
-        /* margin:0 kills the browser's injected URL footer and
-           "page 1 of 2" counter (no margin box to draw them in). */
-        @page { margin: 0; }
+        @page { margin: 0.5in; }
         @media print {
-          main { padding: 0.5in !important; }
           .netlist-toolbar { display: none !important; }
           tr { page-break-inside: avoid; break-inside: avoid; }
           thead { display: table-header-group; }
