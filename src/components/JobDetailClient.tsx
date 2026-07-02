@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -5130,6 +5131,7 @@ function ShareExportSection({
 }) {
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedList, setCopiedList] = useState(false);
+  const [netlistPrinting, setNetlistPrinting] = useState(false);
 
   const doorById = new Map(doors.map((d) => [d.id, d]));
   const networkRows = items
@@ -5248,8 +5250,15 @@ function ShareExportSection({
           : `Copy IP / MAC list${networkRows.length ? ` (${networkRows.length})` : ""}`}
       </button>
       {networkRows.length > 0 && (
-        <a
-          href={`/jobs/${job.id}/netlist`}
+        <button
+          type="button"
+          onClick={(e) => {
+            // Blur first — iOS Safari refuses window.print() while
+            // the initiating button holds focus (same trick as the
+            // main Export PDF toolbar).
+            (e.currentTarget as HTMLButtonElement).blur();
+            setNetlistPrinting(true);
+          }}
           className="flex h-11 w-full items-center justify-center gap-2 rounded-lg border border-neutral-300 text-sm font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
         >
           <svg
@@ -5267,8 +5276,15 @@ function ShareExportSection({
             <line x1="8" y1="13" x2="16" y2="13" />
             <line x1="8" y1="17" x2="16" y2="17" />
           </svg>
-          IP / MAC PDF
-        </a>
+          Export IP / MAC PDF
+        </button>
+      )}
+      {netlistPrinting && (
+        <NetlistPrintSheet
+          job={job}
+          rows={networkRows}
+          onDone={() => setNetlistPrinting(false)}
+        />
       )}
       {networkRows.length === 0 && (
         <p className="text-[11px] text-neutral-400 dark:text-neutral-500">
@@ -5276,6 +5292,145 @@ function ShareExportSection({
         </p>
       )}
     </div>
+  );
+}
+
+// Print-only IP/MAC sheet. Not a page — it portals into <body> as a
+// hidden element, flags the body with a class that flips the print
+// stylesheet to "show only me", fires window.print(), and unmounts
+// after the dialog closes. The user never leaves the job editor.
+function NetlistPrintSheet({
+  job,
+  rows,
+  onDone,
+}: {
+  job: Job;
+  rows: { door: string; item: string; ip: string | null; mac: string | null }[];
+  onDone: () => void;
+}) {
+  const doorCounts = new Map<string, number>();
+  for (const r of rows) {
+    doorCounts.set(r.door, (doorCounts.get(r.door) ?? 0) + 1);
+  }
+  const showDevice = Array.from(doorCounts.values()).some((n) => n > 1);
+
+  useEffect(() => {
+    const priorTitle = document.title;
+    const safeName = job.name.replace(/[\\/:*?"<>|]+/g, "-").trim() || "Job";
+    document.title = `${safeName} IP-MAC list`;
+    document.body.classList.add("print-netlist");
+    const done = () => onDone();
+    window.addEventListener("afterprint", done);
+    // Give the portal a paint before printing so the sheet is in the
+    // DOM when the print snapshot is taken.
+    const t = window.setTimeout(() => window.print(), 100);
+    return () => {
+      window.clearTimeout(t);
+      window.removeEventListener("afterprint", done);
+      document.body.classList.remove("print-netlist");
+      document.title = priorTitle;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (typeof document === "undefined") return null;
+
+  return createPortal(
+    <div className="netlist-sheet">
+      <style>{`
+        .netlist-sheet { display: none; }
+        @media print {
+          body.print-netlist > *:not(.netlist-sheet) { display: none !important; }
+          body.print-netlist .netlist-sheet { display: block !important; }
+          .netlist-sheet tr { break-inside: avoid; page-break-inside: avoid; }
+        }
+      `}</style>
+      <div
+        style={{
+          color: "#171717",
+          background: "#fff",
+          fontSize: "12px",
+          lineHeight: 1.4,
+        }}
+      >
+        <h1 style={{ fontSize: "16px", fontWeight: 700, margin: 0 }}>
+          {job.name}
+        </h1>
+        <p style={{ margin: "2px 0 12px", color: "#525252" }}>
+          {job.number ? `#${job.number} · ` : ""}IP / MAC list ·{" "}
+          {rows.length} {rows.length === 1 ? "device" : "devices"}
+        </p>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              {["Door", ...(showDevice ? ["Device"] : []), "IP", "MAC"].map(
+                (h) => (
+                  <th
+                    key={h}
+                    style={{
+                      textAlign: "left",
+                      padding: "4px 10px 4px 0",
+                      borderBottom: "2px solid #a3a3a3",
+                      fontSize: "10px",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.05em",
+                      color: "#525252",
+                    }}
+                  >
+                    {h}
+                  </th>
+                ),
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i}>
+                <td
+                  style={{
+                    padding: "4px 10px 4px 0",
+                    borderBottom: "1px solid #e5e5e5",
+                    fontWeight: 600,
+                  }}
+                >
+                  {r.door}
+                </td>
+                {showDevice && (
+                  <td
+                    style={{
+                      padding: "4px 10px 4px 0",
+                      borderBottom: "1px solid #e5e5e5",
+                      color: "#525252",
+                    }}
+                  >
+                    {r.item}
+                  </td>
+                )}
+                <td
+                  style={{
+                    padding: "4px 10px 4px 0",
+                    borderBottom: "1px solid #e5e5e5",
+                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                  }}
+                >
+                  {r.ip ?? "—"}
+                </td>
+                <td
+                  style={{
+                    padding: "4px 0",
+                    borderBottom: "1px solid #e5e5e5",
+                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                  }}
+                >
+                  {r.mac ?? "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>,
+    document.body,
   );
 }
 
