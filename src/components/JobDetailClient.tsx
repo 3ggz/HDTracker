@@ -5174,14 +5174,22 @@ function ShareExportSection({
   }
 
   async function copyNetworkList() {
+    // Minimal format: one line per device, dot separators, no
+    // repeated field labels. The item name only appears when a door
+    // has more than one networked device — with a single 5500 per
+    // door (the normal case), "D2 — 5500 Exciter:" was pure noise.
+    const doorCounts = new Map<string, number>();
+    for (const r of networkRows) {
+      doorCounts.set(r.door, (doorCounts.get(r.door) ?? 0) + 1);
+    }
     const lines = [
-      `${job.name}${job.number ? ` (#${job.number})` : ""} — IP / MAC list`,
+      job.name + (job.number ? ` — #${job.number}` : ""),
+      `IP / MAC — ${networkRows.length} ${networkRows.length === 1 ? "device" : "devices"}`,
       "",
       ...networkRows.map((r) => {
-        const parts = [];
-        if (r.ip) parts.push(`IP ${r.ip}`);
-        if (r.mac) parts.push(`MAC ${r.mac}`);
-        return `${r.door} — ${r.item}: ${parts.join(", ")}`;
+        const label =
+          (doorCounts.get(r.door) ?? 0) > 1 ? `${r.door} (${r.item})` : r.door;
+        return [label, r.ip, r.mac].filter(Boolean).join("  ·  ");
       }),
     ];
     if (await copyText(lines.join("\n"))) {
@@ -5239,6 +5247,29 @@ function ShareExportSection({
           ? "List copied!"
           : `Copy IP / MAC list${networkRows.length ? ` (${networkRows.length})` : ""}`}
       </button>
+      {networkRows.length > 0 && (
+        <a
+          href={`/jobs/${job.id}/netlist`}
+          className="flex h-11 w-full items-center justify-center gap-2 rounded-lg border border-neutral-300 text-sm font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
+        >
+          <svg
+            className="h-4 w-4"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <line x1="8" y1="13" x2="16" y2="13" />
+            <line x1="8" y1="17" x2="16" y2="17" />
+          </svg>
+          IP / MAC PDF
+        </a>
+      )}
       {networkRows.length === 0 && (
         <p className="text-[11px] text-neutral-400 dark:text-neutral-500">
           Fill in IP / MAC on a 5500 to enable the list export.

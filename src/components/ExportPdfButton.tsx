@@ -1,9 +1,25 @@
 "use client";
 
+import { useEffect } from "react";
+
 // Same blur + defer trick as the job print toolbar — iOS Safari
 // refuses a second window.print() while the initiating button still
-// holds focus.
-export function ExportPdfButton() {
+// holds focus. Optional documentTitle sets the browser tab title so
+// "Save as PDF" defaults to a sensible filename.
+export function ExportPdfButton({
+  documentTitle,
+}: {
+  documentTitle?: string;
+}) {
+  useEffect(() => {
+    if (!documentTitle) return;
+    const prior = document.title;
+    document.title = documentTitle.replace(/[\\/:*?"<>|]+/g, "-").trim();
+    return () => {
+      document.title = prior;
+    };
+  }, [documentTitle]);
+
   return (
     <button
       type="button"
