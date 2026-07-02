@@ -79,11 +79,26 @@ export function JobPrintView({
           img, figure { page-break-inside: avoid; break-inside: avoid; }
           h1, h2, h3 { page-break-after: avoid; break-after: avoid; }
           p { orphans: 3; widows: 3; }
-          /* Two-column door grid via CSS columns so cards flow into
-             whichever column has room first. break-inside: avoid keeps
-             each door card together instead of splitting mid-card. */
-          .door-cols { column-count: 2; column-gap: 0.2in; }
-          .door-cols > li { break-inside: avoid; -webkit-column-break-inside: avoid; page-break-inside: avoid; display: block; margin-bottom: 0.12in; }
+          /* Two-up door cards WITHOUT CSS multi-column. A paginated
+             multi-column container makes WebKit ignore break-inside on
+             its children and slice cards (and their photos) mid-page.
+             inline-block cards stay in normal flow, so the print
+             paginator honors break-inside: avoid and keeps each card
+             — text and photos — whole. font-size:0 on the wrapper
+             kills the whitespace gap between the two inline blocks;
+             each card resets its own baseline size. */
+          .door-cols { font-size: 0; }
+          .door-cols > li {
+            display: inline-block;
+            width: 49%;
+            vertical-align: top;
+            margin-top: 0;
+            margin-bottom: 0.12in;
+            font-size: 10px;
+            page-break-inside: avoid;
+            break-inside: avoid;
+          }
+          .door-cols > li:nth-child(odd) { margin-right: 2%; }
         }
         body { background: white; }
       `}</style>
