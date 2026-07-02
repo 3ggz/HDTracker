@@ -96,7 +96,11 @@ export default async function SharedJobPage({
         @page { margin: 0.4in; }
         @media print {
           .share-toolbar { display: none !important; }
-          .avoid-break { page-break-inside: avoid; }
+          .avoid-break { page-break-inside: avoid; break-inside: avoid; }
+          li { page-break-inside: avoid; break-inside: avoid; }
+          img { page-break-inside: avoid; break-inside: avoid; }
+          h1, h2, h3 { page-break-after: avoid; break-after: avoid; }
+          p { orphans: 3; widows: 3; }
           body { background: white; }
         }
       `}</style>

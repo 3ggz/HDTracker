@@ -70,12 +70,20 @@ export function JobPrintView({
           .print-toolbar { display: none !important; }
           a { color: inherit; text-decoration: none; }
           .page-break { page-break-before: always; }
-          .avoid-break { page-break-inside: avoid; }
+          /* Anti-split rules. WebKit's print engine happily slices a
+             line of text in half across a page unless every unit that
+             must stay whole is marked with BOTH the legacy
+             page-break-* and modern break-* forms. */
+          .avoid-break { page-break-inside: avoid; break-inside: avoid; }
+          li { page-break-inside: avoid; break-inside: avoid; }
+          img, figure { page-break-inside: avoid; break-inside: avoid; }
+          h1, h2, h3 { page-break-after: avoid; break-after: avoid; }
+          p { orphans: 3; widows: 3; }
           /* Two-column door grid via CSS columns so cards flow into
              whichever column has room first. break-inside: avoid keeps
              each door card together instead of splitting mid-card. */
           .door-cols { column-count: 2; column-gap: 0.2in; }
-          .door-cols > li { break-inside: avoid; -webkit-column-break-inside: avoid; display: block; margin-bottom: 0.12in; }
+          .door-cols > li { break-inside: avoid; -webkit-column-break-inside: avoid; page-break-inside: avoid; display: block; margin-bottom: 0.12in; }
         }
         body { background: white; }
       `}</style>
