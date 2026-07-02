@@ -54,11 +54,23 @@ export default async function JobNetListPage({
   }
   const showDevice = Array.from(doorCounts.values()).some((n) => n > 1);
 
+  // Server component is dynamic (ƒ), so this is the moment of export.
+  const exportedAt = new Date()
+    .toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    })
+    .replace(/,/g, "");
+
   return (
     <>
       <style>{`
-        @page { margin: 0.5in; }
+        /* margin:0 kills the browser's injected URL footer and
+           "page 1 of 2" counter (no margin box to draw them in). */
+        @page { margin: 0; }
         @media print {
+          main { padding: 0.5in !important; }
           .netlist-toolbar { display: none !important; }
           tr { page-break-inside: avoid; break-inside: avoid; }
           thead { display: table-header-group; }
@@ -92,7 +104,9 @@ export default async function JobNetListPage({
             {typedJob.name}
           </h1>
         </div>
-        <ExportPdfButton documentTitle={`${typedJob.name} IP-MAC list`} />
+        <ExportPdfButton
+          documentTitle={`${typedJob.name} IP-MAC list - ${exportedAt}`}
+        />
       </header>
 
       <main className="mx-auto w-full max-w-md flex-1 px-4 pb-12 pt-5 print:max-w-none print:px-0 print:pt-0">
@@ -103,7 +117,7 @@ export default async function JobNetListPage({
           <p className="mt-0.5 text-sm text-neutral-500 print:text-xs dark:text-neutral-400">
             {typedJob.number && <>#{typedJob.number} · </>}
             IP / MAC list · {rows.length}{" "}
-            {rows.length === 1 ? "device" : "devices"}
+            {rows.length === 1 ? "device" : "devices"} · Exported {exportedAt}
           </p>
         </div>
 
