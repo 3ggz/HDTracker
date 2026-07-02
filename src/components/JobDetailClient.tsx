@@ -22,6 +22,7 @@ import { CSS } from "@dnd-kit/utilities";
 import {
   compareCanonicalItems,
   compareDoorNames,
+  itemSupportsNetworkFields,
   type Job,
   type JobDoor,
   type JobDoorItem,
@@ -355,6 +356,27 @@ export function JobDetailClient({
   // column so we filter incoming item events client-side via this set.
   const doorIdsRef = useRef(new Set(initialDoors.map((d) => d.id)));
 
+  // Id-deduped local adds. Every "door/items created" path races the
+  // realtime INSERT subscription — on slow connections the realtime
+  // event lands before the insert's own response resolves, and a
+  // naive [...current, door] append shows the same row twice (both
+  // copies sharing one DB id, so deleting "one" removed both and a
+  // refresh collapsed them). All local add paths go through these.
+  const addDoorDeduped = (door: JobDoor) => {
+    doorIdsRef.current.add(door.id);
+    setDoors((current) =>
+      current.some((d) => d.id === door.id) ? current : [...current, door],
+    );
+  };
+  const addItemsDeduped = (newItems: JobDoorItem[]) => {
+    if (newItems.length === 0) return;
+    setItems((current) => {
+      const seen = new Set(current.map((it) => it.id));
+      const fresh = newItems.filter((it) => !seen.has(it.id));
+      return fresh.length ? [...current, ...fresh] : current;
+    });
+  };
+
   useEffect(() => {
     const supabase = createClient();
     const channel = supabase
@@ -643,15 +665,10 @@ export function JobDetailClient({
           .eq("door_id", result.doorId),
       ]);
       if (doorRow) {
-        doorIdsRef.current.add((doorRow as JobDoor).id);
-        setDoors((current) =>
-          current.some((d) => d.id === (doorRow as JobDoor).id)
-            ? current
-            : [...current, doorRow as JobDoor],
-        );
+        addDoorDeduped(doorRow as JobDoor);
       }
       if (itemRows) {
-        setItems((current) => [...current, ...(itemRows as JobDoorItem[])]);
+        addItemsDeduped(itemRows as JobDoorItem[]);
       }
       if (photoRows) {
         setPhotos((current) => [...(photoRows as JobPhoto[]), ...current]);
@@ -776,13 +793,9 @@ export function JobDetailClient({
           ok = false;
           return;
         }
-        doorIdsRef.current.add((door as JobDoor).id);
-        setDoors((current) => [...current, door as JobDoor]);
+        addDoorDeduped(door as JobDoor);
         if (insertedItems) {
-          setItems((current) => [
-            ...current,
-            ...(insertedItems as JobDoorItem[]),
-          ]);
+          addItemsDeduped(insertedItems as JobDoorItem[]);
         }
         setPanelDoors((current) => [
           ...current,
@@ -933,9 +946,8 @@ export function JobDetailClient({
               existingCount={doors.length}
               template={selectedTemplate}
               onAdded={(door, newItems, options) => {
-                doorIdsRef.current.add(door.id);
-                setDoors((d) => [...d, door]);
-                if (newItems.length) setItems((i) => [...i, ...newItems]);
+                addDoorDeduped(door);
+                addItemsDeduped(newItems);
                 if (options?.focus) setNewDoorId(door.id);
               }}
             />
@@ -1459,6 +1471,13 @@ export function JobDetailClient({
             </button>
           )}
         </div>
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        title="Share & export"
+        storageKey={`hd:job:${initialJob.id}:share`}
+      >
+        <ShareExportSection job={job} doors={doors} items={items} />
       </CollapsibleSection>
 
       <button
@@ -3471,6 +3490,26 @@ function DoorItemRow({
     onUpdate(data as JobDoorItem);
   }
 
+  async function saveNetworkField(
+    column: "ip_address" | "mac_address",
+    next: string | null,
+  ) {
+    const { data, error } = await withTrack(tracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("job_door_items")
+        .update({ [column]: next })
+        .eq("id", item.id)
+        .select("*")
+        .maybeSingle();
+    });
+    if (error || !data) {
+      alert(error?.message ?? "Couldn't save — refresh to sync.");
+      return;
+    }
+    onUpdate(data as JobDoorItem);
+  }
+
   async function uploadPhotos(files: FileList | File[]) {
     setUploading(true);
     const list = Array.from(files);
@@ -3674,6 +3713,25 @@ function DoorItemRow({
         </button>
       </div>
 
+      {itemSupportsNetworkFields(item.name) && (
+        <div className="mt-2 grid grid-cols-2 gap-1.5">
+          <NetworkField
+            label="IP"
+            value={item.ip_address}
+            placeholder="10.0.0.—"
+            itemId={item.id}
+            onSave={(v) => void saveNetworkField("ip_address", v)}
+          />
+          <NetworkField
+            label="MAC"
+            value={item.mac_address}
+            placeholder="AA:BB:…"
+            itemId={item.id}
+            onSave={(v) => void saveNetworkField("mac_address", v)}
+          />
+        </div>
+      )}
+
       {hasNote && !noteEditing && (
         <button
           type="button"
@@ -3800,6 +3858,64 @@ function DoorItemRow({
         />
       )}
     </li>
+  );
+}
+
+// Compact labeled input for IP / MAC on networked items (5500s).
+// Saves on blur / Enter like the item note. Draft-vs-synced pattern
+// keeps realtime updates from clobbering half-typed values.
+function NetworkField({
+  label,
+  value,
+  placeholder,
+  itemId,
+  onSave,
+}: {
+  label: string;
+  value: string | null;
+  placeholder: string;
+  itemId: string;
+  onSave: (next: string | null) => void;
+}) {
+  const [draft, setDraft] = useState(value ?? "");
+  const [synced, setSynced] = useState(value ?? "");
+  if ((value ?? "") !== synced) {
+    if (draft === synced) setDraft(value ?? "");
+    setSynced(value ?? "");
+  }
+  return (
+    <label className="flex items-center gap-1.5 rounded-md border border-neutral-200 bg-neutral-50 px-2 dark:border-neutral-700 dark:bg-neutral-950">
+      <span className="flex-shrink-0 text-[10px] font-semibold uppercase tracking-wide text-neutral-400 dark:text-neutral-500">
+        {label}
+      </span>
+      <input
+        type="text"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          const next = draft.trim() || null;
+          if (next !== (value ?? null)) onSave(next);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            e.currentTarget.blur();
+          }
+          if (e.key === "Escape") {
+            setDraft(value ?? "");
+          }
+        }}
+        placeholder={placeholder}
+        id={`net-${label}-${itemId}`}
+        name={`net-${label}-${itemId}`}
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="characters"
+        spellCheck={false}
+        enterKeyHint="done"
+        className="h-8 w-full min-w-0 bg-transparent text-xs text-neutral-900 outline-none dark:text-neutral-100"
+      />
+    </label>
   );
 }
 
@@ -4995,6 +5111,140 @@ function SiteMapBody({
         />
       )}
     </>
+  );
+}
+
+// Share link + IP/MAC export tools. The share link is the public
+// read-only view at /share/[token] — anyone with the URL can open
+// it, no sign-in. The IP/MAC copy walks every networked item that
+// has at least one of the two fields filled and builds a plain-text
+// list grouped by door, ready to paste into an email or ticket.
+function ShareExportSection({
+  job,
+  doors,
+  items,
+}: {
+  job: Job;
+  doors: JobDoor[];
+  items: JobDoorItem[];
+}) {
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [copiedList, setCopiedList] = useState(false);
+
+  const doorById = new Map(doors.map((d) => [d.id, d]));
+  const networkRows = items
+    .filter((it) => it.ip_address || it.mac_address)
+    .map((it) => ({
+      door: doorById.get(it.door_id)?.name?.trim() || "Unnamed door",
+      item: it.name,
+      ip: it.ip_address,
+      mac: it.mac_address,
+    }))
+    .sort((a, b) => compareDoorNames(a.door, b.door));
+
+  async function copyText(text: string): Promise<boolean> {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Clipboard API can fail on http / older iOS — fall back to a
+      // prompt the user can copy from manually.
+      window.prompt("Copy this:", text);
+      return false;
+    }
+  }
+
+  async function copyShareLink() {
+    const url = `${window.location.origin}/share/${job.share_token}`;
+    // Prefer the native share sheet on phones — it's one tap to
+    // text/email the link. Clipboard is the desktop path.
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: job.name, url });
+        return;
+      } catch {
+        // User cancelled the sheet or share failed — fall through to
+        // clipboard so the button still does something useful.
+      }
+    }
+    if (await copyText(url)) {
+      setCopiedLink(true);
+      window.setTimeout(() => setCopiedLink(false), 2000);
+    }
+  }
+
+  async function copyNetworkList() {
+    const lines = [
+      `${job.name}${job.number ? ` (#${job.number})` : ""} — IP / MAC list`,
+      "",
+      ...networkRows.map((r) => {
+        const parts = [];
+        if (r.ip) parts.push(`IP ${r.ip}`);
+        if (r.mac) parts.push(`MAC ${r.mac}`);
+        return `${r.door} — ${r.item}: ${parts.join(", ")}`;
+      }),
+    ];
+    if (await copyText(lines.join("\n"))) {
+      setCopiedList(true);
+      window.setTimeout(() => setCopiedList(false), 2000);
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        onClick={() => void copyShareLink()}
+        className="flex h-11 w-full items-center justify-center gap-2 rounded-lg border border-neutral-300 text-sm font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
+      >
+        <svg
+          className="h-4 w-4"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+        </svg>
+        {copiedLink ? "Link copied!" : "Share view-only link"}
+      </button>
+      <p className="text-[11px] text-neutral-400 dark:text-neutral-500">
+        Anyone with the link can see a read-only summary of this job —
+        no sign-in needed. They can export it to PDF from there.
+      </p>
+      <button
+        type="button"
+        onClick={() => void copyNetworkList()}
+        disabled={networkRows.length === 0}
+        className="flex h-11 w-full items-center justify-center gap-2 rounded-lg border border-neutral-300 text-sm font-medium text-neutral-700 active:bg-neutral-100 disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
+      >
+        <svg
+          className="h-4 w-4"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+        </svg>
+        {copiedList
+          ? "List copied!"
+          : `Copy IP / MAC list${networkRows.length ? ` (${networkRows.length})` : ""}`}
+      </button>
+      {networkRows.length === 0 && (
+        <p className="text-[11px] text-neutral-400 dark:text-neutral-500">
+          Fill in IP / MAC on a 5500 to enable the list export.
+        </p>
+      )}
+    </div>
   );
 }
 

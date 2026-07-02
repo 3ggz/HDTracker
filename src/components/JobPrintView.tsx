@@ -235,6 +235,19 @@ export function JobPrintView({
                               </span>
                               <span>
                                 {it.name}
+                                {(it.ip_address || it.mac_address) && (
+                                  <span className="text-neutral-600">
+                                    {" "}
+                                    [
+                                    {[
+                                      it.ip_address && `IP ${it.ip_address}`,
+                                      it.mac_address && `MAC ${it.mac_address}`,
+                                    ]
+                                      .filter(Boolean)
+                                      .join(" · ")}
+                                    ]
+                                  </span>
+                                )}
                                 {it.note && (
                                   <span className="text-neutral-500">
                                     {" "}
