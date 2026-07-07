@@ -473,6 +473,8 @@ function QuestionPhotos({
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
+                  loading="lazy"
+                  decoding="async"
                   src={publicFaqPhotoUrl(supabaseUrl, p.storage_path)}
                   alt=""
                   className="h-full w-full object-cover"

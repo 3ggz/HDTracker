@@ -25,7 +25,7 @@ const geistMono = Geist_Mono({
 // nukes any existing tags and appends a fresh one — the only way to
 // get a reliable re-read. ThemeSync runs the same remove-and-replace
 // on the React side whenever the user picks a different theme.
-const themeBootstrap = `(function(){try{var s=localStorage.getItem('hd-theme');var d=s==='dark'||((s===null||s==='system')&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.toggle('dark',d);var ex=document.querySelectorAll('meta[name="theme-color"]');for(var i=0;i<ex.length;i++)ex[i].parentNode.removeChild(ex[i]);var m=document.createElement('meta');m.setAttribute('name','theme-color');m.setAttribute('content',d?'#0a0a0a':'#fafafa');document.head.appendChild(m);}catch(e){}})();`;
+const themeBootstrap = `(function(){try{var s=localStorage.getItem('hd-theme');var d=s==='dark'||((s===null||s==='system')&&window.matchMedia('(prefers-color-scheme: dark)').matches);var g=localStorage.getItem('hd-theme-style')==='glass';document.documentElement.classList.toggle('dark',d);document.documentElement.classList.toggle('glass',g);var ex=document.querySelectorAll('meta[name="theme-color"]');for(var i=0;i<ex.length;i++)ex[i].parentNode.removeChild(ex[i]);var m=document.createElement('meta');m.setAttribute('name','theme-color');m.setAttribute('content',g?(d?'#0b1020':'#e8edf7'):(d?'#0a0a0a':'#fafafa'));document.head.appendChild(m);}catch(e){}})();`;
 
 export const metadata: Metadata = {
   title: "HDTracker",

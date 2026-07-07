@@ -31,6 +31,101 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+/* ---------------------------------------------------------------
+   Liquid Glass style (html.glass, combined with html.dark).
+
+   Screen-only: print always renders the flat standard style. The
+   approach overrides the small set of Tailwind surface utilities the
+   app uses consistently (bg-white / dark:bg-neutral-900 cards,
+   neutral-50 page + tiles, /80 sticky headers) rather than touching
+   every component. Two perf guardrails, since "glass" must not make
+   the app feel slower:
+     1. backdrop-filter blur is applied ONLY to large rounded panels
+        (.rounded-lg and up). Blurring every input/button tanks
+        scroll performance on older phones.
+     2. The ambient gradient lives on a fixed body::before layer —
+        iOS Safari ignores background-attachment: fixed, a fixed
+        pseudo-element is the reliable equivalent.
+   --------------------------------------------------------------- */
+@media screen {
+  html.glass body {
+    background: transparent !important;
+  }
+  html.glass body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background:
+      radial-gradient(60% 50% at 15% 10%, rgb(147 175 235 / 0.55), transparent 70%),
+      radial-gradient(55% 45% at 90% 25%, rgb(196 165 231 / 0.45), transparent 70%),
+      radial-gradient(70% 60% at 50% 100%, rgb(150 214 220 / 0.4), transparent 70%),
+      linear-gradient(165deg, #e8edf7 0%, #ece7f5 45%, #e4eef2 100%);
+  }
+  html.glass.dark body::before {
+    background:
+      radial-gradient(60% 50% at 15% 10%, rgb(56 78 158 / 0.4), transparent 70%),
+      radial-gradient(55% 45% at 90% 25%, rgb(104 66 158 / 0.32), transparent 70%),
+      radial-gradient(70% 60% at 50% 100%, rgb(28 96 108 / 0.3), transparent 70%),
+      linear-gradient(165deg, #0b1020 0%, #120f26 45%, #0a1420 100%);
+  }
+
+  /* Frosted panels — big rounded surfaces get translucency + blur. */
+  html.glass .bg-white:is(.rounded-lg, .rounded-xl, .rounded-2xl) {
+    background-color: rgb(255 255 255 / 0.55);
+    backdrop-filter: blur(14px) saturate(1.6);
+    -webkit-backdrop-filter: blur(14px) saturate(1.6);
+  }
+  html.glass.dark .dark\:bg-neutral-900:is(.rounded-lg, .rounded-xl, .rounded-2xl) {
+    background-color: rgb(23 26 44 / 0.5);
+    backdrop-filter: blur(14px) saturate(1.4);
+    -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  }
+
+  /* Small white surfaces (inputs, chips) — translucent, no blur. */
+  html.glass .bg-white:not(.rounded-lg):not(.rounded-xl):not(.rounded-2xl) {
+    background-color: rgb(255 255 255 / 0.72);
+  }
+  html.glass.dark .dark\:bg-neutral-900:not(.rounded-lg):not(.rounded-xl):not(.rounded-2xl) {
+    background-color: rgb(23 26 44 / 0.66);
+  }
+
+  /* Nested tiles (door cards, avatar circles) + dark inputs. */
+  html.glass .bg-neutral-50 {
+    background-color: rgb(255 255 255 / 0.4);
+  }
+  html.glass.dark .dark\:bg-neutral-950 {
+    background-color: rgb(9 12 26 / 0.5);
+  }
+  html.glass .bg-neutral-100 {
+    background-color: rgb(255 255 255 / 0.5);
+  }
+  html.glass.dark .dark\:bg-neutral-800 {
+    background-color: rgb(50 56 84 / 0.55);
+  }
+
+  /* Sticky headers already carry backdrop-blur — just tint them. */
+  html.glass .bg-neutral-50\/80 {
+    background-color: rgb(240 244 252 / 0.55);
+  }
+  html.glass.dark .dark\:bg-neutral-950\/80 {
+    background-color: rgb(11 16 32 / 0.55);
+  }
+
+  /* Section-tab pill track. */
+  html.glass .bg-neutral-200\/60 {
+    background-color: rgb(255 255 255 / 0.3);
+  }
+
+  /* Hairlines soften into the glass. */
+  html.glass .border-neutral-200 {
+    border-color: rgb(255 255 255 / 0.55);
+  }
+  html.glass.dark .dark\:border-neutral-800 {
+    border-color: rgb(255 255 255 / 0.1);
+  }
+}
+
 /* BackTip animations.
    `hdt-swipe-hint` loops a small dot from a "page edge" line to the
    right, suggesting "swipe from the left edge to go back".

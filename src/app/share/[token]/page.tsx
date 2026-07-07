@@ -317,6 +317,8 @@ export default async function SharedJobPage({
               {jobPhotos.slice(0, 9).map((p) => (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
+                  loading="lazy"
+                  decoding="async"
                   key={p.id}
                   src={publicJobFileUrl(supabaseUrl, p.storage_path)}
                   alt=""

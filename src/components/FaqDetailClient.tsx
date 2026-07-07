@@ -349,6 +349,8 @@ function PhotoRow({
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
+                  loading="lazy"
+                  decoding="async"
           src={publicFaqPhotoUrl(supabaseUrl, photo.storage_path)}
           alt={photo.caption ?? ""}
           className="max-h-[60vh] w-full object-contain"

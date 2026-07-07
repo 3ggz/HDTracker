@@ -3,9 +3,11 @@
 import { useEffect, useSyncExternalStore } from "react";
 import {
   applyTheme,
+  readStoredStyle,
   readStoredTheme,
   subscribe,
   type Theme,
+  type ThemeStyle,
 } from "@/lib/theme-utils";
 
 // Runs on every page (mounted in the root layout) and re-applies
@@ -25,10 +27,15 @@ export function ThemeSync() {
     readStoredTheme,
     () => "system",
   );
+  const style = useSyncExternalStore<ThemeStyle>(
+    subscribe,
+    readStoredStyle,
+    () => "standard",
+  );
 
   useEffect(() => {
-    applyTheme(theme);
-  }, [theme]);
+    applyTheme(theme, style);
+  }, [theme, style]);
 
   useEffect(() => {
     if (theme !== "system") return;
