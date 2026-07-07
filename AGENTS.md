@@ -99,9 +99,12 @@ If you change the stack, document the reasoning in [OVERVIEW.md](./OVERVIEW.md).
 - **New dependencies** — keep the dep list lean; justify each one.
 - **RLS tightening** — Mark wants permissive RLS until he says otherwise.
 
+## Mobile apps
+
+Native iOS/Android shells exist via Capacitor in **remote mode** (`ios/`, `android/`, `capacitor.config.ts`): thin WebViews loading the production Vercel deployment, so web deploys update both apps instantly. See [MOBILE.md](./MOBILE.md) for build + distribution steps. A store re-release is only needed for native-layer changes (server URL, icons, plugins). Don't edit generated native project internals by hand — change `capacitor.config.ts` and run `npm run cap:sync`.
+
 ## Out of scope (for now)
 
-- Native iOS/Android app. PWA covers it; React Native is a Phase-3 maybe.
 - Multi-company / multi-tenant.
 - Barcode scanning, supplier integration, automatic reordering.
 - Customer-facing anything.
