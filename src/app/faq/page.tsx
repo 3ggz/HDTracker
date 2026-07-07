@@ -75,6 +75,8 @@ export default async function FaqPage() {
                       <div className="h-16 w-16 flex-shrink-0 overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-700">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
+                  loading="lazy"
+                  decoding="async"
                           src={publicFaqPhotoUrl(supabaseUrl, thumb)}
                           alt=""
                           className="h-full w-full object-cover"

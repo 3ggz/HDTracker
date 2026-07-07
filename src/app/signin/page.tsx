@@ -26,6 +26,9 @@ export default function SignInPage() {
   useEffect(() => {
     try {
       const saved = localStorage.getItem("hdtracker_remember_me");
+      // Mount-time localStorage read — the one-shot sync is the
+      // point; there's no cascading-render loop here.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       if (saved !== null) setRememberMe(saved === "true");
     } catch {
       // localStorage can be unavailable (private mode, etc) — ignore.

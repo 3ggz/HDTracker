@@ -196,6 +196,8 @@ export function JobDetailClient({
   useEffect(() => {
     try {
       const stored = localStorage.getItem("hd:job:template:default");
+      // Mount-time localStorage read — one-shot sync, no loop.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       if (stored) setSelectedTemplateId(stored);
     } catch {
       // localStorage unavailable — keep HUGS default.
@@ -280,6 +282,10 @@ export function JobDetailClient({
   }
 
   useEffect(() => {
+    // Async fetch — every setState inside sits behind an await, so
+    // there's no synchronous cascade; the analyzer can't see through
+    // the function reference.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadTemplates();
   }, []);
 
@@ -3616,6 +3622,8 @@ function DoorItemRow({
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
+                  loading="lazy"
+                  decoding="async"
                   src={publicJobFileUrl(supabaseUrl, p.storage_path)}
                   alt=""
                   className="h-full w-full object-cover"
@@ -3821,6 +3829,8 @@ function DoorItemRow({
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
+                  loading="lazy"
+                  decoding="async"
                       src={publicJobFileUrl(supabaseUrl, p.storage_path)}
                       alt=""
                       className="h-full w-full object-cover"
@@ -4073,6 +4083,8 @@ function JobPhotoSection({
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
+                  loading="lazy"
+                  decoding="async"
                   src={publicJobFileUrl(supabaseUrl, p.storage_path)}
                   alt={p.caption ?? "Job photo"}
                   className="h-full w-full object-cover"
@@ -4508,6 +4520,8 @@ function PanelCard({
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
+                  loading="lazy"
+                  decoding="async"
                     src={publicJobFileUrl(supabaseUrl, p.storage_path)}
                     alt={`${panel.name} photo`}
                     className="h-full w-full object-cover"
@@ -5856,7 +5870,7 @@ function MemberCombo({
           className="absolute left-0 right-0 z-30 mt-1 max-h-48 overflow-auto rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
         >
           {filtered.map((s) => (
-            <li key={s} role="option">
+            <li key={s} role="option" aria-selected={s === value}>
               <button
                 type="button"
                 onPointerDown={(e) => {

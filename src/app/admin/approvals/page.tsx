@@ -44,6 +44,9 @@ export default async function ApprovalsPage() {
   );
 
   const resetRows = resets ?? [];
+  // Server component — runs once per request, so a wall-clock read
+  // is fine here despite the rule.
+  // eslint-disable-next-line react-hooks/purity
   const now = Date.now();
   const isFreshPending = (r: {
     approved_at: string | null;

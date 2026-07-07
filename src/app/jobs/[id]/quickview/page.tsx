@@ -366,6 +366,8 @@ export default async function JobQuickViewPage({
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
+                  loading="lazy"
+                  decoding="async"
                     src={publicJobFileUrl(supabaseUrl, p.storage_path)}
                     alt=""
                     className="h-full w-full object-cover"

@@ -34,6 +34,9 @@ export default async function VehiclesPage() {
             .is("approved_at", null)
             .gt(
               "requested_at",
+              // Server component — runs once per request, so a
+              // wall-clock read is fine here despite the rule.
+              // eslint-disable-next-line react-hooks/purity
               new Date(Date.now() - 30 * 60 * 1000).toISOString(),
             )
         : Promise.resolve({ count: 0 }),
