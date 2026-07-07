@@ -24,6 +24,12 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>HD Security uses the camera to attach photos to vehicles, items, and issues.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>HD Security uses your location to tag which job site a vehicle was last at.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>HD Security attaches photos from your library to vehicles, items, and issues.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

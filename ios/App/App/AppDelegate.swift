@@ -1,5 +1,6 @@
 import UIKit
 import Capacitor
+import WebKit
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -27,6 +28,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func applicationDidBecomeActive(_ application: UIApplication) {
         // Restart any tasks that were paused (or not yet started) while the application was inactive. If the application was previously in the background, optionally refresh the user interface.
+
+        // Capacitor's WKWebView ships with edge-swipe back/forward navigation
+        // off. In remote mode every page is a real navigation, so enabling it
+        // restores the iOS swipe-to-go-back gesture users expect from Safari.
+        if let bridgeVC = window?.rootViewController as? CAPBridgeViewController {
+            bridgeVC.webView?.allowsBackForwardNavigationGestures = true
+        }
     }
 
     func applicationWillTerminate(_ application: UIApplication) {
