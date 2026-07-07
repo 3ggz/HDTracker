@@ -32,8 +32,24 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Capacitor's WKWebView ships with edge-swipe back/forward navigation
         // off. In remote mode every page is a real navigation, so enabling it
         // restores the iOS swipe-to-go-back gesture users expect from Safari.
-        if let bridgeVC = window?.rootViewController as? CAPBridgeViewController {
-            bridgeVC.webView?.allowsBackForwardNavigationGestures = true
+        if let bridgeVC = window?.rootViewController as? CAPBridgeViewController,
+           let webView = bridgeVC.webView {
+            webView.allowsBackForwardNavigationGestures = true
+
+            // Paint the WebView + its scroll view with a theme-adaptive
+            // background so the iOS safe-area strips (status bar, home
+            // indicator) and rubber-band overscroll show the app's background
+            // color instead of the default white — the reported white bleed
+            // above the header and under the footer in dark mode. Follows the
+            // system light/dark appearance, which the web app also defaults to.
+            // #fafafa light / #0a0a0a dark mirror globals.css --background.
+            let themeBackground = UIColor { traits in
+                traits.userInterfaceStyle == .dark
+                    ? UIColor(red: 0x0a / 255.0, green: 0x0a / 255.0, blue: 0x0a / 255.0, alpha: 1)
+                    : UIColor(red: 0xfa / 255.0, green: 0xfa / 255.0, blue: 0xfa / 255.0, alpha: 1)
+            }
+            webView.backgroundColor = themeBackground
+            webView.scrollView.backgroundColor = themeBackground
         }
     }
 
