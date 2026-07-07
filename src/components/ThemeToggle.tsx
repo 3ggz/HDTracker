@@ -3,10 +3,13 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   applyTheme,
+  persistStyle,
   persistTheme,
+  readStoredStyle,
   readStoredTheme,
   subscribe,
   type Theme,
+  type ThemeStyle,
 } from "@/lib/theme-utils";
 
 export function ThemeToggle() {
@@ -19,6 +22,11 @@ export function ThemeToggle() {
     subscribe,
     readStoredTheme,
     () => "system",
+  );
+  const style = useSyncExternalStore<ThemeStyle>(
+    subscribe,
+    readStoredStyle,
+    () => "standard",
   );
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -45,6 +53,12 @@ export function ThemeToggle() {
     setOpen(false);
   }
 
+  function pickStyle(next: ThemeStyle) {
+    persistStyle(next);
+    applyTheme(theme, next);
+    setOpen(false);
+  }
+
   return (
     <div ref={wrapperRef} className="relative">
       <button
@@ -59,8 +73,11 @@ export function ThemeToggle() {
       {open && (
         <div
           role="menu"
-          className="absolute right-0 top-full z-50 mt-1 w-36 overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-800 dark:bg-neutral-900"
+          className="absolute right-0 top-full z-50 mt-1 w-44 overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-800 dark:bg-neutral-900"
         >
+          <p className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-neutral-400 dark:text-neutral-500">
+            Appearance
+          </p>
           <ThemeOption
             value="light"
             current={theme}
@@ -79,9 +96,95 @@ export function ThemeToggle() {
             label="System"
             onSelect={pick}
           />
+          <p className="border-t border-neutral-200 px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-neutral-400 dark:border-neutral-800 dark:text-neutral-500">
+            Style
+          </p>
+          <StyleOption
+            value="standard"
+            current={style}
+            label="Standard"
+            onSelect={pickStyle}
+          />
+          <StyleOption
+            value="glass"
+            current={style}
+            label="Liquid Glass"
+            onSelect={pickStyle}
+          />
         </div>
       )}
     </div>
+  );
+}
+
+function StyleOption({
+  value,
+  current,
+  label,
+  onSelect,
+}: {
+  value: ThemeStyle;
+  current: ThemeStyle;
+  label: string;
+  onSelect: (style: ThemeStyle) => void;
+}) {
+  const selected = current === value;
+  return (
+    <button
+      type="button"
+      role="menuitemradio"
+      aria-checked={selected}
+      onClick={() => onSelect(value)}
+      className={
+        "flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition active:bg-neutral-100 dark:active:bg-neutral-800 " +
+        (selected
+          ? "text-neutral-900 dark:text-neutral-50"
+          : "text-neutral-600 dark:text-neutral-300")
+      }
+    >
+      {value === "glass" ? (
+        <svg
+          className="h-4 w-4"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="M6 3h12l-1.5 18h-9L6 3Z" />
+          <path d="M7 8h10" />
+        </svg>
+      ) : (
+        <svg
+          className="h-4 w-4"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <rect x="3" y="3" width="18" height="18" rx="3" />
+        </svg>
+      )}
+      <span className="flex-1">{label}</span>
+      {selected && (
+        <svg
+          className="h-4 w-4 text-emerald-600 dark:text-emerald-400"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      )}
+    </button>
   );
 }
 
