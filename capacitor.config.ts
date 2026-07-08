@@ -11,18 +11,22 @@ import type { CapacitorConfig } from "@capacitor/cli";
 // here and run `npx cap sync`.
 const config: CapacitorConfig = {
   appId: "systems.hdsecurity.hdtracker",
-  appName: "HDTracker",
+  appName: "HD Security",
   // webDir is required by the CLI even in remote mode. mobile/www
   // holds a static offline-fallback page only.
   webDir: "mobile/www",
   server: {
-    url: "https://hdtracker.vercel.app",
+    url: "https://www.hdsecurity.systems",
     // Deep control stays with the deployed site; nothing is served
     // from the local bundle except the offline fallback.
     cleartext: false,
   },
   ios: {
-    contentInset: "automatic",
+    // "never" so the WebView doesn't add its own safe-area scroll inset —
+    // the web layer owns the safe areas via viewport-fit=cover +
+    // env(safe-area-inset-*) padding on the sticky header / bottom bar.
+    // "automatic" here would double-inset (native inset + CSS padding).
+    contentInset: "never",
   },
   android: {
     allowMixedContent: false,

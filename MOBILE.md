@@ -11,7 +11,7 @@ offline fallback.
 `capacitor.config.ts` → `server.url` is set to:
 
 ```
-https://hdtracker.vercel.app
+https://www.hdsecurity.systems
 ```
 
 **If the production site lives at a different domain, change it there first**, then:

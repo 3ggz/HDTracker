@@ -25,6 +25,15 @@ html.dark {
   --font-mono: var(--font-geist-mono);
 }
 
+/* Paint the theme background on <html>, not just <body>. In a native
+   WebView (Capacitor) the rubber-band overscroll and the safe-area
+   strips above/below the content reveal the <html> background; without
+   this they fall back to the WebView's default white — jarring in dark
+   mode. Invisible in a normal browser (body covers it). */
+html {
+  background: var(--background);
+}
+
 body {
   background: var(--background);
   color: var(--foreground);
@@ -48,6 +57,15 @@ body {
         pseudo-element is the reliable equivalent.
    --------------------------------------------------------------- */
 @media screen {
+  /* Solid base under the glass gradient so native overscroll and the
+     safe-area strips match the ambient background instead of flashing
+     white. Colors mirror the linear-gradient base stops below. */
+  html.glass {
+    background: #e8edf7;
+  }
+  html.glass.dark {
+    background: #0b1020;
+  }
   html.glass body {
     background: transparent !important;
   }
@@ -157,5 +175,43 @@ body {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+/* ---------------------------------------------------------------
+   Native app safe-area handling (iOS/Android WebView).
+
+   The Capacitor WebView renders edge-to-edge under the status bar and
+   home indicator. Make the sticky top headers and the fixed bottom
+   action bar OPAQUE and extend their background into those safe-area
+   strips, so scrolled content never shows through or above them and the
+   strips match the page instead of flashing white. env() insets are 0
+   in a normal desktop browser, so the padding is a no-op there; the
+   opacity change gives the bars a solid, consistent look everywhere.
+   --------------------------------------------------------------- */
+header.sticky.top-0 {
+  padding-top: calc(0.75rem + env(safe-area-inset-top));
+  background-color: var(--background) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+.fixed.inset-x-0.bottom-0 {
+  padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+  background-color: var(--background) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+@media screen {
+  /* In liquid-glass mode, match the ambient gradient's base color so the
+     opaque bars blend with the page instead of reading as a flat slab. */
+  html.glass header.sticky.top-0,
+  html.glass .fixed.inset-x-0.bottom-0 {
+    background-color: #e8edf7 !important;
+  }
+  html.glass.dark header.sticky.top-0,
+  html.glass.dark .fixed.inset-x-0.bottom-0 {
+    background-color: #0b1020 !important;
   }
 }
