@@ -177,3 +177,41 @@ body {
     transform: translateY(0);
   }
 }
+
+/* ---------------------------------------------------------------
+   Native app safe-area handling (iOS/Android WebView).
+
+   The Capacitor WebView renders edge-to-edge under the status bar and
+   home indicator. Make the sticky top headers and the fixed bottom
+   action bar OPAQUE and extend their background into those safe-area
+   strips, so scrolled content never shows through or above them and the
+   strips match the page instead of flashing white. env() insets are 0
+   in a normal desktop browser, so the padding is a no-op there; the
+   opacity change gives the bars a solid, consistent look everywhere.
+   --------------------------------------------------------------- */
+header.sticky.top-0 {
+  padding-top: calc(0.75rem + env(safe-area-inset-top));
+  background-color: var(--background) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+.fixed.inset-x-0.bottom-0 {
+  padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+  background-color: var(--background) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+@media screen {
+  /* In liquid-glass mode, match the ambient gradient's base color so the
+     opaque bars blend with the page instead of reading as a flat slab. */
+  html.glass header.sticky.top-0,
+  html.glass .fixed.inset-x-0.bottom-0 {
+    background-color: #e8edf7 !important;
+  }
+  html.glass.dark header.sticky.top-0,
+  html.glass.dark .fixed.inset-x-0.bottom-0 {
+    background-color: #0b1020 !important;
+  }
+}

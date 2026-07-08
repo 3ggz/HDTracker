@@ -22,7 +22,11 @@ const config: CapacitorConfig = {
     cleartext: false,
   },
   ios: {
-    contentInset: "automatic",
+    // "never" so the WebView doesn't add its own safe-area scroll inset —
+    // the web layer owns the safe areas via viewport-fit=cover +
+    // env(safe-area-inset-*) padding on the sticky header / bottom bar.
+    // "automatic" here would double-inset (native inset + CSS padding).
+    contentInset: "never",
   },
   android: {
     allowMixedContent: false,
