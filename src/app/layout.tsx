@@ -36,6 +36,11 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
+  // Extend content under the status bar / home indicator so the app
+  // controls the safe-area strips (paired with contentInset:"never" in
+  // capacitor.config.ts). The sticky header + fixed bottom bar pad
+  // themselves with env(safe-area-inset-*) in globals.css.
+  viewportFit: "cover",
   // themeColor is intentionally omitted — the inline bootstrap below
   // owns the meta tag at runtime (remove-and-re-add is the only way
   // iOS / Android pick up a theme-color change). If we let Next.js
