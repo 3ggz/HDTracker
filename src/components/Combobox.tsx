@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useAnchorRect } from "@/lib/use-anchor-rect";
 
 type Props = {
   value: string;
@@ -31,6 +33,11 @@ export function Combobox({
 }: Props) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  // Suggestions portal into document.body — an in-flow absolute list
+  // gets clipped/out-stacked by ancestor overflow or backdrop-filter
+  // stacking contexts (the glass theme gives every card one).
+  const listRef = useRef<HTMLUListElement>(null);
+  const listRect = useAnchorRect(open, containerRef);
 
   const filtered = useMemo(() => {
     const trimmed = value.trim().toLowerCase();
@@ -51,12 +58,10 @@ export function Combobox({
   useEffect(() => {
     if (!open) return;
     function onDocumentInteract(e: MouseEvent | TouchEvent) {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
-      ) {
-        setOpen(false);
-      }
+      const target = e.target as Node;
+      if (containerRef.current?.contains(target)) return;
+      if (listRef.current?.contains(target)) return;
+      setOpen(false);
     }
     document.addEventListener("mousedown", onDocumentInteract);
     document.addEventListener("touchstart", onDocumentInteract, {
@@ -97,31 +102,42 @@ export function Combobox({
         aria-label={ariaLabel}
         className={className}
       />
-      {open && filtered.length > 0 && (
-        <ul
-          role="listbox"
-          className="absolute left-0 right-0 z-50 mt-1 max-h-48 overflow-auto rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
-        >
-          {filtered.map((suggestion) => (
-            <li
-              key={suggestion}
-              role="option"
-              aria-selected={suggestion === value}
-            >
-              <button
-                type="button"
-                onPointerDown={(e) => {
-                  e.preventDefault();
-                  selectSuggestion(suggestion);
-                }}
-                className="block w-full px-3 py-2 text-left text-sm transition active:bg-neutral-100 hover:bg-neutral-100 dark:active:bg-neutral-800 dark:hover:bg-neutral-800"
+      {open &&
+        filtered.length > 0 &&
+        listRect &&
+        createPortal(
+          <ul
+            ref={listRef}
+            role="listbox"
+            style={{
+              position: "fixed",
+              top: listRect.bottom + 4,
+              left: listRect.left,
+              width: listRect.width,
+            }}
+            className="z-50 max-h-48 overflow-auto rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          >
+            {filtered.map((suggestion) => (
+              <li
+                key={suggestion}
+                role="option"
+                aria-selected={suggestion === value}
               >
-                {suggestion}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    selectSuggestion(suggestion);
+                  }}
+                  className="block w-full px-3 py-2 text-left text-sm transition active:bg-neutral-100 hover:bg-neutral-100 dark:active:bg-neutral-800 dark:hover:bg-neutral-800"
+                >
+                  {suggestion}
+                </button>
+              </li>
+            ))}
+          </ul>,
+          document.body,
+        )}
     </div>
   );
 }

@@ -60,6 +60,7 @@ import {
 } from "@/lib/job-templates";
 import { firstNameFromEmail } from "@/lib/email";
 import { useSoftDelete } from "@/lib/use-soft-delete";
+import { useAnchorRect } from "@/lib/use-anchor-rect";
 import { PdfFullscreenModal } from "./PdfFullscreenModal";
 import { PhotoFullscreenModal } from "./PhotoFullscreenModal";
 import { UndoBanner } from "./UndoBanner";
@@ -2103,14 +2104,22 @@ function TemplatePicker({
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  // The menu portals into document.body (see useAnchorRect for why:
+  // glass-theme backdrop-filter makes cards stacking contexts, so an
+  // in-card menu can never out-stack later sibling cards). Dismiss
+  // checks must therefore look at both the trigger AND the portal.
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const menuRect = useAnchorRect(open, wrapRef);
   const selected =
     templates.find((t) => t.id === selectedId) ?? templates[0];
 
   useEffect(() => {
     if (!open) return;
     function onDown(e: MouseEvent | TouchEvent) {
-      if (!wrapRef.current) return;
-      if (!wrapRef.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (wrapRef.current?.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
+      setOpen(false);
     }
     document.addEventListener("mousedown", onDown);
     document.addEventListener("touchstart", onDown);
@@ -2163,10 +2172,19 @@ function TemplatePicker({
           <polyline points="6 9 12 15 18 9" />
         </svg>
       </button>
-      {open && (
+      {open &&
+        menuRect &&
+        createPortal(
         <div
+          ref={menuRef}
           role="menu"
-          className="absolute right-0 top-full z-50 mt-1 w-56 overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          style={{
+            position: "fixed",
+            top: menuRect.bottom + 4,
+            left: menuRect.right,
+            transform: "translateX(-100%)",
+          }}
+          className="z-50 w-56 overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
         >
           <ul className="max-h-64 overflow-y-auto py-1">
             {templates.map((t) => {
@@ -2231,7 +2249,8 @@ function TemplatePicker({
               template…
             </button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
@@ -5798,6 +5817,9 @@ function MemberCombo({
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Portaled list — see useAnchorRect for the stacking-context why.
+  const listRef = useRef<HTMLUListElement>(null);
+  const listRect = useAnchorRect(open, containerRef);
 
   const filtered = useMemo(() => {
     const trimmed = value.trim().toLowerCase();
@@ -5810,8 +5832,10 @@ function MemberCombo({
   useEffect(() => {
     if (!open) return;
     function onDown(e: MouseEvent | TouchEvent) {
-      if (!containerRef.current) return;
-      if (!containerRef.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (containerRef.current?.contains(target)) return;
+      if (listRef.current?.contains(target)) return;
+      setOpen(false);
     }
     document.addEventListener("mousedown", onDown);
     document.addEventListener("touchstart", onDown, { passive: true });
@@ -5868,10 +5892,20 @@ function MemberCombo({
           <polyline points="6 9 12 15 18 9" />
         </svg>
       </button>
-      {open && filtered.length > 0 && (
+      {open &&
+        filtered.length > 0 &&
+        listRect &&
+        createPortal(
         <ul
+          ref={listRef}
           role="listbox"
-          className="absolute left-0 right-0 z-50 mt-1 max-h-48 overflow-auto rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          style={{
+            position: "fixed",
+            top: listRect.bottom + 4,
+            left: listRect.left,
+            width: listRect.width,
+          }}
+          className="z-50 max-h-48 overflow-auto rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
         >
           {filtered.map((s) => (
             <li key={s} role="option" aria-selected={s === value}>
@@ -5887,7 +5921,8 @@ function MemberCombo({
               </button>
             </li>
           ))}
-        </ul>
+        </ul>,
+        document.body,
       )}
     </div>
   );
