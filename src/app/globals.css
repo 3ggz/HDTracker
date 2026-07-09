@@ -31,6 +31,16 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+/* Kill pull-to-refresh. Panning while pinch-zoomed reads as an
+   overscroll at the top edge, and Chrome / Android WebView / iOS
+   Safari 16+ all interpret that as "reload the page" — mid-edit, on
+   a form-heavy app, that's data-loss-adjacent. Normal scrolling is
+   unaffected; only the overscroll refresh/glide-chaining goes. */
+html,
+body {
+  overscroll-behavior-y: none;
+}
+
 /* ---------------------------------------------------------------
    Liquid Glass style (html.glass, combined with html.dark).
 

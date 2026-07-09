@@ -100,7 +100,7 @@ export function Combobox({
       {open && filtered.length > 0 && (
         <ul
           role="listbox"
-          className="absolute left-0 right-0 z-20 mt-1 max-h-48 overflow-auto rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          className="absolute left-0 right-0 z-50 mt-1 max-h-48 overflow-auto rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
         >
           {filtered.map((suggestion) => (
             <li

@@ -1815,7 +1815,11 @@ function CollapsibleSection({
     }
   }
   return (
-    <section className="overflow-hidden rounded-2xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+    // No overflow-hidden here: it clipped dropdowns that open from
+    // the header (template picker, floor rename). The toggle button
+    // is inset with its own rounding, so nothing pokes past the
+    // section's rounded corners anyway.
+    <section className="rounded-2xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
       {/* Header row is a div, not a button — putting rightHeader's
           interactive children (Rename button, AddDoorMenu, etc.)
           inside another <button> is invalid HTML and breaks clicks
@@ -2162,7 +2166,7 @@ function TemplatePicker({
       {open && (
         <div
           role="menu"
-          className="absolute right-0 top-full z-30 mt-1 w-56 overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          className="absolute right-0 top-full z-50 mt-1 w-56 overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
         >
           <ul className="max-h-64 overflow-y-auto py-1">
             {templates.map((t) => {
@@ -5867,7 +5871,7 @@ function MemberCombo({
       {open && filtered.length > 0 && (
         <ul
           role="listbox"
-          className="absolute left-0 right-0 z-30 mt-1 max-h-48 overflow-auto rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          className="absolute left-0 right-0 z-50 mt-1 max-h-48 overflow-auto rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
         >
           {filtered.map((s) => (
             <li key={s} role="option" aria-selected={s === value}>
