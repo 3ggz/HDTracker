@@ -1031,6 +1031,7 @@ function PdfPageView({
             <input
               autoFocus
               type="text"
+              enterKeyHint="done"
               value={textInput.value}
               onChange={(e) =>
                 setTextInput((cur) =>

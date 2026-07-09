@@ -2010,6 +2010,7 @@ function AddDoorMenu({
         <input
           autoFocus
           type="text"
+          enterKeyHint="done"
           placeholder="Door 101, Door 102…"
           value={bulkText}
           onChange={(e) => setBulkText(e.target.value)}
