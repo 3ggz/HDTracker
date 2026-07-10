@@ -292,7 +292,10 @@ Deno.serve(async (req: Request) => {
     } = await supabase.auth.getUser();
     if (!user) return json({ ok: false, error: "Not signed in." }, 401);
 
-    const { jobId } = (await req.json()) as { jobId?: string };
+    const { jobId, storagePath } = (await req.json()) as {
+      jobId?: string;
+      storagePath?: string;
+    };
     if (!jobId) return json({ ok: false, error: "Missing jobId." }, 400);
 
     const { data: job, error: jobError } = await supabase
@@ -306,13 +309,35 @@ Deno.serve(async (req: Request) => {
         error: jobError?.message ?? "Job not found.",
       });
     }
-    if (!job.site_map_path) {
+
+    // Detect from whichever PDF the caller picked — the primary or an extra
+    // floor upload (different floors often arrive as separate PDFs). Validate
+    // the path belongs to this job so the function can't be pointed at an
+    // unrelated file. No path given → fall back to the primary.
+    let pdfPath: string | null = job.site_map_path;
+    if (storagePath) {
+      let allowed = storagePath === job.site_map_path;
+      if (!allowed) {
+        const { data: extra } = await supabase
+          .from("job_site_maps")
+          .select("id")
+          .eq("job_id", jobId)
+          .eq("storage_path", storagePath)
+          .maybeSingle();
+        allowed = !!extra;
+      }
+      if (!allowed) {
+        return json({ ok: false, error: "That PDF isn't on this job." }, 400);
+      }
+      pdfPath = storagePath;
+    }
+    if (!pdfPath) {
       return json({ ok: false, error: "Upload a site-map PDF first." });
     }
 
     const { data: pdfBlob, error: dlError } = await supabase.storage
       .from("job-files")
-      .download(job.site_map_path);
+      .download(pdfPath);
     if (dlError || !pdfBlob) {
       return json({
         ok: false,

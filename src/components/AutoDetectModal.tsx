@@ -14,11 +14,15 @@ type Row = DetectedDoor & {
 
 export function AutoDetectModal({
   jobId,
+  storagePath,
   open,
   onClose,
   onImported,
 }: {
   jobId: string;
+  // Which PDF to detect from — the selected site map (primary or an extra).
+  // Omitted/null falls back to the job's primary on the server.
+  storagePath?: string | null;
   open: boolean;
   onClose: () => void;
   onImported: (count: number) => void;
@@ -62,7 +66,9 @@ export function AutoDetectModal({
         ),
     );
     const { data, error: invokeError } = (await Promise.race([
-      supabase.functions.invoke("auto-detect-doors", { body: { jobId } }),
+      supabase.functions.invoke("auto-detect-doors", {
+        body: { jobId, storagePath },
+      }),
       timeout,
     ])) as {
       data:
