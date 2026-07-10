@@ -67,9 +67,24 @@ export function PdfPanZoomViewer({
         const base = page.getViewport({ scale: 1 });
         const fit = cw / base.width;
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        const viewport = page.getViewport({ scale: fit * dpr });
+        // Supersample the bitmap so the map stays sharp when zoomed in
+        // (zoom is a CSS transform on this canvas — a low-res bitmap would
+        // just get stretched and blur). Fill as much resolution as iOS's
+        // canvas limit allows by capping the largest dimension at 4000px.
+        const MAX_DIM = 4000;
+        const fitScale = fit * dpr;
+        const quality = Math.max(
+          1,
+          Math.min(
+            MAX_SCALE,
+            MAX_DIM / Math.max(base.width * fitScale, base.height * fitScale),
+          ),
+        );
+        const viewport = page.getViewport({ scale: fitScale * quality });
         canvas.width = Math.floor(viewport.width);
         canvas.height = Math.floor(viewport.height);
+        // CSS size stays at fit; the extra bitmap pixels are the zoom
+        // headroom, revealed crisply as the transform scales up.
         canvas.style.width = `${base.width * fit}px`;
         canvas.style.height = `${base.height * fit}px`;
         const ctx = canvas.getContext("2d");
