@@ -61,6 +61,7 @@ import {
 import { firstNameFromEmail } from "@/lib/email";
 import { useSoftDelete } from "@/lib/use-soft-delete";
 import { PdfFullscreenModal } from "./PdfFullscreenModal";
+import { PdfPanZoomViewer } from "./PdfPanZoomViewer";
 import { PhotoFullscreenModal } from "./PhotoFullscreenModal";
 import { UndoBanner } from "./UndoBanner";
 import {
@@ -4942,25 +4943,11 @@ function SiteMapBody({
 
           {selected && (
             <>
-              <object
+              <PdfPanZoomViewer
                 key={selected.storagePath}
-                data={
-                  publicJobFileUrl(supabaseUrl, selected.storagePath) +
-                  "#view=FitH"
-                }
-                type="application/pdf"
+                pdfUrl={publicJobFileUrl(supabaseUrl, selected.storagePath)}
                 className="h-[65vh] w-full rounded-lg border border-neutral-200 bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-950"
-                aria-label={`Site map: ${selected.label}`}
-              >
-                <a
-                  href={publicJobFileUrl(supabaseUrl, selected.storagePath)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex h-full w-full items-center justify-center p-6 text-center text-sm text-neutral-600 dark:text-neutral-400"
-                >
-                  Your browser can&apos;t render PDFs inline. Tap to open.
-                </a>
-              </object>
+              />
               <button
                 type="button"
                 onClick={() => setFullscreenSrc(selected.storagePath)}
