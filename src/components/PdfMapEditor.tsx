@@ -1020,7 +1020,14 @@ function PdfPageView({
   const wrapperH = naturalSize ? naturalSize.h * scale : null;
 
   return (
-    <div className="mb-3 flex flex-col items-center">
+    <div
+      className="mb-3 flex flex-col"
+      // "safe center" keeps the page centered when it fits, but aligns it
+      // to the start when it's zoomed wider than the viewport — otherwise
+      // plain center-alignment clips the overflow and the scroll container
+      // can't reach the sides (you get stuck panning to one spot).
+      style={{ alignItems: "safe center" }}
+    >
       <div className="mb-1 flex w-full items-center justify-between px-1">
         <span className="text-[10px] font-semibold uppercase tracking-wide text-neutral-500">
           Page {pageIndex + 1}
