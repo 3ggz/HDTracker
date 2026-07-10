@@ -174,6 +174,8 @@ export function JobDetailClient({
   const [panelPhotos, setPanelPhotos] = useState(initialPanelPhotos);
   const [extraSiteMaps, setExtraSiteMaps] = useState(initialExtraSiteMaps);
   const [autoDetectOpen, setAutoDetectOpen] = useState(false);
+  // Which PDF the user launched auto-detect from (primary or an extra floor).
+  const [autoDetectPath, setAutoDetectPath] = useState<string | null>(null);
   const [newDoorId, setNewDoorId] = useState<string | null>(null);
 
   // Door-creation template registry. HUGS is always pinned at the
@@ -1333,7 +1335,10 @@ export function JobDetailClient({
           job={job}
           onJobUpdate={(j) => setJob(j)}
           supabaseUrl={supabaseUrl}
-          onOpenAutoDetect={() => setAutoDetectOpen(true)}
+          onOpenAutoDetect={(path) => {
+            setAutoDetectPath(path);
+            setAutoDetectOpen(true);
+          }}
           extras={extraSiteMaps}
           onExtraAdded={(map) =>
             setExtraSiteMaps((cur) => [...cur, map])
@@ -1351,6 +1356,7 @@ export function JobDetailClient({
 
       <AutoDetectModal
         jobId={job.id}
+        storagePath={autoDetectPath}
         open={autoDetectOpen}
         onClose={() => setAutoDetectOpen(false)}
         onImported={async () => {
@@ -4584,7 +4590,7 @@ function SiteMapBody({
   job: Job;
   onJobUpdate: (job: Job) => void;
   supabaseUrl: string;
-  onOpenAutoDetect: () => void;
+  onOpenAutoDetect: (storagePath: string) => void;
   extras: JobSiteMap[];
   onExtraAdded: (map: JobSiteMap) => void;
   onExtraRemoved: (id: string) => void;
@@ -4988,10 +4994,10 @@ function SiteMapBody({
                     : "Remove"}
                 </button>
               </div>
-              {selected.isPrimary && (
+              {selected && (
                 <button
                   type="button"
-                  onClick={onOpenAutoDetect}
+                  onClick={() => onOpenAutoDetect(selected.storagePath)}
                   className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 text-sm font-medium text-white active:scale-[0.98] dark:bg-indigo-500"
                 >
                   <svg
@@ -5013,7 +5019,8 @@ function SiteMapBody({
               )}
               {!selected.isPrimary && (
                 <p className="text-center text-[11px] italic text-neutral-500 dark:text-neutral-400">
-                  Annotation editor is scoped to the primary PDF.
+                  Annotation editor is scoped to the primary PDF — auto-detect
+                  works from any PDF.
                 </p>
               )}
             </>
