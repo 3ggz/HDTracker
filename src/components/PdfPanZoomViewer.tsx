@@ -153,14 +153,20 @@ export function PdfPanZoomViewer({
     sharpTask.current?.cancel();
     const dpr = dprRef.current;
     const v = { ...view.current };
+    // At low zoom, dense sheets rasterize thin linework and small
+    // labels into gray mush at screen scale. Supersample 2x and
+    // downscale with high-quality smoothing for a crisper fit view.
+    // Skip once zoomed in (render scale is already high) or when the
+    // doubled canvas would breach iOS's ~16.7M-pixel canvas ceiling.
+    const ss = v.z < 3 && fg.width * fg.height <= 4_000_000 ? 2 : 1;
     let off = offscreenRef.current;
     if (!off) {
       off = document.createElement("canvas");
       offscreenRef.current = off;
     }
-    if (off.width !== fg.width || off.height !== fg.height) {
-      off.width = fg.width;
-      off.height = fg.height;
+    if (off.width !== fg.width * ss || off.height !== fg.height * ss) {
+      off.width = fg.width * ss;
+      off.height = fg.height * ss;
     }
     const ctx = off.getContext("2d");
     if (!ctx) return;
@@ -168,8 +174,8 @@ export function PdfPanZoomViewer({
     ctx.clearRect(0, 0, off.width, off.height);
     const task = page.render({
       canvasContext: ctx,
-      viewport: page.getViewport({ scale: fitRef.current * v.z * dpr }),
-      transform: [1, 0, 0, 1, -v.ox * dpr, -v.oy * dpr],
+      viewport: page.getViewport({ scale: fitRef.current * v.z * dpr * ss }),
+      transform: [1, 0, 0, 1, -v.ox * dpr * ss, -v.oy * dpr * ss],
     });
     sharpTask.current = task;
     try {
@@ -194,7 +200,9 @@ export function PdfPanZoomViewer({
       h * fitRef.current * v.z * dpr,
     );
     fctx.clip();
-    fctx.drawImage(off, 0, 0);
+    fctx.imageSmoothingEnabled = true;
+    fctx.imageSmoothingQuality = "high";
+    fctx.drawImage(off, 0, 0, fg.width, fg.height);
     fctx.restore();
     fgView.current = v;
     applyTransforms();
