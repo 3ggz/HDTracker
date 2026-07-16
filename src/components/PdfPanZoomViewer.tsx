@@ -9,7 +9,8 @@ if (typeof window !== "undefined") {
 }
 
 const MAX_ZOOM = 40;
-const BG_MAX_DIM = 2048;
+const BG_MAX_DIM = 2560;
+const MAX_FG_PIXELS = 8_000_000;
 
 type View = { z: number; ox: number; oy: number };
 
@@ -42,6 +43,8 @@ export function PdfPanZoomViewer({
   const baseRef = useRef({ w: 1, h: 1 });
   const fitRef = useRef(1);
   const dprRef = useRef(1);
+  const rdprRef = useRef(1);
+  const rotationRef = useRef(0);
   const sizeRef = useRef({ cw: 320, ch: 240 });
   const view = useRef<View>({ z: 1, ox: 0, oy: 0 });
   const fgView = useRef<View | null>(null);
@@ -57,6 +60,7 @@ export function PdfPanZoomViewer({
   const [numPages, setNumPages] = useState(0);
   const [pageNum, setPageNum] = useState(1);
   const [docGen, setDocGen] = useState(0);
+  const [rotation, setRotation] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   function clampView(v: View) {
@@ -106,8 +110,23 @@ export function PdfPanZoomViewer({
     const { w, h } = baseRef.current;
     fitRef.current = Math.min(cw / w, ch / h);
     dprRef.current = Math.min(window.devicePixelRatio || 1, 3);
-    fg.width = Math.round(cw * dprRef.current);
-    fg.height = Math.round(ch * dprRef.current);
+    // The foreground backing store runs above screen density (up to
+    // 2x) so thin linework and small labels on dense sheets stay
+    // defined — the GPU compositor handles the downscale, with no
+    // intermediate scaled blit. Capped by total pixels so fullscreen
+    // canvases stay well under iOS's canvas ceiling.
+    const ss = Math.max(
+      1,
+      Math.min(
+        2,
+        Math.sqrt(
+          MAX_FG_PIXELS / (cw * dprRef.current * ch * dprRef.current),
+        ),
+      ),
+    );
+    rdprRef.current = dprRef.current * ss;
+    fg.width = Math.round(cw * rdprRef.current);
+    fg.height = Math.round(ch * rdprRef.current);
     fg.style.width = `${cw}px`;
     fg.style.height = `${ch}px`;
     bg.style.width = `${w * fitRef.current}px`;
@@ -134,7 +153,10 @@ export function PdfPanZoomViewer({
     bgTask.current?.cancel();
     const task = page.render({
       canvasContext: ctx,
-      viewport: page.getViewport({ scale: bgScale }),
+      viewport: page.getViewport({
+        scale: bgScale,
+        rotation: rotationRef.current,
+      }),
     });
     bgTask.current = task;
     try {
@@ -151,22 +173,16 @@ export function PdfPanZoomViewer({
     if (!page || !fg) return;
     const seq = ++renderSeq.current;
     sharpTask.current?.cancel();
-    const dpr = dprRef.current;
+    const rdpr = rdprRef.current;
     const v = { ...view.current };
-    // At low zoom, dense sheets rasterize thin linework and small
-    // labels into gray mush at screen scale. Supersample 2x and
-    // downscale with high-quality smoothing for a crisper fit view.
-    // Skip once zoomed in (render scale is already high) or when the
-    // doubled canvas would breach iOS's ~16.7M-pixel canvas ceiling.
-    const ss = v.z < 3 && fg.width * fg.height <= 4_000_000 ? 2 : 1;
     let off = offscreenRef.current;
     if (!off) {
       off = document.createElement("canvas");
       offscreenRef.current = off;
     }
-    if (off.width !== fg.width * ss || off.height !== fg.height * ss) {
-      off.width = fg.width * ss;
-      off.height = fg.height * ss;
+    if (off.width !== fg.width || off.height !== fg.height) {
+      off.width = fg.width;
+      off.height = fg.height;
     }
     const ctx = off.getContext("2d");
     if (!ctx) return;
@@ -174,8 +190,11 @@ export function PdfPanZoomViewer({
     ctx.clearRect(0, 0, off.width, off.height);
     const task = page.render({
       canvasContext: ctx,
-      viewport: page.getViewport({ scale: fitRef.current * v.z * dpr * ss }),
-      transform: [1, 0, 0, 1, -v.ox * dpr * ss, -v.oy * dpr * ss],
+      viewport: page.getViewport({
+        scale: fitRef.current * v.z * rdpr,
+        rotation: rotationRef.current,
+      }),
+      transform: [1, 0, 0, 1, -v.ox * rdpr, -v.oy * rdpr],
     });
     sharpTask.current = task;
     try {
@@ -194,15 +213,13 @@ export function PdfPanZoomViewer({
     // Clip to the page bounds so the letterbox stays transparent —
     // pdf.js fills its whole canvas white before drawing.
     fctx.rect(
-      -v.ox * dpr,
-      -v.oy * dpr,
-      w * fitRef.current * v.z * dpr,
-      h * fitRef.current * v.z * dpr,
+      -v.ox * rdpr,
+      -v.oy * rdpr,
+      w * fitRef.current * v.z * rdpr,
+      h * fitRef.current * v.z * rdpr,
     );
     fctx.clip();
-    fctx.imageSmoothingEnabled = true;
-    fctx.imageSmoothingQuality = "high";
-    fctx.drawImage(off, 0, 0, fg.width, fg.height);
+    fctx.drawImage(off, 0, 0);
     fctx.restore();
     fgView.current = v;
     applyTransforms();
@@ -259,7 +276,19 @@ export function PdfPanZoomViewer({
         const page = await doc.getPage(pageNum);
         if (cancelled) return;
         pageRef.current = page;
-        const vp = page.getViewport({ scale: 1 });
+        const raw = page.getViewport({ scale: 1 });
+        if (rotation === null) {
+          // Auto-rotate so the sheet's long edge fills the container's
+          // long edge — a landscape drawing on a portrait phone gets
+          // roughly double the linear resolution at fit.
+          const el = containerRef.current;
+          const cw = el?.clientWidth || 320;
+          const ch = el?.clientHeight || 240;
+          setRotation(raw.width > raw.height !== cw > ch ? 90 : 0);
+          return;
+        }
+        rotationRef.current = rotation;
+        const vp = page.getViewport({ scale: 1, rotation });
         baseRef.current = { w: vp.width, h: vp.height };
         setupViewport();
         await renderBg();
@@ -278,7 +307,7 @@ export function PdfPanZoomViewer({
       if (sharpTimer.current) window.clearTimeout(sharpTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [docGen, pageNum]);
+  }, [docGen, pageNum, rotation]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -549,13 +578,34 @@ export function PdfPanZoomViewer({
             className="absolute left-0 top-0"
             style={{ transformOrigin: "0 0", willChange: "transform" }}
           />
-          <button
-            type="button"
-            onClick={resetView}
-            className="absolute right-2 top-2 rounded-md bg-neutral-900/70 px-2 py-1 text-[11px] font-medium text-white backdrop-blur active:bg-neutral-900"
-          >
-            Reset
-          </button>
+          <div className="absolute right-2 top-2 flex items-center gap-1.5">
+            <button
+              type="button"
+              aria-label="Rotate map"
+              onClick={() => setRotation((rotationRef.current + 90) % 360)}
+              className="flex h-6 w-7 items-center justify-center rounded-md bg-neutral-900/70 text-white backdrop-blur active:bg-neutral-900"
+            >
+              <svg
+                className="h-3.5 w-3.5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <polyline points="23 4 23 10 17 10" />
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              onClick={resetView}
+              className="rounded-md bg-neutral-900/70 px-2 py-1 text-[11px] font-medium text-white backdrop-blur active:bg-neutral-900"
+            >
+              Reset
+            </button>
+          </div>
           {multiPage && numPages > 1 && (
             <div className="absolute bottom-2 left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-full bg-neutral-900/70 px-1 py-0.5 text-white backdrop-blur">
               <button
