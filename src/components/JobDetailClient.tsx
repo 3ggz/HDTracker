@@ -61,6 +61,7 @@ import {
 import { firstNameFromEmail } from "@/lib/email";
 import { useSoftDelete } from "@/lib/use-soft-delete";
 import { useAnchorRect } from "@/lib/use-anchor-rect";
+import { mergeConcurrentText } from "@/lib/merge-text";
 import { PdfFullscreenModal } from "./PdfFullscreenModal";
 import { PdfPanZoomViewer } from "./PdfPanZoomViewer";
 import { PhotoFullscreenModal } from "./PhotoFullscreenModal";
@@ -390,6 +391,92 @@ export function JobDetailClient({
 
   useEffect(() => {
     const supabase = createClient();
+    let disposed = false;
+    let refetching = false;
+    let lastRefetch = 0;
+    let everSubscribed = false;
+
+    // Realtime covers changes while the socket is up, but a WebView
+    // that iOS suspended comes back with its missed events gone for
+    // good — leaving this editor silently stale until navigation. On
+    // channel reconnect and on app-visible we re-pull the
+    // collaboration-critical rows wholesale; each setter mirrors what
+    // the corresponding realtime event would have done.
+    async function refetchLive(force = false) {
+      const now = Date.now();
+      if (refetching || (!force && now - lastRefetch < 4000)) return;
+      refetching = true;
+      lastRefetch = now;
+      try {
+        const [jobRes, doorsRes, photosRes, panelsRes] = await Promise.all([
+          supabase
+            .from("jobs")
+            .select("*")
+            .eq("id", initialJob.id)
+            .maybeSingle(),
+          supabase
+            .from("job_doors")
+            .select("*")
+            .eq("job_id", initialJob.id)
+            .order("floor", { ascending: true, nullsFirst: false })
+            .order("position", { ascending: true })
+            .order("created_at", { ascending: true }),
+          supabase
+            .from("job_photos")
+            .select("*")
+            .eq("job_id", initialJob.id)
+            .order("created_at", { ascending: false }),
+          supabase
+            .from("job_panels")
+            .select("*")
+            .eq("job_id", initialJob.id)
+            .order("position", { ascending: true })
+            .order("created_at", { ascending: true }),
+        ]);
+        if (disposed) return;
+        if (jobRes.data) setJob(jobRes.data as Job);
+        if (photosRes.data) setPhotos(photosRes.data as JobPhoto[]);
+        if (panelsRes.data) setPanels(panelsRes.data as JobPanel[]);
+        if (doorsRes.data) {
+          const freshDoors = doorsRes.data as JobDoor[];
+          doorIdsRef.current = new Set(freshDoors.map((d) => d.id));
+          setDoors(freshDoors);
+          const doorIds = freshDoors.map((d) => d.id);
+          const panelIds = ((panelsRes.data ?? []) as JobPanel[]).map(
+            (p) => p.id,
+          );
+          const [itemsRes, panelDoorsRes] = await Promise.all([
+            doorIds.length === 0
+              ? Promise.resolve({ data: [] as JobDoorItem[] })
+              : supabase
+                  .from("job_door_items")
+                  .select("*")
+                  .in("door_id", doorIds)
+                  .order("position", { ascending: true })
+                  .order("created_at", { ascending: true }),
+            panelIds.length === 0
+              ? Promise.resolve({ data: [] as JobPanelDoor[] })
+              : supabase
+                  .from("job_panel_doors")
+                  .select("*")
+                  .in("panel_id", panelIds),
+          ]);
+          if (disposed) return;
+          if (itemsRes.data) setItems(itemsRes.data as JobDoorItem[]);
+          if (panelDoorsRes.data) {
+            setPanelDoors(panelDoorsRes.data as JobPanelDoor[]);
+          }
+        }
+      } finally {
+        refetching = false;
+      }
+    }
+
+    function onVisible() {
+      if (document.visibilityState === "visible") void refetchLive();
+    }
+    document.addEventListener("visibilitychange", onVisible);
+
     const channel = supabase
       .channel(`job-${initialJob.id}-live`)
       .on(
@@ -485,9 +572,16 @@ export function JobDetailClient({
           }
         },
       )
-      .subscribe();
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          if (everSubscribed) void refetchLive(true);
+          everSubscribed = true;
+        }
+      });
 
     return () => {
+      disposed = true;
+      document.removeEventListener("visibilitychange", onVisible);
       void supabase.removeChannel(channel);
     };
   }, [initialJob.id]);
@@ -547,50 +641,108 @@ export function JobDetailClient({
     (headerDraft.notes || null) !== job.notes;
 
   async function saveHeader() {
-    const trimmedName = headerDraft.name.trim();
-    const trimmedNumber = headerDraft.number.trim();
-    if (!trimmedName) {
+    const normalized = {
+      name: headerDraft.name.trim(),
+      number: headerDraft.number.trim() || null,
+      address: headerDraft.address.trim() || null,
+      notes: headerDraft.notes.trim() || null,
+    };
+    // Only fields this editor actually changed go in the patch, so two
+    // people saving different fields can never overwrite each other.
+    const dirtyAgainst = (base: Job) => {
+      const patch: Partial<Pick<Job, "name" | "number" | "address" | "notes">> =
+        {};
+      if (normalized.name !== base.name) patch.name = normalized.name;
+      if (normalized.number !== base.number) patch.number = normalized.number;
+      if (normalized.address !== base.address) {
+        patch.address = normalized.address;
+      }
+      if (normalized.notes !== base.notes) patch.notes = normalized.notes;
+      return patch;
+    };
+    let base = job;
+    let patch = dirtyAgainst(base);
+    if (Object.keys(patch).length === 0) return;
+    if ("name" in patch && !normalized.name) {
       setHeaderError("Job needs a name.");
       return;
     }
-    if (!trimmedNumber) {
+    if ("number" in patch && !normalized.number) {
       setHeaderError("Job number is required.");
       return;
     }
     setHeaderSaving(true);
     setHeaderError(null);
-    const patch = {
-      name: trimmedName,
-      number: trimmedNumber,
-      address: headerDraft.address.trim() || null,
-      notes: headerDraft.notes.trim() || null,
-    };
-    const { data, error } = await withTrack(saveTracker, async () => {
+    let saved: Job | null = null;
+    let failure: string | null = null;
+    await withTrack(saveTracker, async () => {
       const supabase = createClient();
-      return supabase
-        .from("jobs")
-        .update(patch)
-        .eq("id", job.id)
-        .select("*")
-        .maybeSingle();
+      // Optimistic lock on updated_at: if anything touched the row
+      // since our snapshot (another editor, or a door/item trigger
+      // bumping the parent), the guarded update matches zero rows —
+      // refetch, re-diff against the fresh row, merge notes if both
+      // sides changed them, and retry. The final attempt goes
+      // unguarded so a busy job can't starve the save; by then the
+      // patch holds only this editor's own fields anyway.
+      for (let attempt = 0; attempt < 4; attempt++) {
+        let query = supabase.from("jobs").update(patch).eq("id", base.id);
+        if (attempt < 3) query = query.eq("updated_at", base.updated_at);
+        const { data, error } = await query.select("*").maybeSingle();
+        if (error) {
+          failure = error.message;
+          return;
+        }
+        if (data) {
+          saved = data as Job;
+          return;
+        }
+        const { data: fresh, error: freshError } = await supabase
+          .from("jobs")
+          .select("*")
+          .eq("id", base.id)
+          .maybeSingle();
+        if (freshError) {
+          failure = freshError.message;
+          return;
+        }
+        if (!fresh) {
+          failure =
+            "Couldn't save — job may have been deleted from another tab.";
+          return;
+        }
+        const freshJob = fresh as Job;
+        if (patch.notes !== undefined && freshJob.notes !== base.notes) {
+          normalized.notes =
+            mergeConcurrentText(
+              base.notes ?? "",
+              normalized.notes ?? "",
+              freshJob.notes ?? "",
+            ) || null;
+        }
+        base = freshJob;
+        patch = dirtyAgainst(base);
+        if (Object.keys(patch).length === 0) {
+          saved = freshJob;
+          return;
+        }
+      }
     });
     setHeaderSaving(false);
-    if (error) {
-      setHeaderError(error.message);
+    if (failure) {
+      setHeaderError(failure);
       return;
     }
-    if (!data) {
-      setHeaderError(
-        "Couldn't save — job may have been deleted from another tab.",
-      );
+    if (!saved) {
+      setHeaderError("Couldn't save — please try again in a moment.");
       return;
     }
-    setJob(data as Job);
+    const savedJob: Job = saved;
+    setJob(savedJob);
     setHeaderDraft({
-      name: data.name,
-      number: data.number ?? "",
-      address: data.address ?? "",
-      notes: data.notes ?? "",
+      name: savedJob.name,
+      number: savedJob.number ?? "",
+      address: savedJob.address ?? "",
+      notes: savedJob.notes ?? "",
     });
     router.refresh();
   }
@@ -5530,24 +5682,34 @@ function WorkedOnSection({
     return !manualLower.has(local) && !manualLower.has(email.toLowerCase());
   });
 
-  async function commitWorkers(next: string[]) {
-    setPending(true);
-    setError(null);
-    const { data, error: dbError } = await withTrack(tracker, async () => {
-      const supabase = createClient();
-      return supabase
-        .from("jobs")
-        .update({ manual_workers: next })
-        .eq("id", job.id)
-        .select("*")
-        .maybeSingle();
-    });
-    setPending(false);
-    if (dbError || !data) {
-      setError(dbError?.message ?? "Couldn't save.");
-      return;
+  // Fetch-merge-write: every mutation re-reads the row's current
+  // manual_workers first, so a stale local copy (the app resuming
+  // after iOS suspended the websocket and realtime missed events)
+  // can't wipe names other people added in the meantime.
+  async function mutateWorkers(
+    mutate: (current: string[]) => string[],
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const supabase = createClient();
+    const { data: freshRow, error: readError } = await supabase
+      .from("jobs")
+      .select("manual_workers")
+      .eq("id", job.id)
+      .maybeSingle();
+    if (readError || !freshRow) {
+      return { ok: false, error: readError?.message ?? "Couldn't save." };
+    }
+    const current = (freshRow.manual_workers as string[] | null) ?? [];
+    const { data, error: writeError } = await supabase
+      .from("jobs")
+      .update({ manual_workers: mutate(current) })
+      .eq("id", job.id)
+      .select("*")
+      .maybeSingle();
+    if (writeError || !data) {
+      return { ok: false, error: writeError?.message ?? "Couldn't save." };
     }
     onJobUpdate(data as Job);
+    return { ok: true };
   }
 
   async function addWorker() {
@@ -5558,7 +5720,20 @@ function WorkedOnSection({
       setError(`${trimmed} is already on the list.`);
       return;
     }
-    await commitWorkers([...manual, trimmed]);
+    setPending(true);
+    setError(null);
+    const result = await withTrack(tracker, () =>
+      mutateWorkers((current) =>
+        current.some((n) => n.trim().toLowerCase() === lower)
+          ? current
+          : [...current, trimmed],
+      ),
+    );
+    setPending(false);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
     setNewName("");
     setAdding(false);
   }
@@ -5569,38 +5744,26 @@ function WorkedOnSection({
   type WorkerSnapshot = { id: string; name: string; index: number };
   const workerSoftDelete = useSoftDelete<WorkerSnapshot>({
     delete: async (snapshot) => {
-      const supabase = createClient();
-      const { error } = await withTrack(tracker, async () =>
-        supabase
-          .from("jobs")
-          .update({
-            manual_workers: manual.filter((n) => n !== snapshot.name),
-          })
-          .eq("id", job.id),
+      const result = await withTrack(tracker, () =>
+        mutateWorkers((current) => current.filter((n) => n !== snapshot.name)),
       );
-      return error ? { ok: false, error: error.message } : { ok: true };
+      return result.ok ? { ok: true } : { ok: false, error: result.error };
     },
     restore: async (snapshot) => {
-      const supabase = createClient();
-      const { data, error } = await withTrack(tracker, async () =>
-        supabase
-          .from("jobs")
-          .update({
-            manual_workers: [
-              ...manual.slice(0, snapshot.index),
-              snapshot.name,
-              ...manual.slice(snapshot.index),
-            ],
-          })
-          .eq("id", job.id)
-          .select("*")
-          .single(),
+      const result = await withTrack(tracker, () =>
+        mutateWorkers((current) => {
+          if (current.includes(snapshot.name)) return current;
+          const at = Math.min(snapshot.index, current.length);
+          return [
+            ...current.slice(0, at),
+            snapshot.name,
+            ...current.slice(at),
+          ];
+        }),
       );
-      if (error || !data) {
-        return { ok: false, error: error?.message ?? "Couldn't restore." };
-      }
-      onJobUpdate(data as Job);
-      return { ok: true, restored: snapshot };
+      return result.ok
+        ? { ok: true, restored: snapshot }
+        : { ok: false, error: result.error };
     },
     // Reading parent state via job + onJobUpdate; the synthetic id
     // makes the hook's contract happy without persisting it.
