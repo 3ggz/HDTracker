@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { ExportPdfButton } from "@/components/ExportPdfButton";
+import { PhotoThumbGallery } from "@/components/PhotoThumbGallery";
 import { publicJobFileUrl, type JobPhoto } from "@/lib/job-photos";
 import {
   compareCanonicalItems,
@@ -313,19 +314,13 @@ export default async function SharedJobPage({
             <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
               Job photos
             </h2>
-            <div className="grid grid-cols-3 gap-2">
-              {jobPhotos.slice(0, 9).map((p) => (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  loading="lazy"
-                  decoding="async"
-                  key={p.id}
-                  src={publicJobFileUrl(supabaseUrl, p.storage_path)}
-                  alt=""
-                  className="aspect-square w-full rounded border border-neutral-200 object-cover dark:border-neutral-800"
-                />
-              ))}
-            </div>
+            <PhotoThumbGallery
+              label="Job photo"
+              photos={jobPhotos.slice(0, 9).map((p) => ({
+                id: p.id,
+                src: publicJobFileUrl(supabaseUrl, p.storage_path),
+              }))}
+            />
           </section>
         )}
 

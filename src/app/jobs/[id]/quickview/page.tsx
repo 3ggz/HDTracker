@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { LiveUpdater } from "@/components/LiveUpdater";
+import { PhotoThumbGallery } from "@/components/PhotoThumbGallery";
 import { publicJobFileUrl, type JobPhoto } from "@/lib/job-photos";
 import {
   compareCanonicalItems,
@@ -355,26 +356,13 @@ export default async function JobQuickViewPage({
             <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
               Job photos
             </h2>
-            <div className="grid grid-cols-3 gap-2">
-              {jobPhotos.slice(0, 9).map((p) => (
-                <a
-                  key={p.id}
-                  href={publicJobFileUrl(supabaseUrl, p.storage_path)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="block aspect-square overflow-hidden rounded border border-neutral-200 dark:border-neutral-800"
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                  loading="lazy"
-                  decoding="async"
-                    src={publicJobFileUrl(supabaseUrl, p.storage_path)}
-                    alt=""
-                    className="h-full w-full object-cover"
-                  />
-                </a>
-              ))}
-            </div>
+            <PhotoThumbGallery
+              label="Job photo"
+              photos={jobPhotos.slice(0, 9).map((p) => ({
+                id: p.id,
+                src: publicJobFileUrl(supabaseUrl, p.storage_path),
+              }))}
+            />
           </section>
         )}
       </main>

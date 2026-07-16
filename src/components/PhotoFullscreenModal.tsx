@@ -1,14 +1,15 @@
 "use client";
 
 import { useEffect } from "react";
+import { PinchZoomImage } from "./PinchZoomImage";
 
 // Image counterpart to PdfFullscreenModal — same dismiss-on-backdrop,
 // Esc-to-close, no-router-navigation contract. Lives in the app so
 // iOS Safari's back button still goes "back to the job page" rather
 // than punting the user to whatever tab Safari last had open.
 //
-// The image is laid out with max-w/h so portraits and landscapes
-// both fit on screen without scrolling. Tapping the image itself
+// The photo renders through PinchZoomImage, so it pinch-zooms and
+// pans everywhere photos open in the app. Tapping the photo itself
 // doesn't dismiss — only the surrounding backdrop — so panning a
 // zoomed pinch-gesture won't accidentally close.
 export function PhotoFullscreenModal({
@@ -66,22 +67,12 @@ export function PhotoFullscreenModal({
           <p className="flex-1 truncate text-sm font-medium">{label}</p>
         )}
       </header>
-      <div
-        className="flex flex-1 items-center justify-center overflow-auto p-2"
-        onClick={(e) => {
-          // Only the outer wrapper closes — clicking through to the
-          // backdrop (anywhere outside the <img>) lets the user
-          // dismiss without hitting the X. Clicks on the image itself
-          // stop here, see below.
-          if (e.target === e.currentTarget) onClose();
-        }}
-      >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
+      <div className="flex-1 overflow-hidden p-2">
+        <PinchZoomImage
           src={src}
           alt={label ?? ""}
-          onClick={(e) => e.stopPropagation()}
-          className="max-h-full max-w-full select-none object-contain"
+          className="h-full w-full"
+          onBackdropTap={onClose}
         />
       </div>
     </div>
