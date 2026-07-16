@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -64,6 +64,10 @@ import { useAnchorRect } from "@/lib/use-anchor-rect";
 import { mergeConcurrentText } from "@/lib/merge-text";
 import { PdfFullscreenModal } from "./PdfFullscreenModal";
 import { PdfPanZoomViewer } from "./PdfPanZoomViewer";
+import {
+  PULL_REFRESH_EVENT,
+  type PullRefreshDetail,
+} from "./PullToRefresh";
 import { PhotoFullscreenModal } from "./PhotoFullscreenModal";
 import { UndoBanner } from "./UndoBanner";
 import {
@@ -389,25 +393,28 @@ export function JobDetailClient({
     });
   };
 
-  useEffect(() => {
-    const supabase = createClient();
-    let disposed = false;
-    let refetching = false;
-    let lastRefetch = 0;
-    let everSubscribed = false;
+  const refetchingRef = useRef(false);
+  const lastRefetchRef = useRef(0);
 
-    // Realtime covers changes while the socket is up, but a WebView
-    // that iOS suspended comes back with its missed events gone for
-    // good — leaving this editor silently stale until navigation. On
-    // channel reconnect and on app-visible we re-pull the
-    // collaboration-critical rows wholesale; each setter mirrors what
-    // the corresponding realtime event would have done.
-    async function refetchLive(force = false) {
+  // Realtime covers changes while the socket is up, but a WebView
+  // that iOS suspended comes back with its missed events gone for
+  // good — leaving this editor silently stale until navigation. On
+  // channel reconnect, on app-visible, and on pull-to-refresh we
+  // re-pull the collaboration-critical rows wholesale; each setter
+  // mirrors what the corresponding realtime event would have done.
+  const refetchLive = useCallback(
+    async (force = false) => {
       const now = Date.now();
-      if (refetching || (!force && now - lastRefetch < 4000)) return;
-      refetching = true;
-      lastRefetch = now;
+      if (
+        refetchingRef.current ||
+        (!force && now - lastRefetchRef.current < 4000)
+      ) {
+        return;
+      }
+      refetchingRef.current = true;
+      lastRefetchRef.current = now;
       try {
+        const supabase = createClient();
         const [jobRes, doorsRes, photosRes, panelsRes] = await Promise.all([
           supabase
             .from("jobs")
@@ -433,7 +440,6 @@ export function JobDetailClient({
             .order("position", { ascending: true })
             .order("created_at", { ascending: true }),
         ]);
-        if (disposed) return;
         if (jobRes.data) setJob(jobRes.data as Job);
         if (photosRes.data) setPhotos(photosRes.data as JobPhoto[]);
         if (panelsRes.data) setPanels(panelsRes.data as JobPanel[]);
@@ -461,21 +467,32 @@ export function JobDetailClient({
                   .select("*")
                   .in("panel_id", panelIds),
           ]);
-          if (disposed) return;
           if (itemsRes.data) setItems(itemsRes.data as JobDoorItem[]);
           if (panelDoorsRes.data) {
             setPanelDoors(panelDoorsRes.data as JobPanelDoor[]);
           }
         }
       } finally {
-        refetching = false;
+        refetchingRef.current = false;
       }
-    }
+    },
+    [initialJob.id],
+  );
+
+  useEffect(() => {
+    const supabase = createClient();
+    let everSubscribed = false;
 
     function onVisible() {
       if (document.visibilityState === "visible") void refetchLive();
     }
     document.addEventListener("visibilitychange", onVisible);
+
+    function onPullRefresh(e: Event) {
+      const detail = (e as CustomEvent<PullRefreshDetail>).detail;
+      detail?.waitUntil(refetchLive(true));
+    }
+    window.addEventListener(PULL_REFRESH_EVENT, onPullRefresh);
 
     const channel = supabase
       .channel(`job-${initialJob.id}-live`)
@@ -580,11 +597,11 @@ export function JobDetailClient({
       });
 
     return () => {
-      disposed = true;
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener(PULL_REFRESH_EVENT, onPullRefresh);
       void supabase.removeChannel(channel);
     };
-  }, [initialJob.id]);
+  }, [initialJob.id, refetchLive]);
 
   const [headerDraft, setHeaderDraft] = useState({
     name: initialJob.name,

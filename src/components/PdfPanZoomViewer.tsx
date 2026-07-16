@@ -515,6 +515,7 @@ export function PdfPanZoomViewer({
   return (
     <div
       ref={containerRef}
+      data-ptr-exempt
       className={"relative overflow-hidden " + (className ?? "")}
       style={{ touchAction: "none" }}
     >

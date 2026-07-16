@@ -3,55 +3,65 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
-const TRIGGER_PX = 60;
-const MAX_PULL_PX = 96;
+const TRIGGER_PX = 64;
+const MAX_PULL_PX = 100;
 const MIN_SPIN_MS = 500;
 
-// Touch pull-to-refresh for body-scrolled list pages. The Capacitor
-// shells are plain WKWebViews with no native pull-to-refresh, so the
-// gesture has to live in the web layer — mobile browsers get the same
-// behavior for free, and desktop (no touch events) is unaffected.
-// Listeners sit on the document so a pull works from anywhere on the
-// page, not just over the wrapped content; drag styling is imperative
-// (no re-render per touchmove).
+export const PULL_REFRESH_EVENT = "hd:pull-refresh";
+
+export type PullRefreshDetail = {
+  waitUntil: (p: Promise<unknown>) => void;
+};
+
+// Document-wide touch pull-to-refresh, mounted once around the root
+// layout's children. The Capacitor shells are plain WKWebViews with no
+// native pull-to-refresh, so the gesture lives in the web layer —
+// mobile browsers get it for free and desktop (no touch events) is
+// unaffected.
+//
+// A pull fires router.refresh(), which re-renders the current page's
+// server components. Pages that hold client state (the job editor)
+// listen for PULL_REFRESH_EVENT and register their own refetch via
+// detail.waitUntil(promise); the spinner stays up until every
+// registered promise settles.
+//
+// Only the indicator moves — content never translates — so sticky
+// headers and fixed bottom bars behave on every page. The gesture is
+// skipped when it starts on a textarea (inner scroll), a
+// role="dialog" overlay, a dnd-kit sortable (aria-roledescription),
+// or anything marked data-ptr-exempt (the PDF canvases and the map
+// editor own their touches).
 export function PullToRefresh({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [armed, setArmed] = useState(false);
+  const [waiting, setWaiting] = useState(false);
   const armedRef = useRef(false);
   const armedAt = useRef(0);
-  const contentRef = useRef<HTMLDivElement>(null);
   const indicatorRef = useRef<HTMLDivElement>(null);
   const arrowRef = useRef<SVGSVGElement>(null);
 
   function setDrag(dist: number) {
-    const content = contentRef.current;
     const ind = indicatorRef.current;
-    if (!content || !ind) return;
+    if (!ind) return;
     const progress = Math.min(1, dist / TRIGGER_PX);
-    content.style.transition = "none";
-    content.style.transform = `translateY(${dist}px)`;
     ind.style.transition = "none";
     ind.style.opacity = String(progress);
-    ind.style.transform = `translate(-50%, ${-40 + dist * 0.9}px)`;
+    ind.style.transform = `translate(-50%, ${-44 + dist}px)`;
     const arrow = arrowRef.current;
     if (arrow) arrow.style.transform = `rotate(${progress * 180}deg)`;
   }
 
   function settle(target: "rest" | "armed") {
-    const content = contentRef.current;
     const ind = indicatorRef.current;
-    if (!content || !ind) return;
-    content.style.transition = "transform 200ms ease";
+    if (!ind) return;
     ind.style.transition = "transform 200ms ease, opacity 200ms ease";
     if (target === "armed") {
-      content.style.transform = `translateY(${TRIGGER_PX}px)`;
       ind.style.opacity = "1";
-      ind.style.transform = "translate(-50%, 14px)";
+      ind.style.transform = `translate(-50%, ${TRIGGER_PX - 44}px)`;
     } else {
-      content.style.transform = "";
       ind.style.opacity = "0";
-      ind.style.transform = "translate(-50%, -40px)";
+      ind.style.transform = "translate(-50%, -44px)";
       const arrow = arrowRef.current;
       if (arrow) arrow.style.transform = "";
     }
@@ -65,11 +75,11 @@ export function PullToRefresh({ children }: { children: React.ReactNode }) {
   // Keep the spinner visible for a minimum beat even when the refresh
   // resolves instantly, so the gesture never feels like it misfired.
   useEffect(() => {
-    if (!armed || isPending) return;
+    if (!armed || isPending || waiting) return;
     const remain = Math.max(0, MIN_SPIN_MS - (Date.now() - armedAt.current));
     const t = window.setTimeout(() => setArmed(false), remain);
     return () => window.clearTimeout(t);
-  }, [armed, isPending]);
+  }, [armed, isPending, waiting]);
 
   useEffect(() => {
     const g = {
@@ -79,6 +89,11 @@ export function PullToRefresh({ children }: { children: React.ReactNode }) {
       startY: 0,
       dist: 0,
     };
+    const exempt = (t: EventTarget | null) =>
+      t instanceof Element &&
+      t.closest(
+        'textarea, [data-ptr-exempt], [aria-roledescription], [role="dialog"]',
+      ) !== null;
 
     function abort() {
       g.tracking = false;
@@ -90,7 +105,12 @@ export function PullToRefresh({ children }: { children: React.ReactNode }) {
     }
 
     function onTouchStart(e: TouchEvent) {
-      if (armedRef.current || e.touches.length !== 1 || window.scrollY > 0) {
+      if (
+        armedRef.current ||
+        e.touches.length !== 1 ||
+        window.scrollY > 0 ||
+        exempt(e.target)
+      ) {
         g.tracking = false;
         return;
       }
@@ -138,6 +158,16 @@ export function PullToRefresh({ children }: { children: React.ReactNode }) {
       if (dist >= TRIGGER_PX) {
         armedAt.current = Date.now();
         setArmed(true);
+        const waits: Promise<unknown>[] = [];
+        window.dispatchEvent(
+          new CustomEvent<PullRefreshDetail>(PULL_REFRESH_EVENT, {
+            detail: { waitUntil: (p) => waits.push(p) },
+          }),
+        );
+        if (waits.length > 0) {
+          setWaiting(true);
+          void Promise.allSettled(waits).then(() => setWaiting(false));
+        }
         startTransition(() => router.refresh());
       } else {
         settle("rest");
@@ -157,12 +187,12 @@ export function PullToRefresh({ children }: { children: React.ReactNode }) {
   }, [router]);
 
   return (
-    <div className="relative">
+    <div className="relative flex min-h-full flex-1 flex-col">
       <div
         ref={indicatorRef}
         aria-hidden
-        className="pointer-events-none absolute left-1/2 top-0 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-neutral-200 bg-white shadow-md dark:border-neutral-700 dark:bg-neutral-900"
-        style={{ transform: "translate(-50%, -40px)", opacity: 0 }}
+        className="pointer-events-none absolute left-1/2 top-0 z-30 flex h-8 w-8 items-center justify-center rounded-full border border-neutral-200 bg-white shadow-md dark:border-neutral-700 dark:bg-neutral-900"
+        style={{ transform: "translate(-50%, -44px)", opacity: 0 }}
       >
         {armed ? (
           <svg
@@ -191,7 +221,7 @@ export function PullToRefresh({ children }: { children: React.ReactNode }) {
           </svg>
         )}
       </div>
-      <div ref={contentRef}>{children}</div>
+      {children}
     </div>
   );
 }

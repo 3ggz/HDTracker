@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { BackTip } from "@/components/BackTip";
 import { HomeFab } from "@/components/HomeFab";
+import { PullToRefresh } from "@/components/PullToRefresh";
 import { ThemeSync } from "@/components/ThemeSync";
 
 const geistSans = Geist({
@@ -64,7 +65,7 @@ export default function RootLayout({
       </head>
       <body className="min-h-full flex flex-col bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-50">
         <ThemeSync />
-        {children}
+        <PullToRefresh>{children}</PullToRefresh>
         <HomeFab />
         <BackTip />
       </body>

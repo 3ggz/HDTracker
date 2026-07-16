@@ -397,7 +397,10 @@ export function PdfMapEditor({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col overscroll-none bg-neutral-900">
+    <div
+      data-ptr-exempt
+      className="fixed inset-0 z-50 flex flex-col overscroll-none bg-neutral-900"
+    >
       <header className="flex items-center gap-2 border-b border-neutral-800 bg-neutral-950/95 px-2 py-2 backdrop-blur">
         <Link
           href={`/jobs/${jobId}`}
