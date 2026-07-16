@@ -5,6 +5,7 @@ import { LiveUpdater } from "@/components/LiveUpdater";
 import { PendingApprovalsBanner } from "@/components/PendingApprovalsBanner";
 import { SectionTabs } from "@/components/SectionTabs";
 import { JobsListClient } from "@/components/JobsListClient";
+import { PullToRefresh } from "@/components/PullToRefresh";
 import { isAdminEmail } from "@/lib/admin";
 
 export default async function JobsPage() {
@@ -37,13 +38,15 @@ export default async function JobsPage() {
       {isAdmin && <PendingApprovalsBanner initialCount={pendingCount} />}
       <SectionTabs active="jobs" />
       <section className="mx-auto w-full max-w-md flex-1 px-4 pb-28 pt-4">
-        {error ? (
-          <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-300">
-            Couldn&apos;t load jobs: {error.message}
-          </p>
-        ) : (
-          <JobsListClient jobs={jobs ?? []} />
-        )}
+        <PullToRefresh>
+          {error ? (
+            <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-300">
+              Couldn&apos;t load jobs: {error.message}
+            </p>
+          ) : (
+            <JobsListClient jobs={jobs ?? []} />
+          )}
+        </PullToRefresh>
       </section>
       <AddJobFab />
     </>

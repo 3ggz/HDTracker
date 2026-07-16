@@ -41,7 +41,22 @@ export function LiveUpdater({ channelName, table, filter }: Props) {
 
     channel.subscribe();
 
+    // Realtime can't fill gaps: iOS suspends the WebView's websocket
+    // in the background and missed events are gone for good. Refresh
+    // whenever the app comes back to the foreground (throttled so tab
+    // switches don't hammer the server).
+    let lastVisibleRefresh = 0;
+    function onVisible() {
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      if (now - lastVisibleRefresh < 3000) return;
+      lastVisibleRefresh = now;
+      router.refresh();
+    }
+    document.addEventListener("visibilitychange", onVisible);
+
     return () => {
+      document.removeEventListener("visibilitychange", onVisible);
       void supabase.removeChannel(channel);
     };
   }, [channelName, table, filter, router]);
