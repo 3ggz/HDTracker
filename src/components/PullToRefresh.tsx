@@ -25,12 +25,14 @@ export type PullRefreshDetail = {
 // detail.waitUntil(promise); the spinner stays up until every
 // registered promise settles.
 //
-// Only the indicator moves — content never translates — so sticky
-// headers and fixed bottom bars behave on every page. The gesture is
-// skipped when it starts on a textarea (inner scroll), a
-// role="dialog" overlay, a dnd-kit sortable (aria-roledescription),
-// or anything marked data-ptr-exempt (the PDF canvases and the map
-// editor own their touches).
+// The content physically follows the pull. It slides via relative
+// `top`, NOT transform: a transformed ancestor becomes the containing
+// block for every position:fixed descendant (FABs, save bars would
+// re-anchor and jump mid-pull), while a relative top offset leaves
+// them viewport-anchored. The gesture is skipped when it starts on a
+// textarea (inner scroll), a role="dialog" overlay, a dnd-kit
+// sortable (aria-roledescription), or anything marked data-ptr-exempt
+// (the PDF canvases and the map editor own their touches).
 export function PullToRefresh({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -38,13 +40,17 @@ export function PullToRefresh({ children }: { children: React.ReactNode }) {
   const [waiting, setWaiting] = useState(false);
   const armedRef = useRef(false);
   const armedAt = useRef(0);
+  const contentRef = useRef<HTMLDivElement>(null);
   const indicatorRef = useRef<HTMLDivElement>(null);
   const arrowRef = useRef<SVGSVGElement>(null);
 
   function setDrag(dist: number) {
     const ind = indicatorRef.current;
-    if (!ind) return;
+    const content = contentRef.current;
+    if (!ind || !content) return;
     const progress = Math.min(1, dist / TRIGGER_PX);
+    content.style.transition = "none";
+    content.style.top = `${dist}px`;
     ind.style.transition = "none";
     ind.style.opacity = String(progress);
     ind.style.transform = `translate(-50%, ${-44 + dist}px)`;
@@ -54,12 +60,16 @@ export function PullToRefresh({ children }: { children: React.ReactNode }) {
 
   function settle(target: "rest" | "armed") {
     const ind = indicatorRef.current;
-    if (!ind) return;
+    const content = contentRef.current;
+    if (!ind || !content) return;
+    content.style.transition = "top 200ms ease";
     ind.style.transition = "transform 200ms ease, opacity 200ms ease";
     if (target === "armed") {
+      content.style.top = `${TRIGGER_PX}px`;
       ind.style.opacity = "1";
       ind.style.transform = `translate(-50%, ${TRIGGER_PX - 44}px)`;
     } else {
+      content.style.top = "0px";
       ind.style.opacity = "0";
       ind.style.transform = "translate(-50%, -44px)";
       const arrow = arrowRef.current;
@@ -221,7 +231,9 @@ export function PullToRefresh({ children }: { children: React.ReactNode }) {
           </svg>
         )}
       </div>
-      {children}
+      <div ref={contentRef} className="relative flex flex-1 flex-col">
+        {children}
+      </div>
     </div>
   );
 }
