@@ -241,6 +241,8 @@ export type RestoreDoorItemSnapshot = {
   door_id: string;
   name: string;
   note: string | null;
+  ip_address?: string | null;
+  mac_address?: string | null;
   position: number;
   completed_at: string | null;
   photo_storage_path: string | null;
@@ -261,6 +263,8 @@ export async function restoreDoorItemAction(
       door_id: snapshot.door_id,
       name: snapshot.name,
       note: snapshot.note,
+      ip_address: snapshot.ip_address ?? null,
+      mac_address: snapshot.mac_address ?? null,
       position: snapshot.position,
       completed_at: snapshot.completed_at,
       photo_storage_path: snapshot.photo_storage_path,
