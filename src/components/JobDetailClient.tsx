@@ -2935,6 +2935,8 @@ function DoorCard({
           door_id: snapshot.door_id,
           name: snapshot.name,
           note: snapshot.note,
+          ip_address: snapshot.ip_address,
+          mac_address: snapshot.mac_address,
           position: snapshot.position,
           completed_at: snapshot.completed_at,
           photo_storage_path: snapshot.photo_storage_path,
@@ -3324,12 +3326,24 @@ function MiscellaneousSection({
     const nextCompletedAt = item.completed_at
       ? null
       : new Date().toISOString();
+    await patchItem(item.id, { completed_at: nextCompletedAt });
+  }
+
+  // Shared field writer for misc rows — completion toggle, per-unit
+  // label (stored in the unused note column), and MAC address all
+  // funnel through here.
+  async function patchItem(
+    itemId: string,
+    patch: Partial<
+      Pick<JobDoorItem, "completed_at" | "note" | "mac_address">
+    >,
+  ) {
     const { data, error } = await withTrack(tracker, async () => {
       const supabase = createClient();
       return supabase
         .from("job_door_items")
-        .update({ completed_at: nextCompletedAt })
-        .eq("id", item.id)
+        .update(patch)
+        .eq("id", itemId)
         .select("*")
         .maybeSingle();
     });
@@ -3337,7 +3351,9 @@ function MiscellaneousSection({
       alert(error?.message ?? "Couldn't update item — refresh to sync.");
       return;
     }
-    onItemsChange(items.map((it) => (it.id === item.id ? (data as JobDoorItem) : it)));
+    onItemsChange(
+      items.map((it) => (it.id === itemId ? (data as JobDoorItem) : it)),
+    );
   }
 
   async function addItem(name: string) {
@@ -3370,6 +3386,8 @@ function MiscellaneousSection({
           door_id: snapshot.door_id,
           name: snapshot.name,
           note: snapshot.note,
+          ip_address: snapshot.ip_address,
+          mac_address: snapshot.mac_address,
           position: snapshot.position,
           completed_at: snapshot.completed_at,
           photo_storage_path: snapshot.photo_storage_path,
@@ -3426,103 +3444,19 @@ function MiscellaneousSection({
                 {done}/{groupItems.length}
               </span>
             </div>
-            <ul className="space-y-1">
-              {groupItems.map((it, idx) => {
-                const isDone = !!it.completed_at;
-                return (
-                  <li
-                    key={it.id}
-                    className="flex items-center gap-2 text-sm"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => toggleItem(it)}
-                      aria-label={
-                        isDone
-                          ? `Mark ${name} #${idx + 1} not done`
-                          : `Mark ${name} #${idx + 1} done`
-                      }
-                      className={
-                        "flex h-5 w-5 flex-shrink-0 items-center justify-center rounded border " +
-                        (isDone
-                          ? "border-emerald-600 bg-emerald-600 text-white"
-                          : "border-neutral-300 bg-white dark:border-neutral-600 dark:bg-neutral-900")
-                      }
-                    >
-                      {isDone && (
-                        <svg
-                          className="h-3 w-3"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="3"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        >
-                          <polyline points="20 6 9 17 4 12" />
-                        </svg>
-                      )}
-                    </button>
-                    <span
-                      className={
-                        "flex-1 " +
-                        (isDone
-                          ? "text-neutral-400 line-through dark:text-neutral-500"
-                          : "")
-                      }
-                    >
-                      #{idx + 1}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => requestRemoveItem(it.id)}
-                      aria-label={
-                        itemSoftDelete.confirmingId === it.id
-                          ? `Confirm remove ${name} #${idx + 1}`
-                          : `Remove ${name} #${idx + 1}`
-                      }
-                      className={
-                        "flex items-center justify-center rounded transition " +
-                        (itemSoftDelete.confirmingId === it.id
-                          ? "h-7 gap-1 bg-red-600 px-2 text-[10px] font-semibold text-white shadow-md"
-                          : "h-7 w-7 text-neutral-400 active:text-red-600 dark:active:text-red-400")
-                      }
-                    >
-                      {itemSoftDelete.confirmingId === it.id ? (
-                        <>
-                          <svg
-                            className="h-3 w-3"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="3"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            aria-hidden
-                          >
-                            <polyline points="20 6 9 17 4 12" />
-                          </svg>
-                          ?
-                        </>
-                      ) : (
-                        <svg
-                          className="h-3.5 w-3.5"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          aria-hidden
-                        >
-                          <line x1="18" y1="6" x2="6" y2="18" />
-                          <line x1="6" y1="6" x2="18" y2="18" />
-                        </svg>
-                      )}
-                    </button>
-                  </li>
-                );
-              })}
+            <ul className="space-y-1.5">
+              {groupItems.map((it, idx) => (
+                <MiscItemRow
+                  key={it.id}
+                  item={it}
+                  category={name}
+                  index={idx}
+                  confirming={itemSoftDelete.confirmingId === it.id}
+                  onToggle={() => void toggleItem(it)}
+                  onRemove={() => requestRemoveItem(it.id)}
+                  onPatch={(patch) => void patchItem(it.id, patch)}
+                />
+              ))}
             </ul>
             <button
               type="button"
@@ -3586,6 +3520,186 @@ function MiscellaneousSection({
         </button>
       )}
     </div>
+  );
+}
+
+// One unit row inside a Miscellaneous category. The per-unit label
+// lives in the item's note column (unused for misc rows) and falls
+// back to "#N"; tapping it opens an inline rename. Each row also
+// carries a MAC field so networked standalone gear (gateways) lands
+// in the IP/MAC exports alongside the 5500s.
+function MiscItemRow({
+  item,
+  category,
+  index,
+  confirming,
+  onToggle,
+  onRemove,
+  onPatch,
+}: {
+  item: JobDoorItem;
+  category: string;
+  index: number;
+  confirming: boolean;
+  onToggle: () => void;
+  onRemove: () => void;
+  onPatch: (
+    patch: Partial<Pick<JobDoorItem, "note" | "mac_address">>,
+  ) => void;
+}) {
+  const fallbackLabel = `#${index + 1}`;
+  const label = item.note?.trim() || fallbackLabel;
+  const [editingLabel, setEditingLabel] = useState(false);
+  const [labelDraft, setLabelDraft] = useState(item.note ?? "");
+  const [syncedLabel, setSyncedLabel] = useState(item.note ?? "");
+  if ((item.note ?? "") !== syncedLabel) {
+    if (labelDraft === syncedLabel) setLabelDraft(item.note ?? "");
+    setSyncedLabel(item.note ?? "");
+  }
+  const isDone = !!item.completed_at;
+
+  function commitLabel() {
+    setEditingLabel(false);
+    const next = labelDraft.trim() || null;
+    if (next !== (item.note ?? null)) onPatch({ note: next });
+  }
+
+  return (
+    <li className="text-sm">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-label={
+            isDone
+              ? `Mark ${category} ${label} not done`
+              : `Mark ${category} ${label} done`
+          }
+          className={
+            "flex h-5 w-5 flex-shrink-0 items-center justify-center rounded border " +
+            (isDone
+              ? "border-emerald-600 bg-emerald-600 text-white"
+              : "border-neutral-300 bg-white dark:border-neutral-600 dark:bg-neutral-900")
+          }
+        >
+          {isDone && (
+            <svg
+              className="h-3 w-3"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          )}
+        </button>
+        {editingLabel ? (
+          <input
+            autoFocus
+            type="text"
+            value={labelDraft}
+            onChange={(e) => setLabelDraft(e.target.value)}
+            onBlur={commitLabel}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                e.currentTarget.blur();
+              }
+              if (e.key === "Escape") {
+                setLabelDraft(item.note ?? "");
+                setEditingLabel(false);
+              }
+            }}
+            placeholder={fallbackLabel}
+            id={`misc-label-${item.id}`}
+            name={`misc-label-${item.id}`}
+            autoComplete="off"
+            autoCorrect="off"
+            spellCheck={false}
+            enterKeyHint="done"
+            className="h-8 min-w-0 flex-1 rounded-md border border-neutral-300 bg-white px-2 text-sm dark:border-neutral-700 dark:bg-neutral-950"
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setEditingLabel(true)}
+            aria-label={`Rename ${category} ${label}`}
+            className={
+              "min-w-0 flex-1 truncate text-left " +
+              (isDone
+                ? "text-neutral-400 line-through dark:text-neutral-500"
+                : "")
+            }
+          >
+            {label}
+            {item.note?.trim() && (
+              <span className="ml-1.5 text-[10px] text-neutral-400 dark:text-neutral-500">
+                {fallbackLabel}
+              </span>
+            )}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={
+            confirming
+              ? `Confirm remove ${category} ${label}`
+              : `Remove ${category} ${label}`
+          }
+          className={
+            "flex items-center justify-center rounded transition " +
+            (confirming
+              ? "h-7 gap-1 bg-red-600 px-2 text-[10px] font-semibold text-white shadow-md"
+              : "h-7 w-7 text-neutral-400 active:text-red-600 dark:active:text-red-400")
+          }
+        >
+          {confirming ? (
+            <>
+              <svg
+                className="h-3 w-3"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+              ?
+            </>
+          ) : (
+            <svg
+              className="h-3.5 w-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          )}
+        </button>
+      </div>
+      <div className="mt-1 pl-7 pr-9">
+        <NetworkField
+          label="MAC"
+          value={item.mac_address}
+          placeholder="AA:BB:…"
+          itemId={item.id}
+          onSave={(v) => onPatch({ mac_address: v })}
+        />
+      </div>
+    </li>
   );
 }
 
@@ -5337,12 +5451,24 @@ function ShareExportSection({
   const doorById = new Map(doors.map((d) => [d.id, d]));
   const networkRows = items
     .filter((it) => it.ip_address || it.mac_address)
-    .map((it) => ({
-      door: doorById.get(it.door_id)?.name?.trim() || "Unnamed door",
-      item: it.name,
-      ip: it.ip_address,
-      mac: it.mac_address,
-    }))
+    .map((it) => {
+      const door = doorById.get(it.door_id);
+      // Standalone gear (gateways etc.) has no meaningful door — its
+      // identity is the item itself: per-unit label from the note
+      // column, falling back to the device name.
+      const isStandalone = door?.name === STANDALONE_DOOR_NAME;
+      const label = isStandalone
+        ? it.note?.trim()
+          ? `${it.name} — ${it.note.trim()}`
+          : it.name
+        : door?.name?.trim() || "Unnamed door";
+      return {
+        door: label,
+        item: it.name,
+        ip: it.ip_address,
+        mac: it.mac_address,
+      };
+    })
     .sort((a, b) => compareDoorNames(a.door, b.door));
 
   async function copyText(text: string): Promise<boolean> {
@@ -5390,8 +5516,12 @@ function ShareExportSection({
       `IP / MAC — ${networkRows.length} ${networkRows.length === 1 ? "device" : "devices"}`,
       "",
       ...networkRows.map((r) => {
-        const label =
-          (doorCounts.get(r.door) ?? 0) > 1 ? `${r.door} (${r.item})` : r.door;
+        // Suffix the device only when a door hosts several networked
+        // items AND the label doesn't already carry the device name
+        // (standalone rows do — "GW-3000 Gateway — Roof").
+        const needsItem =
+          (doorCounts.get(r.door) ?? 0) > 1 && !r.door.startsWith(r.item);
+        const label = needsItem ? `${r.door} (${r.item})` : r.door;
         return [label, r.ip, r.mac].filter(Boolean).join("  ·  ");
       }),
     ];

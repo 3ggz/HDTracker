@@ -37,15 +37,26 @@ export default async function JobNetListPage({
   const doorNameById = new Map(
     (doors ?? []).map((d) => [d.id as string, (d.name as string) || "—"]),
   );
+  const STANDALONE = "Standalone Equipment";
   const rows = ((items ?? []) as JobDoorItem[])
     .filter((it) => it.ip_address || it.mac_address)
-    .map((it) => ({
-      id: it.id,
-      door: doorNameById.get(it.door_id) ?? "—",
-      item: it.name,
-      ip: it.ip_address,
-      mac: it.mac_address,
-    }))
+    .map((it) => {
+      const doorName = doorNameById.get(it.door_id) ?? "—";
+      // Standalone gear identifies by its own label (note column) or
+      // device name, not the synthetic "Standalone Equipment" door.
+      const isStandalone = doorName === STANDALONE;
+      return {
+        id: it.id,
+        door: isStandalone
+          ? it.note?.trim()
+            ? `${it.name} — ${it.note.trim()}`
+            : it.name
+          : doorName,
+        item: it.name,
+        ip: it.ip_address,
+        mac: it.mac_address,
+      };
+    })
     .sort((a, b) => compareDoorNames(a.door, b.door));
 
   const doorCounts = new Map<string, number>();
