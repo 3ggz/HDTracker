@@ -41,6 +41,7 @@ When you face a design trade-off, these two principles win.
 - **Location is one tap.** "Use current location" via the browser Geolocation API is the primary path; manual textarea is the fallback.
 - **Issues are free-form and resolvable.** Plain text items the tech can add and mark resolved. Each issue can attach photos.
 - **Photos: three scopes.** Per-vehicle gallery, per-issue strip, and at-most-one per hardware/tool item (replace-on-upload, with timestamp). All live in the same `vehicle-photos` Storage bucket, distinguished by DB row.
+- **Anything in a bucket must render on every phone.** HEIC is accepted as *input* and converted to JPEG by `normalizeImageForUpload` (`src/lib/image-normalize.ts`) before it ever reaches storage — iOS transcodes HEIC on upload but Android doesn't, and Chrome can't decode it, so raw HEIC shows up as a broken image icon for exactly the person who took the photo. Every upload path must run the normalizer, and it must run *before* any size-based shortcut. If a file can't be decoded, refuse it — never store something nobody can open. `/admin/photo-formats` sweeps up anything predating this rule.
 - **History via DB triggers.** AFTER triggers on `vehicles`, `vehicle_items`, `vehicle_issues`, and `vehicle_photos` populate `vehicle_activity`. The history page at `/vehicles/[id]/history` reads from there. Actor display name is derived from the email's local-part (split on `. _ -`, title-cased).
 
 ## Built (don't re-architect without asking)

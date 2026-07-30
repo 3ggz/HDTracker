@@ -208,6 +208,32 @@ export default async function ApprovalsPage() {
           )}
         </div>
       </section>
+
+      <section className="mx-auto w-full max-w-md px-4 pb-12">
+        <Link
+          href="/admin/photo-formats"
+          className="flex items-center justify-between gap-2 rounded-xl border border-neutral-200 bg-white px-4 py-3 active:bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900 dark:active:bg-neutral-800"
+        >
+          <span className="min-w-0">
+            <span className="block text-sm font-medium">Photo formats</span>
+            <span className="block text-xs text-neutral-500 dark:text-neutral-400">
+              Find and convert HEIC photos Android can&apos;t display
+            </span>
+          </span>
+          <svg
+            className="h-4 w-4 shrink-0 text-neutral-400"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        </Link>
+      </section>
     </>
   );
 }
