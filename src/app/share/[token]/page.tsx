@@ -111,6 +111,44 @@ export default async function SharedJobPage({
           h1, h2, h3 { page-break-after: avoid; break-after: avoid; }
           p { orphans: 3; widows: 3; }
           body { background: white; }
+
+          /* The screen layout is a phone-width column (max-w-md). Left
+             alone it prints as a 4.6in strip down the middle of a 7.7in
+             sheet — mostly margin. The sheet gets the full width and the
+             door cards go two-up, matching the job report. */
+          .door-cols { font-size: 0; }
+          .door-cols > li {
+            display: inline-block;
+            width: 49%;
+            vertical-align: top;
+            margin-bottom: 0.12in;
+            font-size: 10px;
+            page-break-inside: avoid;
+            break-inside: avoid;
+          }
+          .door-cols > li:nth-child(odd) { margin-right: 2%; }
+
+          /* Thumbnails sized for a phone are absurd across a full sheet. */
+          .share-photos > div {
+            grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+          }
+
+          /* dark: is a class-based variant on <html> (see globals.css),
+             so a tech exporting from a dark-mode phone would otherwise
+             print charcoal cards and near-white text on white paper.
+             Only that case falls back to flat black-on-white; a
+             light-mode export keeps its colour. */
+          html.dark .share-sheet, html.dark .share-sheet * {
+            background-color: #fff !important;
+            color: #171717 !important;
+            border-color: #d4d4d4 !important;
+          }
+          html.dark .share-sheet .print-track {
+            background-color: #e5e5e5 !important;
+          }
+          html.dark .share-sheet .print-fill {
+            background-color: #171717 !important;
+          }
         }
       `}</style>
 
@@ -128,7 +166,7 @@ export default async function SharedJobPage({
         />
       </header>
 
-      <main className="mx-auto w-full max-w-md flex-1 space-y-3 px-4 pb-12 pt-4">
+      <main className="share-sheet mx-auto w-full max-w-md flex-1 space-y-3 px-4 pb-12 pt-4 print:max-w-none print:space-y-2 print:px-0 print:pb-0 print:pt-0 print:text-[10px] print:leading-tight">
         {/* Print-only title block — the sticky header is hidden in
             print, so without this the PDF would have no job name. */}
         <div className="hidden print:mb-2 print:block">
@@ -139,7 +177,7 @@ export default async function SharedJobPage({
           </p>
         </div>
 
-        <section className="avoid-break rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+        <section className="avoid-break rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900 print:p-2">
           {(typedJob.number || typedJob.address) && (
             <div className="mb-3 space-y-0.5 text-sm">
               {typedJob.number && (
@@ -167,9 +205,9 @@ export default async function SharedJobPage({
             {completedItems} of {totalItems} items done across{" "}
             {sortedDoors.length} {sortedDoors.length === 1 ? "door" : "doors"}
           </p>
-          <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
+          <div className="print-track mt-2 h-2 w-full overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
             <div
-              className="h-full bg-emerald-500"
+              className="print-fill h-full bg-emerald-500"
               style={{ width: `${pct}%` }}
             />
           </div>
@@ -184,7 +222,7 @@ export default async function SharedJobPage({
             <h2 className="px-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
               Doors (A→Z)
             </h2>
-            <ul className="space-y-2">
+            <ul className="door-cols space-y-2 print:space-y-0">
               {sortedDoors.map((door) => {
                 const doorItems = itemsByDoor.get(door.id) ?? [];
                 const doorDone = doorItems.filter(
@@ -193,7 +231,7 @@ export default async function SharedJobPage({
                 return (
                   <li
                     key={door.id}
-                    className="avoid-break relative rounded-xl border border-neutral-200 bg-white p-3 pb-7 dark:border-neutral-800 dark:bg-neutral-900"
+                    className="avoid-break relative rounded-xl border border-neutral-200 bg-white p-3 pb-7 dark:border-neutral-800 dark:bg-neutral-900 print:p-2 print:pb-5"
                   >
                     <div className="flex items-center justify-between gap-2">
                       <h3 className="text-sm font-semibold">{door.name}</h3>
@@ -266,7 +304,7 @@ export default async function SharedJobPage({
         )}
 
         {standaloneDoor && (
-          <section className="avoid-break rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+          <section className="avoid-break rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900 print:p-2">
             <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
               Standalone equipment
             </h2>
@@ -310,7 +348,7 @@ export default async function SharedJobPage({
         )}
 
         {jobPhotos.length > 0 && (
-          <section className="avoid-break rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+          <section className="share-photos avoid-break rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900 print:p-2">
             <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
               Job photos
             </h2>
