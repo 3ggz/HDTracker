@@ -1,9 +1,13 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { downscaleImageIfNeeded } from "./image-downscale";
+import { normalizeImageForUpload } from "./image-normalize";
 
 export const PHOTO_BUCKET = "vehicle-photos";
 
 export const MAX_PHOTO_BYTES = 10 * 1024 * 1024; // 10 MB
+// What a tech is allowed to PICK, which is not the same as what we
+// store. HEIC is accepted here and then converted to JPEG by
+// normalizeImageForUpload — Android can't render HEIC, so it must
+// never reach a bucket.
 export const ALLOWED_PHOTO_MIME_TYPES: readonly string[] = [
   "image/jpeg",
   "image/jpg",
@@ -27,14 +31,21 @@ export type VehiclePhoto = {
 export type ValidationFailure = { ok: false; error: string };
 
 export function validatePhotoFile(file: {
+  name?: string;
   type: string;
   size: number;
 }): { ok: true } | ValidationFailure {
   const type = file.type.toLowerCase();
-  if (!type.startsWith("image/")) {
+  // Some Android pickers hand over a HEIC with an empty or
+  // application/octet-stream MIME type. Rejecting on type alone would
+  // lock those phones out of uploading at all, so let the extension
+  // vouch for the file — the normalizer decodes it before upload and
+  // fails loudly there if it really isn't an image.
+  const heicByName = /\.(heic|heif)$/i.test(file.name ?? "");
+  if (!type.startsWith("image/") && !heicByName) {
     return { ok: false, error: "Pick an image file." };
   }
-  if (!ALLOWED_PHOTO_MIME_TYPES.includes(type)) {
+  if (!heicByName && !ALLOWED_PHOTO_MIME_TYPES.includes(type)) {
     return {
       ok: false,
       error: `${file.type} isn't supported. Try JPEG, PNG, HEIC, or WebP.`,
@@ -46,10 +57,20 @@ export function validatePhotoFile(file: {
   return { ok: true };
 }
 
+// The MIME type describes the actual bytes; the filename is only a
+// hint and routinely lies. iOS Safari transcodes a HEIC to JPEG on
+// upload but keeps the original "IMG_1234.HEIC" name, so trusting the
+// name filed JPEG bytes under a .heic path. Type first, name as
+// fallback for the blobs that arrive with no type at all.
 export function guessExtension(file: { name: string; type: string }): string {
+  const fromType = extensionForMimeType(file.type);
+  if (fromType) return fromType;
   const fromName = file.name.match(/(\.[a-zA-Z0-9]+)$/);
-  if (fromName) return fromName[1].toLowerCase();
-  switch (file.type.toLowerCase()) {
+  return fromName ? fromName[1].toLowerCase() : "";
+}
+
+function extensionForMimeType(type: string): string {
+  switch (type.toLowerCase()) {
     case "image/jpeg":
     case "image/jpg":
       return ".jpg";
@@ -91,7 +112,9 @@ export async function uploadVehiclePhoto({
 }: UploadOptions): Promise<UploadResult> {
   const validation = validatePhotoFile(file);
   if (!validation.ok) return validation;
-  file = await downscaleImageIfNeeded(file);
+  const normalized = await normalizeImageForUpload(file);
+  if (!normalized.ok) return normalized;
+  file = normalized.file;
 
   const photoId = crypto.randomUUID();
   const ext = guessExtension(file);
@@ -184,7 +207,9 @@ export async function uploadItemPhoto({
 }: UploadItemPhotoOptions): Promise<UploadItemPhotoResult> {
   const validation = validatePhotoFile(file);
   if (!validation.ok) return validation;
-  file = await downscaleImageIfNeeded(file);
+  const normalized = await normalizeImageForUpload(file);
+  if (!normalized.ok) return normalized;
+  file = normalized.file;
 
   const photoId = crypto.randomUUID();
   const ext = guessExtension(file);

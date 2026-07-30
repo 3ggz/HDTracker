@@ -21,6 +21,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@supabase/ssr": "^0.10.3",
     "@supabase/supabase-js": "^2.106.1",
+    "heic-to": "^1.5.2",
     "next": "16.2.6",
     "pdfjs-dist": "^4.10.38",
     "react": "19.2.4",
