@@ -18,6 +18,7 @@ const SOURCES = [
   { table: "job_photos", bucket: JOB_BUCKET },
   { table: "vehicle_photos", bucket: PHOTO_BUCKET },
   { table: "faq_photos", bucket: FAQ_BUCKET },
+  { table: "faq_question_photos", bucket: FAQ_BUCKET },
 ] as const;
 
 export default async function PhotoFormatsPage() {

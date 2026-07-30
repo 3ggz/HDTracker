@@ -15,7 +15,11 @@ import { normalizeImageForUpload } from "@/lib/image-normalize";
 
 export type StaleFormatPhoto = {
   id: string;
-  table: "job_photos" | "vehicle_photos" | "faq_photos";
+  table:
+    | "job_photos"
+    | "vehicle_photos"
+    | "faq_photos"
+    | "faq_question_photos";
   bucket: string;
   storagePath: string;
 };
@@ -188,7 +192,7 @@ export function PhotoFormatBackfill({
                   {photo.storagePath}
                 </span>
                 <span className="text-neutral-500 dark:text-neutral-400">
-                  {photo.table.replace("_", " ")}
+                  {photo.table.replaceAll("_", " ")}
                   {states[photo.id]?.detail
                     ? ` · ${states[photo.id]?.detail}`
                     : ""}
