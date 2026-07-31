@@ -2,7 +2,7 @@
 
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
-import { doorContactItemForName } from "@/lib/jobs";
+import { doorContactItemForName, STANDALONE_DOOR_NAME } from "@/lib/jobs";
 import { isAdminEmail } from "@/lib/admin";
 
 // Auto-detect itself runs as a Supabase Edge Function (Deno, 150s
@@ -27,6 +27,10 @@ export type ImportDoorsInput = {
   }[];
   miscNotes?: string[];
   standaloneItems?: { type: string; count: number }[];
+  // Which floor the gear bucket belongs to. Detection can't tell, so
+  // this comes from the review dialog; null keeps it in the
+  // Miscellaneous section until someone places it.
+  standaloneFloor?: string | null;
 };
 
 export type ImportDoorsResult =
@@ -104,18 +108,34 @@ export async function importDetectedDoorsAction(
       0,
     );
     if (totalUnits > 0) {
-      const { data: standaloneDoor, error: standaloneDoorError } =
-        await supabase
-          .from("job_doors")
-          .insert({
-            job_id: input.jobId,
-            name: "Standalone Equipment",
-            floor: null,
-            notes: null,
-            position: positionStart + input.doors.length,
-          })
-          .select("id")
-          .single();
+      const floor = input.standaloneFloor ?? null;
+      // There's one bucket per floor now, so reuse the floor's
+      // existing one. Inserting unconditionally would give a floor two
+      // buckets on a second scan, and the UI keys them by floor — the
+      // older bucket's gear would silently stop being rendered.
+      const existingQuery = supabase
+        .from("job_doors")
+        .select("id")
+        .eq("job_id", input.jobId)
+        .eq("name", STANDALONE_DOOR_NAME);
+      const { data: existing } = await (floor === null
+        ? existingQuery.is("floor", null)
+        : existingQuery.eq("floor", floor)
+      ).maybeSingle();
+
+      const { data: standaloneDoor, error: standaloneDoorError } = existing
+        ? { data: existing, error: null }
+        : await supabase
+            .from("job_doors")
+            .insert({
+              job_id: input.jobId,
+              name: STANDALONE_DOOR_NAME,
+              floor,
+              notes: null,
+              position: positionStart + input.doors.length,
+            })
+            .select("id")
+            .single();
 
       if (standaloneDoorError || !standaloneDoor) {
         return {

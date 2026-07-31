@@ -35,6 +35,7 @@ export function AutoDetectModal({
   const [standaloneItems, setStandaloneItems] = useState<
     { type: string; count: number }[]
   >([]);
+  const [standaloneFloor, setStandaloneFloor] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
   const [, startTransition] = useTransition();
 
@@ -115,8 +116,13 @@ export function AutoDetectModal({
 
   async function runImport() {
     const selected = rows.filter((r) => r.include);
-    if (selected.length === 0) {
-      setError("Tick at least one door to import.");
+    const gear = standaloneItems.filter(
+      (s) => s.type.trim().length > 0 && s.count > 0,
+    );
+    // Gear alone is a legitimate import — a riser sheet may carry
+    // gateways and no doors at all.
+    if (selected.length === 0 && gear.length === 0) {
+      setError("Tick at least one door, or add a gateway, to import.");
       return;
     }
     setPhase("importing");
@@ -130,7 +136,8 @@ export function AutoDetectModal({
         notes: r.notes,
       })),
       miscNotes,
-      standaloneItems,
+      standaloneItems: gear,
+      standaloneFloor: standaloneFloor.trim() || null,
     });
     if (!result.ok) {
       setError(result.error);
@@ -147,6 +154,7 @@ export function AutoDetectModal({
     setRows([]);
     setMiscNotes([]);
     setStandaloneItems([]);
+    setStandaloneFloor("");
     setWarnings([]);
     setError(null);
     onClose();
@@ -267,23 +275,102 @@ export function AutoDetectModal({
                   />
                 ))}
               </ul>
-              {standaloneItems.length > 0 && (
-                <div className="mt-4 rounded-lg border border-indigo-300 bg-indigo-50 p-3 dark:border-indigo-900/60 dark:bg-indigo-950/30">
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-400">
-                    Standalone equipment to install
-                  </p>
-                  <p className="mt-0.5 text-[11px] text-indigo-700/80 dark:text-indigo-400/80">
-                    Will be added as a separate &ldquo;Standalone Equipment&rdquo; door so each unit can be checked off.
-                  </p>
-                  <ul className="mt-1.5 list-disc space-y-0.5 pl-5 text-xs text-indigo-900 dark:text-indigo-200">
-                    {standaloneItems.map((s, i) => (
-                      <li key={i}>
-                        {s.count} × {s.type}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+              {/* Always shown, even when detection found nothing.
+                  A legend the model misreads used to leave no way to
+                  record gateways at all without redoing the scan. */}
+              <div className="mt-4 rounded-lg border border-indigo-300 bg-indigo-50 p-3 dark:border-indigo-900/60 dark:bg-indigo-950/30">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-400">
+                  Gateways &amp; standalone equipment
+                </p>
+                <p className="mt-0.5 text-[11px] text-indigo-700/80 dark:text-indigo-400/80">
+                  Each unit becomes its own checkable row. Correct
+                  anything the scan got wrong, or add what it missed.
+                </p>
+
+                <label className="mt-2 flex items-center gap-2 text-[11px] text-indigo-700 dark:text-indigo-400">
+                  Floor
+                  <input
+                    type="text"
+                    value={standaloneFloor}
+                    onChange={(e) => setStandaloneFloor(e.target.value)}
+                    placeholder="Unassigned"
+                    autoComplete="off"
+                    autoCapitalize="words"
+                    spellCheck={false}
+                    aria-label="Floor for standalone equipment"
+                    className="h-8 min-w-0 flex-1 rounded-md border border-indigo-300 bg-white px-2 text-xs text-neutral-900 dark:border-indigo-900/60 dark:bg-neutral-900 dark:text-neutral-100"
+                  />
+                </label>
+
+                <ul className="mt-2 space-y-1.5">
+                  {standaloneItems.map((s, i) => (
+                    <li key={i} className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        value={s.type}
+                        onChange={(e) =>
+                          setStandaloneItems((cur) =>
+                            cur.map((x, xi) =>
+                              xi === i ? { ...x, type: e.target.value } : x,
+                            ),
+                          )
+                        }
+                        placeholder="e.g. GW-3100 Gateway"
+                        aria-label={`Equipment ${i + 1} type`}
+                        className="h-8 min-w-0 flex-1 rounded-md border border-indigo-300 bg-white px-2 text-xs text-neutral-900 dark:border-indigo-900/60 dark:bg-neutral-900 dark:text-neutral-100"
+                      />
+                      <input
+                        type="number"
+                        min={1}
+                        inputMode="numeric"
+                        value={s.count}
+                        onChange={(e) =>
+                          setStandaloneItems((cur) =>
+                            cur.map((x, xi) =>
+                              xi === i
+                                ? {
+                                    ...x,
+                                    count: Math.max(
+                                      1,
+                                      Number(e.target.value) || 1,
+                                    ),
+                                  }
+                                : x,
+                            ),
+                          )
+                        }
+                        aria-label={`Equipment ${i + 1} count`}
+                        className="h-8 w-14 rounded-md border border-indigo-300 bg-white px-2 text-xs text-neutral-900 dark:border-indigo-900/60 dark:bg-neutral-900 dark:text-neutral-100"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setStandaloneItems((cur) =>
+                            cur.filter((_, xi) => xi !== i),
+                          )
+                        }
+                        aria-label={`Remove ${s.type || "equipment"}`}
+                        className="h-8 w-8 shrink-0 rounded-md border border-indigo-300 text-xs text-indigo-700 active:bg-indigo-100 dark:border-indigo-900/60 dark:text-indigo-300"
+                      >
+                        ✕
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setStandaloneItems((cur) => [
+                      ...cur,
+                      { type: "", count: 1 },
+                    ])
+                  }
+                  className="mt-2 h-8 w-full rounded-md border border-dashed border-indigo-400 text-xs font-medium text-indigo-700 active:bg-indigo-100 dark:border-indigo-900/60 dark:text-indigo-300"
+                >
+                  + Add gateway
+                </button>
+              </div>
               {miscNotes.length > 0 && (
                 <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/60 dark:bg-amber-950/30">
                   <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
