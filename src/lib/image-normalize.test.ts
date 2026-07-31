@@ -1,5 +1,58 @@
 import { describe, expect, it } from "vitest";
-import { isRenderableEverywhere, looksLikeHeic } from "./image-normalize";
+import {
+  isRenderableEverywhere,
+  looksLikeHeic,
+  needsConversion,
+  sniffImageKind,
+} from "./image-normalize";
+
+const bytes = (...parts: (number | string)[]) => {
+  const out: number[] = [];
+  for (const p of parts) {
+    if (typeof p === "number") out.push(p);
+    else for (const ch of p) out.push(ch.charCodeAt(0));
+  }
+  return new Uint8Array(out);
+};
+
+describe("sniffImageKind", () => {
+  it("identifies the formats that render everywhere", () => {
+    expect(sniffImageKind(bytes(0xff, 0xd8, 0xff, 0xe0))).toBe("jpeg");
+    expect(sniffImageKind(bytes(0x89, "PNG", 0x0d, 0x0a, 0x1a, 0x0a))).toBe(
+      "png",
+    );
+    expect(sniffImageKind(bytes("GIF89a"))).toBe("gif");
+    expect(sniffImageKind(bytes("RIFF", 0, 0, 0, 0, "WEBP"))).toBe("webp");
+  });
+
+  // The whole point of the backfill: find these regardless of what the
+  // filename or the stored content type claims.
+  it("identifies HEIC by its ISO-BMFF brand", () => {
+    for (const brand of ["heic", "heix", "mif1", "msf1"]) {
+      expect(sniffImageKind(bytes(0, 0, 0, 0x18, "ftyp", brand))).toBe("heif");
+    }
+  });
+
+  it("tells AVIF apart from HEIC so it isn't needlessly re-encoded", () => {
+    expect(sniffImageKind(bytes(0, 0, 0, 0x18, "ftyp", "avif"))).toBe("avif");
+  });
+
+  it("returns unknown for junk or a truncated read", () => {
+    expect(sniffImageKind(bytes(1, 2, 3, 4, 5, 6, 7, 8))).toBe("unknown");
+    expect(sniffImageKind(bytes(0xff))).toBe("unknown");
+    expect(sniffImageKind(new Uint8Array())).toBe("unknown");
+  });
+});
+
+describe("needsConversion", () => {
+  it("converts HEIC and anything unrecognised, leaves the rest", () => {
+    expect(needsConversion("heif")).toBe(true);
+    expect(needsConversion("unknown")).toBe(true);
+    for (const kind of ["jpeg", "png", "gif", "webp", "avif"] as const) {
+      expect(needsConversion(kind)).toBe(false);
+    }
+  });
+});
 
 describe("isRenderableEverywhere", () => {
   it("accepts the formats every phone on the crew can display", () => {

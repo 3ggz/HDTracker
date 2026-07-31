@@ -32,6 +32,55 @@ const RENDERABLE_EVERYWHERE = new Set([
   "image/gif",
 ]);
 
+export type ImageKind =
+  | "jpeg"
+  | "png"
+  | "gif"
+  | "webp"
+  | "avif"
+  | "heif"
+  | "unknown";
+
+const ascii = (b: Uint8Array, start: number, end: number) =>
+  String.fromCharCode(...b.subarray(start, end));
+
+// HEIF and AVIF are both ISO base media files distinguished only by
+// their brand, and a phone picker's filename and MIME type are both
+// unreliable, so the bytes are the only honest signal. Twelve bytes is
+// enough for every format here.
+export function sniffImageKind(bytes: Uint8Array): ImageKind {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "jpeg";
+  }
+  if (
+    bytes.length >= 8 &&
+    ascii(bytes, 1, 4) === "PNG" &&
+    bytes[0] === 0x89
+  ) {
+    return "png";
+  }
+  if (bytes.length >= 4 && ascii(bytes, 0, 4) === "GIF8") return "gif";
+  if (
+    bytes.length >= 12 &&
+    ascii(bytes, 0, 4) === "RIFF" &&
+    ascii(bytes, 8, 12) === "WEBP"
+  ) {
+    return "webp";
+  }
+  if (bytes.length >= 12 && ascii(bytes, 4, 8) === "ftyp") {
+    const brand = ascii(bytes, 8, 12).toLowerCase();
+    if (brand === "avif" || brand === "avis") return "avif";
+    return "heif";
+  }
+  return "unknown";
+}
+
+// AVIF is left alone: every browser this app targets renders it, and
+// re-encoding would only lose quality.
+export function needsConversion(kind: ImageKind): boolean {
+  return kind === "heif" || kind === "unknown";
+}
+
 export type NormalizedImage =
   | { ok: true; file: File }
   | { ok: false; error: string };

@@ -7,12 +7,18 @@ import { PHOTO_BUCKET } from "@/lib/vehicle-photos";
 import { FAQ_BUCKET } from "@/lib/faq-photos";
 import {
   PhotoFormatBackfill,
-  type StaleFormatPhoto,
+  type CandidatePhoto,
 } from "@/components/PhotoFormatBackfill";
 
 // Photos uploaded before the upload path converted HEIC to JPEG are
 // still sitting in storage as HEIC, which Android can't render. The
 // upload fix only helps new photos, so the old ones need a sweep.
+//
+// This lists every photo rather than filtering for a .heic filename:
+// the old guessExtension trusted the picker's filename, and Android
+// pickers hand over names that are missing, wrong, or extensionless.
+// The client sniffs each file's first bytes to decide, so a HEIC
+// filed under any name is still found.
 
 const SOURCES = [
   { table: "job_photos", bucket: JOB_BUCKET },
@@ -20,6 +26,11 @@ const SOURCES = [
   { table: "faq_photos", bucket: FAQ_BUCKET },
   { table: "faq_question_photos", bucket: FAQ_BUCKET },
 ] as const;
+
+// Guardrail against pulling an unbounded list into the browser. If a
+// bucket ever exceeds this the UI says so rather than quietly
+// reporting a clean sweep.
+const PER_TABLE_LIMIT = 5000;
 
 export default async function PhotoFormatsPage() {
   const supabase = await createClient();
@@ -29,35 +40,30 @@ export default async function PhotoFormatsPage() {
 
   if (!isAdminEmail(user?.email)) notFound();
 
-  // Two ilike queries per table rather than one .or() — the pattern
-  // contains a dot, which PostgREST's or() grammar also uses as a
-  // separator.
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
+
   const results = await Promise.all(
-    SOURCES.flatMap(({ table, bucket }) =>
-      ["%.heic", "%.heif"].map(async (pattern) => {
-        const { data } = await supabase
-          .from(table)
-          .select("id, storage_path")
-          .ilike("storage_path", pattern);
-        return ((data ?? []) as { id: string; storage_path: string }[]).map(
-          (row): StaleFormatPhoto => ({
+    SOURCES.map(async ({ table, bucket }) => {
+      const { data } = await supabase
+        .from(table)
+        .select("id, storage_path")
+        .limit(PER_TABLE_LIMIT);
+      return ((data ?? []) as { id: string; storage_path: string }[])
+        .filter((row) => !!row.storage_path)
+        .map(
+          (row): CandidatePhoto => ({
             id: row.id,
             table,
             bucket,
             storagePath: row.storage_path,
+            url: `${supabaseUrl.replace(/\/$/, "")}/storage/v1/object/public/${bucket}/${row.storage_path}`,
           }),
         );
-      }),
-    ),
+    }),
   );
 
-  const seen = new Set<string>();
-  const photos = results.flat().filter((p) => {
-    const key = `${p.table}:${p.id}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  const photos = results.flat();
+  const truncated = results.some((r) => r.length >= PER_TABLE_LIMIT);
 
   return (
     <>
@@ -90,6 +96,12 @@ export default async function PhotoFormatsPage() {
       </header>
 
       <main className="mx-auto w-full max-w-md flex-1 px-4 pb-12 pt-4">
+        {truncated && (
+          <p className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+            Only the first {PER_TABLE_LIMIT} photos per table were loaded.
+            Run this again after converting to catch the rest.
+          </p>
+        )}
         <PhotoFormatBackfill photos={photos} />
       </main>
     </>
