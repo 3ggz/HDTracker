@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist";
+import { nextRotation } from "@/lib/map-rotation";
 
 // Same worker the full editor uses — committed to /public, no CDN.
 if (typeof window !== "undefined") {
@@ -29,10 +30,22 @@ export function PdfPanZoomViewer({
   pdfUrl,
   className,
   multiPage = false,
+  savedRotation = null,
+  onRotationChange,
 }: {
   pdfUrl: string;
   className?: string;
   multiPage?: boolean;
+  // A rotation somebody already chose for this sheet. null means
+  // nobody has, so the auto-rotate below picks one. Only the rotate
+  // button reports back — auto-rotate is a default, not a decision,
+  // and persisting it would freeze a phone-shaped guess onto the file.
+  //
+  // Read once, at mount. Both call sites remount when the file changes
+  // (the inline viewer is keyed on storage path, the fullscreen modal
+  // mounts on open), so there's no stale-prop case to synchronise.
+  savedRotation?: number | null;
+  onRotationChange?: (rotation: number) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const bgCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -60,7 +73,7 @@ export function PdfPanZoomViewer({
   const [numPages, setNumPages] = useState(0);
   const [pageNum, setPageNum] = useState(1);
   const [docGen, setDocGen] = useState(0);
-  const [rotation, setRotation] = useState<number | null>(null);
+  const [rotation, setRotation] = useState<number | null>(savedRotation);
   const [error, setError] = useState<string | null>(null);
 
   function clampView(v: View) {
@@ -582,7 +595,11 @@ export function PdfPanZoomViewer({
             <button
               type="button"
               aria-label="Rotate map"
-              onClick={() => setRotation((rotationRef.current + 90) % 360)}
+              onClick={() => {
+                const next = nextRotation(rotationRef.current);
+                setRotation(next);
+                onRotationChange?.(next);
+              }}
               className="flex h-6 w-7 items-center justify-center rounded-md bg-neutral-900/70 text-white backdrop-blur active:bg-neutral-900"
             >
               <svg

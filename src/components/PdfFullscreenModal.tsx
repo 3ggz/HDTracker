@@ -26,10 +26,14 @@ export function PdfFullscreenModal({
   src,
   label,
   onClose,
+  savedRotation = null,
+  onRotationChange,
 }: {
   src: string;
   label: string;
   onClose: () => void;
+  savedRotation?: number | null;
+  onRotationChange?: (rotation: number) => void;
 }) {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -91,7 +95,13 @@ export function PdfFullscreenModal({
         className="flex-1 overflow-hidden p-2"
         onClick={(e) => e.stopPropagation()}
       >
-        <PdfPanZoomViewer pdfUrl={src} multiPage className="h-full w-full" />
+        <PdfPanZoomViewer
+          pdfUrl={src}
+          multiPage
+          className="h-full w-full"
+          savedRotation={savedRotation}
+          onRotationChange={onRotationChange}
+        />
       </div>
     </div>
   );

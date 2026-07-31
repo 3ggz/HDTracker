@@ -64,6 +64,11 @@ import { firstNameFromEmail } from "@/lib/email";
 import { useSoftDelete } from "@/lib/use-soft-delete";
 import { useAnchorRect } from "@/lib/use-anchor-rect";
 import { mergeConcurrentText } from "@/lib/merge-text";
+import {
+  normalizeRotation,
+  saveMapRotation,
+  type MapRotations,
+} from "@/lib/map-rotation";
 import { PdfFullscreenModal } from "./PdfFullscreenModal";
 import { PdfPanZoomViewer } from "./PdfPanZoomViewer";
 import {
@@ -138,6 +143,7 @@ export function JobDetailClient({
   photosLoadError,
   canDeleteJob,
   initialExtraSiteMaps,
+  initialMapRotations,
   initialDerivedWorkers,
   initialMemberSuggestions,
 }: {
@@ -154,6 +160,9 @@ export function JobDetailClient({
   photosLoadError: string | null;
   canDeleteJob: boolean;
   initialExtraSiteMaps: JobSiteMap[];
+  // How each site map PDF is turned, keyed by storage path. Absent
+  // means nobody has chosen, so the viewer auto-rotates.
+  initialMapRotations: MapRotations;
   // Distinct user emails pulled from job_activity at SSR. Live updates
   // here would require a separate channel; for now the list rehydrates
   // on navigation, which is fine — the manual list IS realtime via
@@ -175,6 +184,30 @@ export function JobDetailClient({
   const [itemPhotos, setItemPhotos] = useState(initialItemPhotos);
   const [panelPhotos, setPanelPhotos] = useState(initialPanelPhotos);
   const [extraSiteMaps, setExtraSiteMaps] = useState(initialExtraSiteMaps);
+  const [mapRotations, setMapRotations] = useState(initialMapRotations);
+  // Optimistic: the sheet turns immediately and the write follows. A
+  // failed save is worth surfacing but not reverting — the rotation on
+  // screen is the one the user asked for.
+  const rotateMap = useCallback(
+    (storagePath: string, rotation: number): Promise<string | null> => {
+      const value = normalizeRotation(rotation);
+      setMapRotations((prev) => ({ ...prev, [storagePath]: value }));
+      return (async () => {
+        const supabase = createClient();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        const result = await saveMapRotation(
+          supabase,
+          storagePath,
+          value,
+          user?.email,
+        );
+        return result.ok ? null : result.error;
+      })();
+    },
+    [],
+  );
   const [autoDetectOpen, setAutoDetectOpen] = useState(false);
   // Which PDF the user launched auto-detect from (primary or an extra floor).
   const [autoDetectPath, setAutoDetectPath] = useState<string | null>(null);
@@ -1622,6 +1655,8 @@ export function JobDetailClient({
             setAutoDetectOpen(true);
           }}
           extras={extraSiteMaps}
+          mapRotations={mapRotations}
+          onRotate={rotateMap}
           onExtraAdded={(map) =>
             setExtraSiteMaps((cur) => [...cur, map])
           }
@@ -5033,6 +5068,8 @@ function SiteMapBody({
   onExtraAdded,
   onExtraRemoved,
   onExtraRenamed,
+  mapRotations,
+  onRotate,
 }: {
   job: Job;
   onJobUpdate: (job: Job) => void;
@@ -5042,6 +5079,8 @@ function SiteMapBody({
   onExtraAdded: (map: JobSiteMap) => void;
   onExtraRemoved: (id: string) => void;
   onExtraRenamed: (map: JobSiteMap) => void;
+  mapRotations: MapRotations;
+  onRotate: (storagePath: string, rotation: number) => Promise<string | null>;
 }) {
   const tracker = useContext(SaveTrackerContext);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -5399,6 +5438,12 @@ function SiteMapBody({
               <PdfPanZoomViewer
                 key={selected.storagePath}
                 pdfUrl={publicJobFileUrl(supabaseUrl, selected.storagePath)}
+                savedRotation={mapRotations[selected.storagePath] ?? null}
+                onRotationChange={(r) => {
+                  void onRotate(selected.storagePath, r).then((err) => {
+                    if (err) setError(`Couldn't save the rotation: ${err}`);
+                  });
+                }}
                 className="h-[65vh] w-full rounded-lg border border-neutral-200 bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-950"
               />
               <button
@@ -5564,6 +5609,12 @@ function SiteMapBody({
             allPdfs.find((p) => p.storagePath === fullscreenSrc)?.label ??
             "Site map"
           }
+          savedRotation={mapRotations[fullscreenSrc] ?? null}
+          onRotationChange={(r) => {
+            void onRotate(fullscreenSrc, r).then((err) => {
+              if (err) setError(`Couldn't save the rotation: ${err}`);
+            });
+          }}
           onClose={() => setFullscreenSrc(null)}
         />
       )}
