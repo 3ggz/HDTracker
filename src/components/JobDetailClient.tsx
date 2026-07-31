@@ -69,6 +69,9 @@ import {
   saveMapRotation,
   type MapRotations,
 } from "@/lib/map-rotation";
+import { collectFloors } from "@/lib/floors";
+import { Combobox } from "./Combobox";
+import { FloorPicker } from "./FloorPicker";
 import { PdfFullscreenModal } from "./PdfFullscreenModal";
 import { PdfPanZoomViewer } from "./PdfPanZoomViewer";
 import {
@@ -905,6 +908,11 @@ export function JobDetailClient({
     }
   }
 
+  // Every floor this job already uses, for the floor pickers. Derived
+  // from the doors themselves — standalone buckets included, since a
+  // floor that so far only holds gateways is still a real floor.
+  const floorOptions = useMemo(() => collectFloors(doors), [doors]);
+
   // Which floor (if any) the user is currently renaming. null when
   // not editing. We only allow renaming real floor values, not the
   // synthetic "Unassigned" bucket for null-floor doors.
@@ -1196,14 +1204,6 @@ export function JobDetailClient({
           distinctFloors.length > 1 ||
           (distinctFloors.length === 1 && distinctFloors[0] !== null);
 
-        const floorOptions = Array.from(
-          new Set(
-            [...floorsWithDoors, ...floorsWithGear].filter(
-              (f): f is string => f !== null,
-            ),
-          ),
-        ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-
         const renderGearSection = (
           bucket: JobDoor | undefined | null,
           title: string,
@@ -1260,6 +1260,7 @@ export function JobDetailClient({
               jobId={job.id}
               existingCount={doors.length}
               template={selectedTemplate}
+              floorOptions={floorOptions}
               onAdded={(door, newItems, options) => {
                 addDoorDeduped(door);
                 addItemsDeduped(newItems);
@@ -1274,6 +1275,7 @@ export function JobDetailClient({
             key={door.id}
             job={job}
             door={door}
+            floorOptions={floorOptions}
             items={itemsByDoor.get(door.id) ?? []}
             supabaseUrl={supabaseUrl}
             jobPhotos={photos.filter((p) => p.door_id === door.id)}
@@ -2227,11 +2229,13 @@ function AddDoorMenu({
   jobId,
   existingCount,
   template,
+  floorOptions,
   onAdded,
 }: {
   jobId: string;
   existingCount: number;
   template: DoorTemplate;
+  floorOptions: readonly string[];
   onAdded: (
     door: JobDoor,
     items: JobDoorItem[],
@@ -2317,18 +2321,17 @@ function AddDoorMenu({
   // applies to every door added afterwards. Distinct id so the
   // browser stops grouping it with the AddDoorMenu in other doors.
   const floorInput = (
-    <input
-      type="text"
-      placeholder="Floor"
-      value={floorDraft}
-      onChange={(e) => setFloorDraft(e.target.value)}
-      id={`add-door-floor-${jobId}`}
-      name={`add-door-floor-${jobId}`}
-      autoComplete="off"
-      autoCorrect="off"
-      spellCheck={false}
-      className="h-9 w-16 rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-    />
+    <div className="w-24">
+      <Combobox
+        value={floorDraft}
+        onChange={setFloorDraft}
+        suggestions={floorOptions}
+        placeholder="Floor"
+        ariaLabel="Floor for new doors"
+        autoCapitalize="words"
+        className="h-9 w-full rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+      />
+    </div>
   );
 
   if (bulkOpen) {
@@ -2854,6 +2857,9 @@ function TemplateItemList({
 type DoorCardProps = {
   job: Job;
   door: JobDoor;
+  // Floors already in use on this job, so moving a door to an existing
+  // floor is a tap instead of retyping it exactly.
+  floorOptions: readonly string[];
   items: JobDoorItem[];
   supabaseUrl: string;
   jobPhotos: JobPhoto[];
@@ -2917,6 +2923,7 @@ function SortableDoorCard(props: DoorCardProps) {
 function DoorCard({
   job,
   door,
+  floorOptions,
   items,
   supabaseUrl,
   jobPhotos,
@@ -2979,10 +2986,8 @@ function DoorCard({
 
   const [nameDraft, setNameDraft] = useState(door.name);
   const [notesDraft, setNotesDraft] = useState(door.notes ?? "");
-  const [floorDraft, setFloorDraft] = useState(door.floor ?? "");
   const [syncedName, setSyncedName] = useState(door.name);
   const [syncedNotes, setSyncedNotes] = useState(door.notes ?? "");
-  const [syncedFloor, setSyncedFloor] = useState(door.floor ?? "");
 
   // Realtime-aware sync: only overwrite the draft if the user hasn't
   // started editing (draft still matches the last value we saw from
@@ -2995,11 +3000,6 @@ function DoorCard({
     if (notesDraft === syncedNotes) setNotesDraft(door.notes ?? "");
     setSyncedNotes(door.notes ?? "");
   }
-  if ((door.floor ?? "") !== syncedFloor) {
-    if (floorDraft === syncedFloor) setFloorDraft(door.floor ?? "");
-    setSyncedFloor(door.floor ?? "");
-  }
-
   const tracker = useContext(SaveTrackerContext);
 
   async function commitField(patch: Partial<JobDoor>) {
@@ -3304,33 +3304,20 @@ function DoorCard({
 
       {expanded && (
         <>
-          <label className="mt-2 flex items-center gap-2 pl-7">
+          <div className="mt-2 flex items-center gap-2 pl-7">
             <span className="text-[10px] font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
               Floor
             </span>
-            <input
-              className="h-8 flex-1 rounded border border-neutral-300 bg-white px-2 text-xs dark:border-neutral-700 dark:bg-neutral-900"
-              id={`door-floor-${door.id}`}
-              name={`door-floor-${door.id}`}
-              autoComplete="off"
-              autoCorrect="off"
-              spellCheck={false}
-              enterKeyHint="done"
-              placeholder="optional"
-              value={floorDraft}
-              onChange={(e) => setFloorDraft(e.target.value)}
-              onBlur={() => {
-                const next = floorDraft.trim() || null;
-                if (next !== door.floor) commitField({ floor: next });
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  e.currentTarget.blur();
-                }
-              }}
-            />
-          </label>
+            <div className="min-w-0 flex-1">
+              <FloorPicker
+                value={door.floor}
+                floors={floorOptions}
+                ariaLabel={`Floor for ${door.name}`}
+                onCommit={(floor) => commitField({ floor })}
+                className="h-8 w-full rounded border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+              />
+            </div>
+          </div>
 
           <div className="mt-3 space-y-2">
             <h3 className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
@@ -3598,28 +3585,24 @@ function MiscellaneousSection({
                 {done}/{groupItems.length}
               </span>
             </div>
-            {floorOptions.length > 0 && (
-              <label className="mb-2 flex items-center gap-2 text-[11px] text-neutral-500 dark:text-neutral-400">
+            <div className="mb-2 flex items-center gap-2">
+              <span className="text-[11px] text-neutral-500 dark:text-neutral-400">
                 Floor
-                <select
-                  value={door.floor ?? ""}
-                  onChange={(e) =>
+              </span>
+              <div className="min-w-0 flex-1">
+                <FloorPicker
+                  value={door.floor}
+                  floors={floorOptions}
+                  ariaLabel={`Floor for ${name}`}
+                  onCommit={(floor) =>
                     void onMoveCategory(
                       groupItems.map((it) => it.id),
-                      e.target.value || null,
+                      floor,
                     )
                   }
-                  className="h-8 flex-1 rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50"
-                >
-                  <option value="">Unassigned</option>
-                  {floorOptions.map((f) => (
-                    <option key={f} value={f}>
-                      {f}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
+                />
+              </div>
+            </div>
             <ul className="space-y-1.5">
               {groupItems.map((it, idx) => (
                 <MiscItemRow

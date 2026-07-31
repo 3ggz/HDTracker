@@ -7,6 +7,13 @@ import { useAnchorRect } from "@/lib/use-anchor-rect";
 type Props = {
   value: string;
   onChange: (value: string) => void;
+  // Callers that save a draft later (the vehicle editor) only need
+  // onChange. Callers that save per field (the job editor) need to
+  // know when the user is *done*: tapping a suggestion, or pressing
+  // Enter on free text. Committing on every keystroke would write
+  // "Floor 2" on the way to typing "Floor 20".
+  onPick?: (value: string) => void;
+  onEnter?: () => void;
   suggestions: readonly string[];
   placeholder?: string;
   className?: string;
@@ -25,6 +32,8 @@ const MAX_VISIBLE_SUGGESTIONS = 50;
 export function Combobox({
   value,
   onChange,
+  onPick,
+  onEnter,
   suggestions,
   placeholder,
   className,
@@ -78,6 +87,7 @@ export function Combobox({
   // on iOS would dismiss the keyboard and could re-flow the layout).
   function selectSuggestion(suggestion: string) {
     onChange(suggestion);
+    onPick?.(suggestion);
     setOpen(false);
   }
 
@@ -94,6 +104,10 @@ export function Combobox({
         onKeyDown={(e) => {
           if (e.key === "Escape") {
             setOpen(false);
+          } else if (e.key === "Enter") {
+            e.preventDefault();
+            setOpen(false);
+            onEnter?.();
           }
         }}
         placeholder={placeholder}
