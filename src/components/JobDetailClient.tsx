@@ -944,41 +944,48 @@ export function JobDetailClient({
     setRenamingFloor(null);
   }
 
+  // Find the gear bucket for a floor, creating it the first time
+  // something lands there. Buckets are made on demand rather than one
+  // per floor up front, so a job only carries the ones it uses.
+  async function ensureGearBucket(
+    floor: string | null,
+  ): Promise<JobDoor | null> {
+    const existing = doors.find(
+      (d) => isStandaloneDoor(d) && (d.floor ?? null) === floor,
+    );
+    if (existing) return existing;
+
+    const { data, error } = await withTrack(saveTracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("job_doors")
+        .insert({
+          job_id: job.id,
+          name: STANDALONE_DOOR_NAME,
+          floor,
+          notes: null,
+          position: doors.length,
+        })
+        .select("*")
+        .single();
+    });
+    if (error || !data) {
+      alert(`Couldn't add the gateways section: ${error?.message ?? "unknown"}`);
+      return null;
+    }
+    const bucket = data as JobDoor;
+    setDoors((current) => [...current, bucket]);
+    return bucket;
+  }
+
   // Move a whole category of standalone gear (all four gateways of a
-  // model, say) onto a floor. Each floor has its own bucket door, so
-  // the move is a re-parent of the items; the bucket is created on
-  // first use. Not optimistic — a half-applied move would scatter one
-  // category across two floors, which is worse than a moment's wait.
+  // model, say) onto a floor — a re-parent of the items onto that
+  // floor's bucket. Not optimistic: a half-applied move would scatter
+  // one category across two floors, worse than a moment's wait.
   async function moveGearToFloor(itemIds: string[], floor: string | null) {
     if (itemIds.length === 0) return;
-    let bucket =
-      doors.find((d) => isStandaloneDoor(d) && (d.floor ?? null) === floor) ??
-      null;
-
-    if (!bucket) {
-      const { data, error } = await withTrack(saveTracker, async () => {
-        const supabase = createClient();
-        return supabase
-          .from("job_doors")
-          .insert({
-            job_id: job.id,
-            name: STANDALONE_DOOR_NAME,
-            floor,
-            notes: null,
-            position: doors.length,
-          })
-          .select("*")
-          .single();
-      });
-      if (error || !data) {
-        alert(`Couldn't move the equipment: ${error?.message ?? "unknown"}`);
-        return;
-      }
-      bucket = data as JobDoor;
-      setDoors((current) => [...current, bucket as JobDoor]);
-    }
-
-    const target = bucket;
+    const target = await ensureGearBucket(floor);
+    if (!target) return;
     const { error } = await withTrack(saveTracker, async () => {
       const supabase = createClient();
       return supabase
@@ -1194,8 +1201,11 @@ export function JobDetailClient({
         const floorsWithDoors = regularDoors.map((d) => d.floor ?? null);
         // A floor holding only gateways still deserves its own group,
         // but an emptied bucket must not resurrect one.
+        // An existing bucket keeps its floor group even when empty —
+        // otherwise the section you just created to add gateways to
+        // would vanish before you could add anything.
         const floorsWithGear = standaloneDoors
-          .filter((d) => d.floor !== null && bucketItems(d).length > 0)
+          .filter((d) => d.floor !== null)
           .map((d) => d.floor as string);
         const distinctFloors = Array.from(
           new Set<string | null>([...floorsWithDoors, ...floorsWithGear]),
@@ -1204,6 +1214,19 @@ export function JobDetailClient({
           distinctFloors.length > 1 ||
           (distinctFloors.length === 1 && distinctFloors[0] !== null);
 
+        // No bucket yet on this floor: offer to start one rather than
+        // rendering nothing, which left no way to add gateways by hand
+        // on a job that never ran auto-detect.
+        const renderAddGearButton = (floor: string | null) => (
+          <button
+            type="button"
+            onClick={() => void ensureGearBucket(floor)}
+            className="flex h-9 w-full items-center justify-center rounded-lg border border-dashed border-neutral-300 text-xs font-medium text-neutral-600 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800"
+          >
+            + Add gateways
+          </button>
+        );
+
         const renderGearSection = (
           bucket: JobDoor | undefined | null,
           title: string,
@@ -1211,7 +1234,6 @@ export function JobDetailClient({
         ) => {
           if (!bucket) return null;
           const gear = bucketItems(bucket);
-          if (gear.length === 0) return null;
           const gearDone = gear.filter((it) => it.completed_at).length;
           return (
             <CollapsibleSection
@@ -1387,10 +1409,16 @@ export function JobDetailClient({
 
         // Gear nobody has placed yet keeps its own section at the
         // bottom rather than being hidden inside an arbitrary floor.
-        const standaloneSection = renderGearSection(
-          standaloneByFloor.get(null),
-          "Miscellaneous",
-          "_unassigned",
+        // When there's no bucket at all, the button is the entry point
+        // for adding gateways by hand.
+        const standaloneSection = standaloneByFloor.get(null) ? (
+          renderGearSection(
+            standaloneByFloor.get(null),
+            "Miscellaneous",
+            "_unassigned",
+          )
+        ) : (
+          <div className="px-1">{renderAddGearButton(null)}</div>
         );
 
         if (!useFloorGroups) {
@@ -1526,12 +1554,17 @@ export function JobDetailClient({
                         Miscellaneous section at the bottom; rendering
                         it here too would duplicate it inside the
                         Unassigned group. */}
-                    {floor !== null &&
-                      renderGearSection(
-                        standaloneByFloor.get(floor),
-                        "Gateways",
-                        floor,
-                      )}
+                    {floor !== null && (
+                      <div className="mt-3">
+                        {standaloneByFloor.get(floor)
+                          ? renderGearSection(
+                              standaloneByFloor.get(floor),
+                              "Gateways",
+                              floor,
+                            )
+                          : renderAddGearButton(floor)}
+                      </div>
+                    )}
                   </CollapsibleSection>
                 </div>
               );
