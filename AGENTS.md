@@ -93,6 +93,20 @@ If you change the stack, document the reasoning in [OVERVIEW.md](./OVERVIEW.md).
 - **Vitest** for pure logic — quantity parsing / depluralization, autocomplete ranking, GPS validation, photo file validation, activity descriptors, relative time formatting.
 - Trivial UI rendering isn't unit-tested — verify by running the dev server.
 
+## Auto-detect runs on a Supabase Edge Function
+
+The "Auto-detect doors" beta lives in `supabase/functions/auto-detect-doors/` — a Deno function that sends the site-map PDF to Claude vision. It runs there rather than in a Next.js route because Vercel's Hobby tier caps server functions at 10s.
+
+**It does NOT deploy with the rest of the app.** Pushing to `main` deploys the web app to Vercel; the Edge Function only changes when someone runs:
+
+```
+supabase functions deploy auto-detect-doors
+```
+
+So a prompt fix committed here has no effect on live detection until that command runs. If detection behaviour doesn't match the prompt in the repo, suspect a stale deploy first.
+
+Detection output feeds the review dialog (`AutoDetectModal`), which is editable — the model's `standaloneItems` (gateways) can be corrected, removed, added to, and given a floor before import. Treat the dialog as the safety net: prompt changes should reduce corrections, not be the only path to a right answer.
+
 ## Ask before assuming
 
 - **Schema changes** — propose a migration, don't apply silently. Then paste the SQL contents (not the file path) in chat so Mark can run it via the Supabase SQL Editor.
