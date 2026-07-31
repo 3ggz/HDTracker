@@ -1412,17 +1412,28 @@ export function JobDetailClient({
               const floorDoors = regularDoors.filter(
                 (d) => (d.floor ?? null) === floor,
               );
-              const total = floorDoors.reduce(
-                (sum, d) => sum + (itemsByDoor.get(d.id)?.length ?? 0),
-                0,
-              );
-              const done = floorDoors.reduce(
-                (sum, d) =>
-                  sum +
-                  (itemsByDoor.get(d.id)?.filter((it) => it.completed_at)
-                    .length ?? 0),
-                0,
-              );
+              // Gateways shown inside this floor count toward its
+              // progress too, otherwise a gateways-only floor reports
+              // nothing and a mixed floor under-reports. The null-floor
+              // bucket renders in Miscellaneous at the bottom, so it
+              // stays out of the Unassigned group's tally.
+              const floorGear =
+                floor === null
+                  ? []
+                  : bucketItems(standaloneByFloor.get(floor));
+              const total =
+                floorDoors.reduce(
+                  (sum, d) => sum + (itemsByDoor.get(d.id)?.length ?? 0),
+                  0,
+                ) + floorGear.length;
+              const done =
+                floorDoors.reduce(
+                  (sum, d) =>
+                    sum +
+                    (itemsByDoor.get(d.id)?.filter((it) => it.completed_at)
+                      .length ?? 0),
+                  0,
+                ) + floorGear.filter((it) => it.completed_at).length;
               const canRename = floor !== null;
               const isRenamingThis =
                 canRename && renamingFloor === floor;
@@ -1437,10 +1448,10 @@ export function JobDetailClient({
                   )}
                   <CollapsibleSection
                     title={`${floor ?? "Unassigned"} — ${
-                      floorDoors.length === 0 && floor !== null
+                      floorDoors.length === 0 && floorGear.length > 0
                         ? // A floor can hold only gateways, and
                           // "0 doors" reads like an empty floor.
-                          `${bucketItems(standaloneByFloor.get(floor)).length} gateways`
+                          `${floorGear.length} ${floorGear.length === 1 ? "gateway" : "gateways"}`
                         : `${floorDoors.length} ${
                             floorDoors.length === 1 ? "door" : "doors"
                           }`
