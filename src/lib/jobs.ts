@@ -45,6 +45,30 @@ export type JobDoorItem = {
 // Items eligible for IP + MAC address fields. 5500 exciters are the
 // networked device on a HUGS door; extend this test if more device
 // families grow network config later.
+// Doors with this exact name aren't doors — they're the synthetic
+// bucket holding standalone equipment (gateways and similar) that the
+// auto-detect import can't attach to a real opening.
+//
+// There is one per floor, plus one with a null floor for gear nobody
+// has placed yet. Reusing job_doors.floor rather than inventing a
+// floor field on items means floor renames, grouping, and ordering all
+// keep working untouched. Anything reading doors must therefore expect
+// SEVERAL of these, not one.
+export const STANDALONE_DOOR_NAME = "Standalone Equipment";
+
+export function isStandaloneDoor(door: { name: string }): boolean {
+  return door.name === STANDALONE_DOOR_NAME;
+}
+
+export function splitStandaloneDoors<T extends { name: string }>(
+  doors: T[],
+): { realDoors: T[]; standaloneDoors: T[] } {
+  return {
+    realDoors: doors.filter((d) => !isStandaloneDoor(d)),
+    standaloneDoors: doors.filter(isStandaloneDoor),
+  };
+}
+
 export function itemSupportsNetworkFields(name: string): boolean {
   return /5500/.test(name);
 }

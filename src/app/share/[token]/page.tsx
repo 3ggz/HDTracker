@@ -6,6 +6,7 @@ import { publicJobFileUrl, type JobPhoto } from "@/lib/job-photos";
 import {
   compareCanonicalItems,
   compareDoorNames,
+  splitStandaloneDoors,
   type Job,
   type JobDoor,
   type JobDoorItem,
@@ -77,14 +78,12 @@ export default async function SharedJobPage({
   }
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-  const STANDALONE_DOOR_NAME = "Standalone Equipment";
   const allDoors = (doors ?? []) as JobDoor[];
-  const regularDoors = allDoors.filter(
-    (d) => d.name !== STANDALONE_DOOR_NAME,
-  );
-  const standaloneDoor = allDoors.find(
-    (d) => d.name === STANDALONE_DOOR_NAME,
-  );
+  // One standalone bucket per floor, so collect them all — a find()
+  // here would silently drop every gateway outside the first bucket.
+  const { realDoors: regularDoors, standaloneDoors } =
+    splitStandaloneDoors(allDoors);
+  const standaloneDoorIds = new Set(standaloneDoors.map((d) => d.id));
   const sortedDoors = [...regularDoors].sort((a, b) =>
     compareDoorNames(a.name, b.name),
   );
@@ -303,13 +302,15 @@ export default async function SharedJobPage({
           </section>
         )}
 
-        {standaloneDoor && (
+        {standaloneDoors.length > 0 && (
           <section className="avoid-break rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900 print:p-2">
             <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
               Standalone equipment
             </h2>
             {(() => {
-              const sItems = itemsByDoor.get(standaloneDoor.id) ?? [];
+              const sItems = allItems.filter((it) =>
+                standaloneDoorIds.has(it.door_id),
+              );
               if (sItems.length === 0) {
                 return (
                   <p className="text-xs text-neutral-500 dark:text-neutral-400">

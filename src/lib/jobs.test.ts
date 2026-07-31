@@ -1,5 +1,49 @@
 import { describe, expect, it } from "vitest";
-import { compareCanonicalItems, compareDoorNames } from "./jobs";
+import {
+  compareCanonicalItems,
+  compareDoorNames,
+  isStandaloneDoor,
+  splitStandaloneDoors,
+  STANDALONE_DOOR_NAME,
+} from "./jobs";
+
+describe("splitStandaloneDoors", () => {
+  const doors = [
+    { id: "a", name: "101 Main Entry", floor: "1" },
+    { id: "b", name: STANDALONE_DOOR_NAME, floor: "1" },
+    { id: "c", name: "201 Server Room", floor: "2" },
+    { id: "d", name: STANDALONE_DOOR_NAME, floor: "2" },
+    { id: "e", name: STANDALONE_DOOR_NAME, floor: null },
+  ];
+
+  it("keeps real doors out of the standalone buckets", () => {
+    const { realDoors } = splitStandaloneDoors(doors);
+    expect(realDoors.map((d) => d.id)).toEqual(["a", "c"]);
+  });
+
+  // There is one bucket per floor now. Anything using find() here
+  // would silently drop every gateway outside the first bucket, which
+  // is exactly how they'd vanish from the share and quickview pages.
+  it("returns every standalone bucket, not just the first", () => {
+    const { standaloneDoors } = splitStandaloneDoors(doors);
+    expect(standaloneDoors.map((d) => d.id)).toEqual(["b", "d", "e"]);
+  });
+
+  it("handles a job with no standalone gear at all", () => {
+    const { realDoors, standaloneDoors } = splitStandaloneDoors([doors[0]]);
+    expect(realDoors).toHaveLength(1);
+    expect(standaloneDoors).toEqual([]);
+  });
+});
+
+describe("isStandaloneDoor", () => {
+  it("matches only the exact synthetic name", () => {
+    expect(isStandaloneDoor({ name: STANDALONE_DOOR_NAME })).toBe(true);
+    expect(isStandaloneDoor({ name: "Standalone" })).toBe(false);
+    expect(isStandaloneDoor({ name: "standalone equipment" })).toBe(false);
+    expect(isStandaloneDoor({ name: "101 Main Entry" })).toBe(false);
+  });
+});
 
 describe("compareDoorNames", () => {
   it("sorts pure numeric order within a letter prefix", () => {

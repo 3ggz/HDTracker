@@ -23,7 +23,9 @@ import { CSS } from "@dnd-kit/utilities";
 import {
   compareCanonicalItems,
   compareDoorNames,
+  isStandaloneDoor,
   itemSupportsNetworkFields,
+  STANDALONE_DOOR_NAME,
   type Job,
   type JobDoor,
   type JobDoorItem,
@@ -79,12 +81,6 @@ import {
   type RestoreDoorInput,
 } from "@/app/jobs/[id]/actions";
 import { AutoDetectModal } from "./AutoDetectModal";
-
-// Doors with this exact name are the synthetic bucket created by the
-// auto-detect import for unlabeled standalone equipment (gateways,
-// etc). They aren't real doors, so they're excluded from door counts
-// and rendered as their own section below the floor groups.
-const STANDALONE_DOOR_NAME = "Standalone Equipment";
 
 // A door can be wired up with more than one 5200 / 3220 exciter, so
 // the quick-add chip for those stays available even after one is
@@ -907,6 +903,60 @@ export function JobDetailClient({
     setRenamingFloor(null);
   }
 
+  // Move a whole category of standalone gear (all four gateways of a
+  // model, say) onto a floor. Each floor has its own bucket door, so
+  // the move is a re-parent of the items; the bucket is created on
+  // first use. Not optimistic — a half-applied move would scatter one
+  // category across two floors, which is worse than a moment's wait.
+  async function moveGearToFloor(itemIds: string[], floor: string | null) {
+    if (itemIds.length === 0) return;
+    let bucket =
+      doors.find((d) => isStandaloneDoor(d) && (d.floor ?? null) === floor) ??
+      null;
+
+    if (!bucket) {
+      const { data, error } = await withTrack(saveTracker, async () => {
+        const supabase = createClient();
+        return supabase
+          .from("job_doors")
+          .insert({
+            job_id: job.id,
+            name: STANDALONE_DOOR_NAME,
+            floor,
+            notes: null,
+            position: doors.length,
+          })
+          .select("*")
+          .single();
+      });
+      if (error || !data) {
+        alert(`Couldn't move the equipment: ${error?.message ?? "unknown"}`);
+        return;
+      }
+      bucket = data as JobDoor;
+      setDoors((current) => [...current, bucket as JobDoor]);
+    }
+
+    const target = bucket;
+    const { error } = await withTrack(saveTracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("job_door_items")
+        .update({ door_id: target.id })
+        .in("id", itemIds);
+    });
+    if (error) {
+      alert(`Couldn't move the equipment: ${error.message}`);
+      return;
+    }
+    const moving = new Set(itemIds);
+    setItems((current) =>
+      current.map((it) =>
+        moving.has(it.id) ? { ...it, door_id: target.id } : it,
+      ),
+    );
+  }
+
   async function persistDoorOrder(reordered: JobDoor[]) {
     await withTrack(saveTracker, async () => {
       const supabase = createClient();
@@ -1089,15 +1139,67 @@ export function JobDetailClient({
           ...regularDoorsRaw.filter((d) => !d.tested_at),
           ...regularDoorsRaw.filter((d) => d.tested_at),
         ];
-        const standaloneDoor = doors.find(
-          (d) => d.name === STANDALONE_DOOR_NAME,
-        );
+        // One standalone bucket per floor. The floor lives on the
+        // bucket door, so floor renames, grouping and ordering all keep
+        // working with no per-item floor field.
+        const standaloneDoors = doors.filter(isStandaloneDoor);
+        const standaloneByFloor = new Map<string | null, JobDoor>();
+        for (const d of standaloneDoors) {
+          standaloneByFloor.set(d.floor ?? null, d);
+        }
+        const bucketItems = (d: JobDoor | undefined | null) =>
+          d ? itemsByDoor.get(d.id) ?? [] : [];
+
+        const floorsWithDoors = regularDoors.map((d) => d.floor ?? null);
+        // A floor holding only gateways still deserves its own group,
+        // but an emptied bucket must not resurrect one.
+        const floorsWithGear = standaloneDoors
+          .filter((d) => d.floor !== null && bucketItems(d).length > 0)
+          .map((d) => d.floor as string);
         const distinctFloors = Array.from(
-          new Set(regularDoors.map((d) => d.floor ?? null)),
+          new Set<string | null>([...floorsWithDoors, ...floorsWithGear]),
         );
         const useFloorGroups =
           distinctFloors.length > 1 ||
           (distinctFloors.length === 1 && distinctFloors[0] !== null);
+
+        const floorOptions = Array.from(
+          new Set(
+            [...floorsWithDoors, ...floorsWithGear].filter(
+              (f): f is string => f !== null,
+            ),
+          ),
+        ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+        const renderGearSection = (
+          bucket: JobDoor | undefined | null,
+          title: string,
+          storageSuffix: string,
+        ) => {
+          if (!bucket) return null;
+          const gear = bucketItems(bucket);
+          if (gear.length === 0) return null;
+          const gearDone = gear.filter((it) => it.completed_at).length;
+          return (
+            <CollapsibleSection
+              title={`${title} — ${gear.length} ${gear.length === 1 ? "item" : "items"} · ${gearDone}/${gear.length}`}
+              storageKey={`hd:job:${initialJob.id}:standalone:${storageSuffix}`}
+            >
+              <MiscellaneousSection
+                door={bucket}
+                items={gear}
+                floorOptions={floorOptions}
+                onMoveCategory={moveGearToFloor}
+                onItemsChange={(next) => {
+                  setItems((current) => [
+                    ...current.filter((it) => it.door_id !== bucket.id),
+                    ...next,
+                  ]);
+                }}
+              />
+            </CollapsibleSection>
+          );
+        };
 
         const headerControls = (
           <div className="flex items-center gap-1">
@@ -1248,30 +1350,13 @@ export function JobDetailClient({
           </p>
         );
 
-        const standaloneItems = standaloneDoor
-          ? itemsByDoor.get(standaloneDoor.id) ?? []
-          : [];
-        const standaloneDone = standaloneItems.filter(
-          (it) => it.completed_at,
-        ).length;
-
-        const standaloneSection = standaloneDoor ? (
-          <CollapsibleSection
-            title={`Miscellaneous — ${standaloneItems.length} ${standaloneItems.length === 1 ? "item" : "items"}${standaloneItems.length ? ` · ${standaloneDone}/${standaloneItems.length}` : ""}`}
-            storageKey={`hd:job:${initialJob.id}:standalone`}
-          >
-            <MiscellaneousSection
-              door={standaloneDoor}
-              items={standaloneItems}
-              onItemsChange={(next) => {
-                setItems((current) => [
-                  ...current.filter((it) => it.door_id !== standaloneDoor.id),
-                  ...next,
-                ]);
-              }}
-            />
-          </CollapsibleSection>
-        ) : null;
+        // Gear nobody has placed yet keeps its own section at the
+        // bottom rather than being hidden inside an arbitrary floor.
+        const standaloneSection = renderGearSection(
+          standaloneByFloor.get(null),
+          "Miscellaneous",
+          "_unassigned",
+        );
 
         if (!useFloorGroups) {
           return (
@@ -1351,8 +1436,14 @@ export function JobDetailClient({
                     />
                   )}
                   <CollapsibleSection
-                    title={`${floor ?? "Unassigned"} — ${floorDoors.length} ${
-                      floorDoors.length === 1 ? "door" : "doors"
+                    title={`${floor ?? "Unassigned"} — ${
+                      floorDoors.length === 0 && floor !== null
+                        ? // A floor can hold only gateways, and
+                          // "0 doors" reads like an empty floor.
+                          `${bucketItems(standaloneByFloor.get(floor)).length} gateways`
+                        : `${floorDoors.length} ${
+                            floorDoors.length === 1 ? "door" : "doors"
+                          }`
                     }${total ? ` · ${done}/${total}` : ""}`}
                     storageKey={`hd:job:${initialJob.id}:floor:${floor ?? "_unassigned"}`}
                     rightHeader={
@@ -1385,6 +1476,16 @@ export function JobDetailClient({
                         </ul>
                       </SortableContext>
                     </DndContext>
+                    {/* The null-floor bucket belongs to the
+                        Miscellaneous section at the bottom; rendering
+                        it here too would duplicate it inside the
+                        Unassigned group. */}
+                    {floor !== null &&
+                      renderGearSection(
+                        standaloneByFloor.get(floor),
+                        "Gateways",
+                        floor,
+                      )}
                   </CollapsibleSection>
                 </div>
               );
@@ -3298,10 +3399,17 @@ function MiscellaneousSection({
   door,
   items,
   onItemsChange,
+  floorOptions,
+  onMoveCategory,
 }: {
   door: JobDoor;
   items: JobDoorItem[];
   onItemsChange: (items: JobDoorItem[]) => void;
+  // Floors this job already has. Gear moves a whole category at a
+  // time — four gateways of one model are almost always going to the
+  // same floor, and moving them one by one is four times the tapping.
+  floorOptions: string[];
+  onMoveCategory: (itemIds: string[], floor: string | null) => Promise<void>;
 }) {
   const tracker = useContext(SaveTrackerContext);
   const [adding, setAdding] = useState(false);
@@ -3444,6 +3552,28 @@ function MiscellaneousSection({
                 {done}/{groupItems.length}
               </span>
             </div>
+            {floorOptions.length > 0 && (
+              <label className="mb-2 flex items-center gap-2 text-[11px] text-neutral-500 dark:text-neutral-400">
+                Floor
+                <select
+                  value={door.floor ?? ""}
+                  onChange={(e) =>
+                    void onMoveCategory(
+                      groupItems.map((it) => it.id),
+                      e.target.value || null,
+                    )
+                  }
+                  className="h-8 flex-1 rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50"
+                >
+                  <option value="">Unassigned</option>
+                  {floorOptions.map((f) => (
+                    <option key={f} value={f}>
+                      {f}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <ul className="space-y-1.5">
               {groupItems.map((it, idx) => (
                 <MiscItemRow
