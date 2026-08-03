@@ -974,7 +974,12 @@ export function JobDetailClient({
       return null;
     }
     const bucket = data as JobDoor;
-    setDoors((current) => [...current, bucket]);
+    // Must go through addDoorDeduped, not setDoors: it also registers
+    // the id in doorIdsRef, which is what the Realtime subscription
+    // checks before accepting item events. A bucket added straight to
+    // state would silently ignore every gateway added to it from
+    // another phone until the next full refetch.
+    addDoorDeduped(bucket);
     return bucket;
   }
 
