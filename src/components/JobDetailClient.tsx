@@ -983,10 +983,38 @@ export function JobDetailClient({
     return bucket;
   }
 
-  // Move a whole category of standalone gear (all four gateways of a
-  // model, say) onto a floor — a re-parent of the items onto that
-  // floor's bucket. Not optimistic: a half-applied move would scatter
-  // one category across two floors, worse than a moment's wait.
+  // Two-tap delete for a whole gear section, matching how doors and
+  // items confirm. job_door_items cascades off job_doors, so removing
+  // the bucket takes its gear with it.
+  const [confirmingGearBucketId, setConfirmingGearBucketId] = useState<
+    string | null
+  >(null);
+
+  function requestDeleteGearBucket(bucket: JobDoor) {
+    if (confirmingGearBucketId !== bucket.id) {
+      setConfirmingGearBucketId(bucket.id);
+      return;
+    }
+    setConfirmingGearBucketId(null);
+    void (async () => {
+      const { error } = await withTrack(saveTracker, async () => {
+        const supabase = createClient();
+        return supabase.from("job_doors").delete().eq("id", bucket.id);
+      });
+      if (error) {
+        alert(`Couldn't delete the section: ${error.message}`);
+        return;
+      }
+      doorIdsRef.current.delete(bucket.id);
+      setDoors((current) => current.filter((d) => d.id !== bucket.id));
+      setItems((current) => current.filter((it) => it.door_id !== bucket.id));
+    })();
+  }
+
+  // Move a whole gear section onto a floor by re-parenting its items
+  // onto that floor's bucket. Not optimistic: a half-applied move
+  // would scatter one section across two floors, which is worse than
+  // a moment's wait.
   async function moveGearToFloor(itemIds: string[], floor: string | null) {
     if (itemIds.length === 0) return;
     const target = await ensureGearBucket(floor);
@@ -1249,7 +1277,9 @@ export function JobDetailClient({
                 door={bucket}
                 items={gear}
                 floorOptions={floorOptions}
-                onMoveCategory={moveGearToFloor}
+                onMoveSection={moveGearToFloor}
+                onDeleteSection={requestDeleteGearBucket}
+                confirmingDeleteSection={confirmingGearBucketId === bucket.id}
                 onItemsChange={(next) => {
                   setItems((current) => [
                     ...current.filter((it) => it.door_id !== bucket.id),
@@ -3471,16 +3501,20 @@ function MiscellaneousSection({
   items,
   onItemsChange,
   floorOptions,
-  onMoveCategory,
+  onMoveSection,
+  onDeleteSection,
+  confirmingDeleteSection,
 }: {
   door: JobDoor;
   items: JobDoorItem[];
   onItemsChange: (items: JobDoorItem[]) => void;
-  // Floors this job already has. Gear moves a whole category at a
-  // time — four gateways of one model are almost always going to the
-  // same floor, and moving them one by one is four times the tapping.
+  // Floors this job already has. The whole section moves at once —
+  // everything in one section sits on one floor, so a per-unit floor
+  // would be several times the tapping for no gain.
   floorOptions: string[];
-  onMoveCategory: (itemIds: string[], floor: string | null) => Promise<void>;
+  onMoveSection: (itemIds: string[], floor: string | null) => Promise<void>;
+  onDeleteSection: (bucket: JobDoor) => void;
+  confirmingDeleteSection: boolean;
 }) {
   const tracker = useContext(SaveTrackerContext);
   const [adding, setAdding] = useState(false);
@@ -3488,18 +3522,20 @@ function MiscellaneousSection({
 
   // Items get grouped by name so a "Gateway × 4" pile shows as a
   // single labelled group rather than four loose check rows.
-  const groups = useMemo(() => {
-    const map = new Map<string, JobDoorItem[]>();
-    for (const it of items) {
-      const key = it.name;
-      const list = map.get(key) ?? [];
-      list.push(it);
-      map.set(key, list);
-    }
-    return Array.from(map.entries()).sort((a, b) =>
-      a[0].localeCompare(b[0], undefined, { numeric: true }),
-    );
-  }, [items]);
+  // Flat list ordered by model, then by insertion, so several of the
+  // same model stay together without a wrapper card around them. The
+  // card level used to exist and read as one nesting too many once
+  // the section itself was already called Gateways.
+  const sorted = useMemo(
+    () =>
+      [...items].sort(
+        (a, b) =>
+          a.name.localeCompare(b.name, undefined, { numeric: true }) ||
+          a.position - b.position ||
+          a.created_at.localeCompare(b.created_at),
+      ),
+    [items],
+  );
 
   async function toggleItem(item: JobDoorItem) {
     const nextCompletedAt = item.completed_at
@@ -3597,74 +3633,46 @@ function MiscellaneousSection({
 
   return (
     <div className="space-y-3">
-      {groups.length === 0 && !adding && (
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] text-neutral-500 dark:text-neutral-400">
+          Floor
+        </span>
+        <div className="min-w-0 flex-1">
+          <FloorPicker
+            value={door.floor}
+            floors={floorOptions}
+            ariaLabel="Floor for this equipment"
+            onCommit={(floor) =>
+              void onMoveSection(
+                items.map((it) => it.id),
+                floor,
+              )
+            }
+          />
+        </div>
+      </div>
+
+      {sorted.length === 0 && !adding && (
         <p className="rounded-lg border border-dashed border-neutral-300 px-4 py-4 text-center text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
-          No miscellaneous equipment yet.
+          Nothing here yet. Add the first one below.
         </p>
       )}
 
-      {groups.map(([name, groupItems]) => {
-        const done = groupItems.filter((it) => it.completed_at).length;
-        return (
-          <div
-            key={name}
-            className="rounded-xl border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900"
-          >
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold">{name}</h3>
-              <span
-                className={
-                  "rounded-full px-2 py-0.5 text-[10px] font-medium " +
-                  (done === groupItems.length
-                    ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400"
-                    : "bg-neutral-200 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400")
-                }
-              >
-                {done}/{groupItems.length}
-              </span>
-            </div>
-            <div className="mb-2 flex items-center gap-2">
-              <span className="text-[11px] text-neutral-500 dark:text-neutral-400">
-                Floor
-              </span>
-              <div className="min-w-0 flex-1">
-                <FloorPicker
-                  value={door.floor}
-                  floors={floorOptions}
-                  ariaLabel={`Floor for ${name}`}
-                  onCommit={(floor) =>
-                    void onMoveCategory(
-                      groupItems.map((it) => it.id),
-                      floor,
-                    )
-                  }
-                />
-              </div>
-            </div>
-            <ul className="space-y-1.5">
-              {groupItems.map((it, idx) => (
-                <MiscItemRow
-                  key={it.id}
-                  item={it}
-                  category={name}
-                  index={idx}
-                  confirming={itemSoftDelete.confirmingId === it.id}
-                  onToggle={() => void toggleItem(it)}
-                  onRemove={() => requestRemoveItem(it.id)}
-                  onPatch={(patch) => void patchItem(it.id, patch)}
-                />
-              ))}
-            </ul>
-            <button
-              type="button"
-              onClick={() => addItem(name)}
-              className="mt-2 h-8 w-full rounded-md border border-dashed border-neutral-300 text-xs font-medium text-neutral-600 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800"
-            >
-              + Another {name}
-            </button>
-          </div>
-        );
-      })}
+      {sorted.length > 0 && (
+        <ul className="space-y-1.5">
+          {sorted.map((it) => (
+            <MiscItemRow
+              key={it.id}
+              item={it}
+              confirming={itemSoftDelete.confirmingId === it.id}
+              onToggle={() => void toggleItem(it)}
+              onRemove={() => requestRemoveItem(it.id)}
+              onPatch={(patch) => void patchItem(it.id, patch)}
+            />
+          ))}
+        </ul>
+      )}
+
 
       {itemSoftDelete.recentlyDeleted && (
         <UndoBanner
@@ -3684,7 +3692,7 @@ function MiscellaneousSection({
           <input
             autoFocus
             type="text"
-            placeholder="Category name (e.g. Gateways)"
+            placeholder="Model, e.g. GW-3100 Gateway"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             className="h-10 flex-1 rounded-lg border border-neutral-300 bg-white px-3 text-sm dark:border-neutral-700 dark:bg-neutral-900"
@@ -3713,52 +3721,69 @@ function MiscellaneousSection({
           onClick={() => setAdding(true)}
           className="h-10 w-full rounded-lg border border-dashed border-neutral-300 text-sm font-medium text-neutral-600 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800"
         >
-          + New category
+          + Add gateway
         </button>
       )}
+
+      <button
+        type="button"
+        onClick={() => onDeleteSection(door)}
+        className={
+          "h-9 w-full rounded-lg text-xs font-medium transition " +
+          (confirmingDeleteSection
+            ? "bg-red-600 text-white shadow-md"
+            : "border border-neutral-300 text-neutral-500 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800")
+        }
+      >
+        {confirmingDeleteSection
+          ? `Delete this section and its ${items.length} ${items.length === 1 ? "item" : "items"} — tap again`
+          : "Delete this section"}
+      </button>
     </div>
   );
 }
 
-// One unit row inside a Miscellaneous category. The per-unit label
-// lives in the item's note column (unused for misc rows) and falls
-// back to "#N"; tapping it opens an inline rename. Each row also
-// carries a MAC field so networked standalone gear (gateways) lands
-// in the IP/MAC exports alongside the 5500s.
+// One unit row in a gear section. Each row IS a unit, and its name is
+// the model ("GW-3100 Gateway"), edited inline. Units used to be
+// nested inside a per-model category card, which read as one level
+// too many once the section itself was already called Gateways. A
+// per-unit note from that layout still shows as a suffix so nothing
+// anyone typed is hidden. Each row carries a MAC so networked gear
+// lands in the IP/MAC exports alongside the 5500s.
 function MiscItemRow({
   item,
-  category,
-  index,
   confirming,
   onToggle,
   onRemove,
   onPatch,
 }: {
   item: JobDoorItem;
-  category: string;
-  index: number;
   confirming: boolean;
   onToggle: () => void;
   onRemove: () => void;
   onPatch: (
-    patch: Partial<Pick<JobDoorItem, "note" | "mac_address">>,
+    patch: Partial<Pick<JobDoorItem, "name" | "note" | "mac_address">>,
   ) => void;
 }) {
-  const fallbackLabel = `#${index + 1}`;
-  const label = item.note?.trim() || fallbackLabel;
+  const label = item.name;
   const [editingLabel, setEditingLabel] = useState(false);
-  const [labelDraft, setLabelDraft] = useState(item.note ?? "");
-  const [syncedLabel, setSyncedLabel] = useState(item.note ?? "");
-  if ((item.note ?? "") !== syncedLabel) {
-    if (labelDraft === syncedLabel) setLabelDraft(item.note ?? "");
-    setSyncedLabel(item.note ?? "");
+  const [labelDraft, setLabelDraft] = useState(item.name);
+  const [syncedLabel, setSyncedLabel] = useState(item.name);
+  if (item.name !== syncedLabel) {
+    if (labelDraft === syncedLabel) setLabelDraft(item.name);
+    setSyncedLabel(item.name);
   }
   const isDone = !!item.completed_at;
 
   function commitLabel() {
     setEditingLabel(false);
-    const next = labelDraft.trim() || null;
-    if (next !== (item.note ?? null)) onPatch({ note: next });
+    // name is NOT NULL, so an emptied field reverts instead of saving.
+    const next = labelDraft.trim();
+    if (!next) {
+      setLabelDraft(item.name);
+      return;
+    }
+    if (next !== item.name) onPatch({ name: next });
   }
 
   return (
@@ -3769,8 +3794,8 @@ function MiscItemRow({
           onClick={onToggle}
           aria-label={
             isDone
-              ? `Mark ${category} ${label} not done`
-              : `Mark ${category} ${label} done`
+              ? `Mark ${label} not done`
+              : `Mark ${label} done`
           }
           className={
             "flex h-5 w-5 flex-shrink-0 items-center justify-center rounded border " +
@@ -3806,11 +3831,11 @@ function MiscItemRow({
                 e.currentTarget.blur();
               }
               if (e.key === "Escape") {
-                setLabelDraft(item.note ?? "");
+                setLabelDraft(item.name);
                 setEditingLabel(false);
               }
             }}
-            placeholder={fallbackLabel}
+            placeholder="e.g. GW-3100 Gateway"
             id={`misc-label-${item.id}`}
             name={`misc-label-${item.id}`}
             autoComplete="off"
@@ -3823,7 +3848,7 @@ function MiscItemRow({
           <button
             type="button"
             onClick={() => setEditingLabel(true)}
-            aria-label={`Rename ${category} ${label}`}
+            aria-label={`Rename ${label}`}
             className={
               "min-w-0 flex-1 truncate text-left " +
               (isDone
@@ -3834,7 +3859,7 @@ function MiscItemRow({
             {label}
             {item.note?.trim() && (
               <span className="ml-1.5 text-[10px] text-neutral-400 dark:text-neutral-500">
-                {fallbackLabel}
+                {item.note.trim()}
               </span>
             )}
           </button>
@@ -3844,8 +3869,8 @@ function MiscItemRow({
           onClick={onRemove}
           aria-label={
             confirming
-              ? `Confirm remove ${category} ${label}`
-              : `Remove ${category} ${label}`
+              ? `Confirm remove ${label}`
+              : `Remove ${label}`
           }
           className={
             "flex items-center justify-center rounded transition " +
