@@ -4,6 +4,7 @@ import "server-only";
 import { createClient } from "@/lib/supabase/server";
 import { doorContactItemForName, STANDALONE_DOOR_NAME } from "@/lib/jobs";
 import { extractExciterMac } from "@/lib/mac";
+import { JOB_BUCKET } from "@/lib/job-photos";
 import { isAdminEmail } from "@/lib/admin";
 
 // Auto-detect itself runs as a Supabase Edge Function (Deno, 150s
@@ -491,30 +492,33 @@ export type ScanMacResult =
   | { ok: true; mac: string; matchedPrefix: boolean }
   | { ok: false; error: string };
 
-export async function scanMacAction(input: {
-  imageBase64: string;
-  mediaType: string;
-}): Promise<ScanMacResult> {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return { ok: false, error: "Sign in to scan a MAC." };
+// Either a fresh camera capture (base64 from the client) or photos
+// already on the item, which the server downloads itself.
+//
+// Downloading server-side matters: a browser fetch() against the
+// storage bucket is cross-origin, and nothing else in the app fetches
+// those URLs — every other use is an <img src>, which needs no CORS.
+// Rather than depend on a CORS header nobody has verified, the server
+// reads the object directly. It also keeps ~1 MB of base64 out of the
+// server-action payload.
+export type ScanMacInput =
+  | { kind: "capture"; imageBase64: string; mediaType: string }
+  | { kind: "stored"; storagePaths: string[] };
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return { ok: false, error: "MAC scanning isn't configured on the server." };
-  }
+const VISION_MEDIA_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+] as const;
 
-  // Claude vision accepts these four; anything else is a decode error
-  // rather than a useful message. The client normalizes to JPEG first,
-  // so this only catches a caller that skipped that.
-  const mediaType = input.mediaType.toLowerCase();
-  if (!["image/jpeg", "image/png", "image/gif", "image/webp"].includes(mediaType)) {
-    return { ok: false, error: "Take the photo again — that format can't be read." };
-  }
+type VisionMediaType = (typeof VISION_MEDIA_TYPES)[number];
 
-  let text: string;
+async function readMacFromImage(
+  apiKey: string,
+  base64: string,
+  mediaType: VisionMediaType,
+): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
   try {
     const Anthropic = (await import("@anthropic-ai/sdk")).default;
     const anthropic = new Anthropic({ apiKey });
@@ -523,8 +527,8 @@ export async function scanMacAction(input: {
       // Thinking is on by default and shares this budget with the
       // reply, so leave room even though the answer is a few lines.
       max_tokens: 4000,
-      // A label transcription is a short, scoped task and a tech is
-      // waiting on it — no reason to think hard here.
+      // Transcribing a label is short and scoped, and a tech is
+      // standing there waiting — no reason to think hard.
       output_config: { effort: "low" },
       messages: [
         {
@@ -532,11 +536,7 @@ export async function scanMacAction(input: {
           content: [
             {
               type: "image",
-              source: {
-                type: "base64",
-                media_type: mediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
-                data: input.imageBase64,
-              },
+              source: { type: "base64", media_type: mediaType, data: base64 },
             },
             { type: "text", text: MAC_SCAN_PROMPT },
           ],
@@ -546,22 +546,95 @@ export async function scanMacAction(input: {
     if (response.stop_reason === "refusal") {
       return { ok: false, error: "Couldn't read that photo. Try another shot." };
     }
-    text = response.content
-      .map((b) => (b.type === "text" ? b.text : ""))
-      .join("\n");
+    return {
+      ok: true,
+      text: response.content
+        .map((b) => (b.type === "text" ? b.text : ""))
+        .join("\n"),
+    };
   } catch (e) {
     return {
       ok: false,
       error: e instanceof Error ? e.message : "Couldn't reach the scanner.",
     };
   }
+}
 
-  const found = extractExciterMac(text);
-  if (!found) {
+export async function scanMacAction(
+  input: ScanMacInput,
+): Promise<ScanMacResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Sign in to scan a MAC." };
+
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
     return {
       ok: false,
-      error: "No MAC found on that photo. Get closer to the label and try again.",
+      error:
+        "MAC scanning isn't set up: ANTHROPIC_API_KEY is missing from the site's environment variables.",
     };
   }
-  return { ok: true, mac: found.mac, matchedPrefix: found.matchedPrefix };
+
+  if (input.kind === "capture") {
+    const mediaType = input.mediaType.toLowerCase();
+    if (!(VISION_MEDIA_TYPES as readonly string[]).includes(mediaType)) {
+      return {
+        ok: false,
+        error: "Take the photo again — that format can't be read.",
+      };
+    }
+    const read = await readMacFromImage(
+      apiKey,
+      input.imageBase64,
+      mediaType as VisionMediaType,
+    );
+    if (!read.ok) return read;
+    const found = extractExciterMac(read.text);
+    return found
+      ? { ok: true, mac: found.mac, matchedPrefix: found.matchedPrefix }
+      : {
+          ok: false,
+          error: "No MAC on that photo. Get closer to the label and try again.",
+        };
+  }
+
+  // An item often carries a shot of the device AND a shot of its
+  // label, in no reliable order. Try each until one yields a value
+  // with the 5500's prefix; keep a prefix-less hit as a fallback so a
+  // partial read still beats nothing.
+  let fallback: { mac: string; matchedPrefix: boolean } | null = null;
+  let lastError = "No MAC found on this item's photos.";
+  for (const storagePath of input.storagePaths.slice(0, 4)) {
+    const { data: blob, error } = await supabase.storage
+      .from(JOB_BUCKET)
+      .download(storagePath);
+    if (error || !blob) {
+      lastError = error?.message ?? "Couldn't load the photo.";
+      continue;
+    }
+    const type = (blob.type || "image/jpeg").toLowerCase();
+    if (!(VISION_MEDIA_TYPES as readonly string[]).includes(type)) continue;
+    const base64 = Buffer.from(await blob.arrayBuffer()).toString("base64");
+    const read = await readMacFromImage(
+      apiKey,
+      base64,
+      type as VisionMediaType,
+    );
+    if (!read.ok) {
+      lastError = read.error;
+      continue;
+    }
+    const found = extractExciterMac(read.text);
+    if (found?.matchedPrefix) {
+      return { ok: true, mac: found.mac, matchedPrefix: true };
+    }
+    if (found && !fallback) fallback = found;
+  }
+  if (fallback) {
+    return { ok: true, mac: fallback.mac, matchedPrefix: false };
+  }
+  return { ok: false, error: lastError };
 }

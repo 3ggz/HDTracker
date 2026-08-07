@@ -4281,17 +4281,9 @@ function DoorItemRow({
 
       {itemSupportsNetworkFields(item.name) && (
         <MacScanButton
-          hasPhoto={photos.length > 0}
-          latestPhotoUrl={
-            photos.length > 0
-              ? publicJobFileUrl(
-                  supabaseUrl,
-                  [...photos].sort((a, b) =>
-                    b.created_at.localeCompare(a.created_at),
-                  )[0].storage_path,
-                )
-              : null
-          }
+          storagePaths={[...photos]
+            .sort((a, b) => b.created_at.localeCompare(a.created_at))
+            .map((p) => p.storage_path)}
           currentMac={item.mac_address}
           onFound={(mac) => void saveNetworkField("mac_address", mac)}
         />
@@ -6591,16 +6583,17 @@ function DeleteJobSection({
 // phone for the rear camera directly; on desktop it degrades to a
 // normal file picker.
 function MacScanButton({
-  hasPhoto,
-  latestPhotoUrl,
+  storagePaths,
   currentMac,
   onFound,
 }: {
-  hasPhoto: boolean;
-  latestPhotoUrl: string | null;
+  // Newest first. The server walks them until one reads as a MAC, so
+  // a device shot ahead of the label shot isn't a dead end.
+  storagePaths: string[];
   currentMac: string | null;
   onFound: (mac: string) => void;
 }) {
+  const hasPhoto = storagePaths.length > 0;
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
@@ -6630,6 +6623,7 @@ function MacScanButton({
         binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
       }
       const result = await scanMacAction({
+        kind: "capture",
         imageBase64: btoa(binary),
         mediaType: normalized.file.type,
       });
@@ -6651,18 +6645,25 @@ function MacScanButton({
     }
   }
 
-  async function scanExistingPhoto() {
-    if (!latestPhotoUrl) return;
+  async function scanExistingPhotos() {
+    if (storagePaths.length === 0) return;
     setScanning(true);
     setError(null);
+    setWarning(null);
     try {
-      const res = await fetch(latestPhotoUrl);
-      if (!res.ok) throw new Error("Couldn't load the photo.");
-      const blob = await res.blob();
-      await scanBlob(blob, "label.jpg");
+      const result = await scanMacAction({ kind: "stored", storagePaths });
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      if (!result.matchedPrefix) {
+        setWarning(`Read ${result.mac} — check it against the label.`);
+      }
+      onFound(result.mac);
     } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't scan those photos.");
+    } finally {
       setScanning(false);
-      setError(e instanceof Error ? e.message : "Couldn't load the photo.");
     }
   }
 
@@ -6673,7 +6674,7 @@ function MacScanButton({
           type="button"
           disabled={scanning}
           onClick={() =>
-            hasPhoto ? void scanExistingPhoto() : cameraInput.current?.click()
+            hasPhoto ? void scanExistingPhotos() : cameraInput.current?.click()
           }
           className="flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md border border-neutral-300 text-[11px] font-medium text-neutral-700 active:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
         >
