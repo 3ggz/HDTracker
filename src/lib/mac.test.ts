@@ -20,8 +20,13 @@ describe("stripMac", () => {
 });
 
 describe("formatMac", () => {
-  it("colon-separates a complete MAC", () => {
-    expect(formatMac("000CCC617ABC")).toBe("00:0C:CC:61:7A:BC");
+  // Labels print the MAC unseparated, so that's the canonical form —
+  // a scanned value and a hand-typed one should look identical in the
+  // item list and in the IP/MAC exports.
+  it("returns a complete MAC as unseparated uppercase hex", () => {
+    expect(formatMac("000CCC617ABC")).toBe("000CCC617ABC");
+    expect(formatMac("00:0c:cc:61:7a:bc")).toBe("000CCC617ABC");
+    expect(formatMac("00-0C-CC-61-7A-BC")).toBe("000CCC617ABC");
   });
 
   it("leaves anything incomplete alone rather than mangling it", () => {
@@ -59,20 +64,18 @@ describe("expandExciterSuffix", () => {
 describe("extractExciterMac", () => {
   it("reads a MAC off a typical label line", () => {
     expect(extractExciterMac("MAC: 00:0C:CC:61:7A:BC")).toEqual({
-      mac: "00:0C:CC:61:7A:BC",
+      mac: "000CCC617ABC",
       matchedPrefix: true,
     });
   });
 
   it("handles unseparated and lowercase print", () => {
-    expect(extractExciterMac("mac 000ccc6170f2")?.mac).toBe(
-      "00:0C:CC:61:70:F2",
-    );
+    expect(extractExciterMac("mac 000ccc6170f2")?.mac).toBe("000CCC6170F2");
   });
 
   it("handles dashes and stray whitespace from OCR", () => {
     expect(extractExciterMac("MAC  00-0C-CC-61-7A-BC")?.mac).toBe(
-      "00:0C:CC:61:7A:BC",
+      "000CCC617ABC",
     );
   });
 
@@ -86,20 +89,18 @@ describe("extractExciterMac", () => {
       EX-5500
     `;
     expect(extractExciterMac(label)).toEqual({
-      mac: "00:0C:CC:61:7A:BC",
+      mac: "000CCC617ABC",
       matchedPrefix: true,
     });
   });
 
   it("finds the MAC even when it is embedded in a longer digit run", () => {
-    expect(extractExciterMac("0000CCC617ABC99")?.mac).toBe(
-      "00:0C:CC:61:7A:BC",
-    );
+    expect(extractExciterMac("0000CCC617ABC99")?.mac).toBe("000CCC617ABC");
   });
 
   it("falls back to a labelled MAC when the prefix doesn't match", () => {
     const result = extractExciterMac("MAC: AA:BB:CC:DD:EE:FF");
-    expect(result?.mac).toBe("AA:BB:CC:DD:EE:FF");
+    expect(result?.mac).toBe("AABBCCDDEEFF");
     // Flagged so the UI can ask the tech to confirm it.
     expect(result?.matchedPrefix).toBe(false);
   });
@@ -125,7 +126,7 @@ describe("extractExciterMac", () => {
       E517878
     `;
     expect(extractExciterMac(label)).toEqual({
-      mac: "00:0C:CC:61:7A:B6",
+      mac: "000CCC617AB6",
       matchedPrefix: true,
     });
   });
@@ -138,7 +139,7 @@ describe("extractExciterMac", () => {
       MAC: 000CCC61793D
     `;
     expect(extractExciterMac(label)).toEqual({
-      mac: "00:0C:CC:61:79:3D",
+      mac: "000CCC61793D",
       matchedPrefix: true,
     });
   });
@@ -148,7 +149,7 @@ describe("extractExciterMac", () => {
     expect(
       extractExciterMac("H234OS43017 5021452 000CCC617AB6 Q3HEX5500 E517878")
         ?.mac,
-    ).toBe("00:0C:CC:61:7A:B6");
+    ).toBe("000CCC617AB6");
   });
 
   it("returns null when the model reports it couldn't read one", () => {

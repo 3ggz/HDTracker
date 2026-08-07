@@ -70,6 +70,7 @@ import {
   type MapRotations,
 } from "@/lib/map-rotation";
 import { collectFloors } from "@/lib/floors";
+import { formatMac, isCompleteMac } from "@/lib/mac";
 import {
   MAX_PHOTO_BYTES,
   normalizeImageForUpload,
@@ -4041,8 +4042,15 @@ function DoorItemRow({
 
   async function saveNetworkField(
     column: "ip_address" | "mac_address",
-    next: string | null,
+    raw: string | null,
   ) {
+    // Store MACs the way the label prints them — unseparated — so a
+    // typed value, a scanned one, and the exports all agree. Typing
+    // the colons still works; they just don't survive the save.
+    const next =
+      column === "mac_address" && raw && isCompleteMac(raw)
+        ? formatMac(raw)
+        : raw;
     const { data, error } = await withTrack(tracker, async () => {
       const supabase = createClient();
       return supabase
@@ -4276,7 +4284,9 @@ function DoorItemRow({
           <NetworkField
             label="MAC"
             value={item.mac_address}
-            placeholder="AA:BB:…"
+            // The 5500's fixed prefix, so the field itself shows the
+            // tech what a correct value starts with.
+            placeholder="000CCC617…"
             itemId={item.id}
             onSave={(v) => void saveNetworkField("mac_address", v)}
           />

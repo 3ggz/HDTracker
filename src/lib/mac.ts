@@ -13,10 +13,13 @@ export function stripMac(raw: string): string {
   return raw.replace(/[^0-9a-fA-F]/g, "").toUpperCase();
 }
 
+// Bare uppercase hex, no separators — the same form printed on the
+// device and box labels ("MAC: 000CCC617AB6"), so a scanned value and
+// a hand-typed one look identical in the list and in the exports.
 export function formatMac(raw: string): string {
   const hex = stripMac(raw);
   if (hex.length !== MAC_LENGTH) return raw.trim();
-  return hex.match(/.{2}/g)!.join(":");
+  return hex;
 }
 
 export function isCompleteMac(raw: string): boolean {
