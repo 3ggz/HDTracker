@@ -480,12 +480,21 @@ export async function restoreDoorAction(
 // Vercel's function ceiling.
 // ---------------------------------------------------------------
 
+// Telling the model the exact string shape it's hunting for is the
+// single biggest accuracy lever: 9 of the 12 characters are known
+// before it looks, so it can lock onto the right code on a label
+// crowded with a serial, an FCC ID, an IC number and a barcode.
+// Orientation matters too — these get photographed sideways, since
+// the label is on the back of a device already mounted to a wall.
 const MAC_SCAN_PROMPT = [
-  "This is a photo of a label on a piece of access-control hardware.",
-  "Transcribe every line of text you can read on the label, exactly as printed, one per line.",
-  "Include any line beginning with MAC, S/N, or SN, and preserve the characters exactly — do not correct, reformat, or insert separators.",
-  "If a character is ambiguous between 0/O or 1/I, prefer the digit: these are hex codes.",
-  "Output only the transcribed lines. No commentary.",
+  "Find the MAC address on this hardware label and reply with it alone.",
+  "It is 12 hexadecimal characters. On this equipment it always begins 000CCC617 followed by 3 more hex characters — for example 000CCC617AB6.",
+  "It is printed after the text 'MAC:', either on the label on the back of the device or on a white sticker on its cardboard shipping box.",
+  "The photo may be rotated 90, 180, or 270 degrees, or taken at an angle. Read the label at whatever orientation it appears in.",
+  "Do not confuse it with the serial number, FCC ID, IC number, document number, patent number, or the digits printed under a barcode.",
+  "Transcribe only characters you can actually read — do not guess characters to fit the expected pattern.",
+  "Reply with the 12 characters and nothing else. If you cannot read a MAC, reply NONE.",
+  "Do not include internal or system XML tags in your response.",
 ].join(" ");
 
 export type ScanMacResult =
@@ -514,21 +523,30 @@ const VISION_MEDIA_TYPES = [
 
 type VisionMediaType = (typeof VISION_MEDIA_TYPES)[number];
 
-async function readMacFromImage(
+type Read =
+  | { ok: true; mac: string; matchedPrefix: boolean }
+  | { ok: false; error: string | null };
+
+// `think` is the accuracy/latency dial. The fast pass runs with
+// thinking off, which is most of the wait; the retry turns it on for
+// the hard reads (a sideways label, glare, an angled shot). Disabling
+// thinking on Opus 5 normally risks stray prose and leaked tags in
+// the output, but neither matters here — extractExciterMac ignores
+// everything that isn't MAC-shaped.
+async function readMac(
   apiKey: string,
   base64: string,
   mediaType: VisionMediaType,
-): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
+  think: boolean,
+): Promise<Read> {
   try {
     const Anthropic = (await import("@anthropic-ai/sdk")).default;
     const anthropic = new Anthropic({ apiKey });
     const response = await anthropic.messages.create({
       model: "claude-opus-5",
-      // Thinking is on by default and shares this budget with the
-      // reply, so leave room even though the answer is a few lines.
-      max_tokens: 4000,
-      // Transcribing a label is short and scoped, and a tech is
-      // standing there waiting — no reason to think hard.
+      // Thinking shares this budget with the reply when it's on.
+      max_tokens: think ? 4000 : 200,
+      thinking: think ? { type: "adaptive" } : { type: "disabled" },
       output_config: { effort: "low" },
       messages: [
         {
@@ -546,12 +564,13 @@ async function readMacFromImage(
     if (response.stop_reason === "refusal") {
       return { ok: false, error: "Couldn't read that photo. Try another shot." };
     }
-    return {
-      ok: true,
-      text: response.content
-        .map((b) => (b.type === "text" ? b.text : ""))
-        .join("\n"),
-    };
+    const text = response.content
+      .map((b) => (b.type === "text" ? b.text : ""))
+      .join("\n");
+    const found = extractExciterMac(text);
+    return found
+      ? { ok: true, mac: found.mac, matchedPrefix: found.matchedPrefix }
+      : { ok: false, error: null };
   } catch (e) {
     return {
       ok: false,
@@ -559,6 +578,9 @@ async function readMacFromImage(
     };
   }
 }
+
+const NOT_FOUND =
+  "Couldn't find a MAC. Fill the frame with the label — the line starting 'MAC:' — and try again.";
 
 export async function scanMacAction(
   input: ScanMacInput,
@@ -578,6 +600,10 @@ export async function scanMacAction(
     };
   }
 
+  // Gather the candidate images first so every read below is uniform.
+  const images: { base64: string; mediaType: VisionMediaType }[] = [];
+  let loadError: string | null = null;
+
   if (input.kind === "capture") {
     const mediaType = input.mediaType.toLowerCase();
     if (!(VISION_MEDIA_TYPES as readonly string[]).includes(mediaType)) {
@@ -586,55 +612,73 @@ export async function scanMacAction(
         error: "Take the photo again — that format can't be read.",
       };
     }
-    const read = await readMacFromImage(
-      apiKey,
-      input.imageBase64,
-      mediaType as VisionMediaType,
-    );
-    if (!read.ok) return read;
-    const found = extractExciterMac(read.text);
-    return found
-      ? { ok: true, mac: found.mac, matchedPrefix: found.matchedPrefix }
-      : {
-          ok: false,
-          error: "No MAC on that photo. Get closer to the label and try again.",
+    images.push({
+      base64: input.imageBase64,
+      mediaType: mediaType as VisionMediaType,
+    });
+  } else {
+    // An item usually carries a shot of the device AND a shot of its
+    // label, in no reliable order — so try them all.
+    const downloads = await Promise.all(
+      input.storagePaths.slice(0, 4).map(async (storagePath) => {
+        const { data: blob, error } = await supabase.storage
+          .from(JOB_BUCKET)
+          .download(storagePath);
+        if (error || !blob) return { error: error?.message ?? "load failed" };
+        const type = (blob.type || "image/jpeg").toLowerCase();
+        if (!(VISION_MEDIA_TYPES as readonly string[]).includes(type)) {
+          return { error: "unsupported format" };
+        }
+        return {
+          base64: Buffer.from(await blob.arrayBuffer()).toString("base64"),
+          mediaType: type as VisionMediaType,
         };
+      }),
+    );
+    for (const d of downloads) {
+      if ("base64" in d && d.base64) {
+        images.push({ base64: d.base64, mediaType: d.mediaType });
+      } else if ("error" in d) {
+        loadError = d.error ?? null;
+      }
+    }
   }
 
-  // An item often carries a shot of the device AND a shot of its
-  // label, in no reliable order. Try each until one yields a value
-  // with the 5500's prefix; keep a prefix-less hit as a fallback so a
-  // partial read still beats nothing.
-  let fallback: { mac: string; matchedPrefix: boolean } | null = null;
-  let lastError = "No MAC found on this item's photos.";
-  for (const storagePath of input.storagePaths.slice(0, 4)) {
-    const { data: blob, error } = await supabase.storage
-      .from(JOB_BUCKET)
-      .download(storagePath);
-    if (error || !blob) {
-      lastError = error?.message ?? "Couldn't load the photo.";
-      continue;
-    }
-    const type = (blob.type || "image/jpeg").toLowerCase();
-    if (!(VISION_MEDIA_TYPES as readonly string[]).includes(type)) continue;
-    const base64 = Buffer.from(await blob.arrayBuffer()).toString("base64");
-    const read = await readMacFromImage(
-      apiKey,
-      base64,
-      type as VisionMediaType,
-    );
-    if (!read.ok) {
-      lastError = read.error;
-      continue;
-    }
-    const found = extractExciterMac(read.text);
-    if (found?.matchedPrefix) {
-      return { ok: true, mac: found.mac, matchedPrefix: true };
-    }
-    if (found && !fallback) fallback = found;
+  if (images.length === 0) {
+    return { ok: false, error: loadError ?? NOT_FOUND };
   }
-  if (fallback) {
-    return { ok: true, mac: fallback.mac, matchedPrefix: false };
+
+  // Fast pass over every candidate at once. Sequential reads were the
+  // reason a two-photo item felt slow — it was two round trips before
+  // anything came back.
+  const fast = await Promise.all(
+    images.map((img) => readMac(apiKey, img.base64, img.mediaType, false)),
+  );
+  const fastHit = fast.find((r) => r.ok && r.matchedPrefix);
+  if (fastHit?.ok) {
+    return { ok: true, mac: fastHit.mac, matchedPrefix: true };
   }
-  return { ok: false, error: lastError };
+
+  // Nothing conclusive. Retry with thinking on — this is what rescues
+  // a sideways or awkwardly-lit label.
+  const slow = await Promise.all(
+    images.map((img) => readMac(apiKey, img.base64, img.mediaType, true)),
+  );
+  const slowHit = slow.find((r) => r.ok && r.matchedPrefix);
+  if (slowHit?.ok) {
+    return { ok: true, mac: slowHit.mac, matchedPrefix: true };
+  }
+
+  // Still nothing with the expected prefix. A read without it is
+  // worth surfacing — flagged — rather than making the tech type it.
+  const anyHit = [...fast, ...slow].find((r) => r.ok);
+  if (anyHit?.ok) {
+    return { ok: true, mac: anyHit.mac, matchedPrefix: false };
+  }
+
+  const apiError = [...fast, ...slow].find((r) => !r.ok && r.error);
+  return {
+    ok: false,
+    error: (!apiError?.ok && apiError?.error) || NOT_FOUND,
+  };
 }

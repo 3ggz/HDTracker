@@ -61,7 +61,14 @@ export function PdfFullscreenModal({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <header className="flex items-center gap-3 border-b border-white/10 bg-neutral-900/95 px-3 py-2 text-white">
+      {/* fixed inset-0 puts this above the page's own sticky header, so
+          the globals.css safe-area rule (header.sticky.top-0) doesn't
+          reach it. Without the inset padding the close button renders
+          under the status bar clock and can't be tapped. */}
+      <header
+        style={{ paddingTop: "calc(0.5rem + env(safe-area-inset-top))" }}
+        className="flex shrink-0 items-center gap-3 border-b border-white/10 bg-neutral-900/95 px-3 pb-2 text-white"
+      >
         <button
           type="button"
           onClick={onClose}

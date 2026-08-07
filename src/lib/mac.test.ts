@@ -104,6 +104,57 @@ describe("extractExciterMac", () => {
     expect(result?.matchedPrefix).toBe(false);
   });
 
+  // Transcriptions of the two labels this actually runs against. The
+  // device label is dense with lookalike codes — a serial, an FCC ID,
+  // an IC number, a document number — so it's the real test of
+  // picking the MAC rather than merely finding hex.
+  it("reads the MAC off a real EX-5500 device label", () => {
+    const label = `
+      SKU: EX-5500
+      M/N: EX-5500
+      FCC ID: Q3HEX5500
+      IC: 5115A-EX5500
+      Securitas Healthcare
+      Intertek 5021452
+      47/25
+      H234OS43017
+      MAC: 000CCC617AB6
+      Access Control System
+      Protected by U.S. Patents: 7,403,108 B2
+      Document No. 0981-029-000
+      E517878
+    `;
+    expect(extractExciterMac(label)).toEqual({
+      mac: "00:0C:CC:61:7A:B6",
+      matchedPrefix: true,
+    });
+  });
+
+  it("reads the MAC off a shipping-box sticker", () => {
+    const label = `
+      Securitas Healthcare
+      SKU: EX-5500
+      Desc.: 10021055000
+      MAC: 000CCC61793D
+    `;
+    expect(extractExciterMac(label)).toEqual({
+      mac: "00:0C:CC:61:79:3D",
+      matchedPrefix: true,
+    });
+  });
+
+  // A rotated label can come back with the lines in any order.
+  it("doesn't care what order the label's lines arrive in", () => {
+    expect(
+      extractExciterMac("H234OS43017 5021452 000CCC617AB6 Q3HEX5500 E517878")
+        ?.mac,
+    ).toBe("00:0C:CC:61:7A:B6");
+  });
+
+  it("returns null when the model reports it couldn't read one", () => {
+    expect(extractExciterMac("NONE")).toBeNull();
+  });
+
   it("returns null when there's nothing MAC-shaped", () => {
     expect(extractExciterMac("EX-5500 Exciter")).toBeNull();
     expect(extractExciterMac("")).toBeNull();

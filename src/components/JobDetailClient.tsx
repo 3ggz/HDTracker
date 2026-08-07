@@ -70,7 +70,11 @@ import {
   type MapRotations,
 } from "@/lib/map-rotation";
 import { collectFloors } from "@/lib/floors";
-import { normalizeImageForUpload } from "@/lib/image-normalize";
+import {
+  MAX_PHOTO_BYTES,
+  normalizeImageForUpload,
+  VISION_MAX_DIM,
+} from "@/lib/image-normalize";
 import { Combobox } from "./Combobox";
 import { FloorPicker } from "./FloorPicker";
 import { PdfFullscreenModal } from "./PdfFullscreenModal";
@@ -6609,6 +6613,10 @@ function MacScanButton({
       // shot doesn't get sent whole.
       const normalized = await normalizeImageForUpload(
         new File([blob], filename, { type: blob.type || "image/jpeg" }),
+        MAX_PHOTO_BYTES,
+        // Not headed for storage, so keep the resolution the vision
+        // model can actually use — the MAC is small in the frame.
+        VISION_MAX_DIM,
       );
       if (!normalized.ok) {
         setError(normalized.error);

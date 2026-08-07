@@ -175,9 +175,10 @@ async function encodeJpeg(
   baseName: string,
   lastModified: number,
   maxBytes: number,
+  maxDim: number = MAX_DIM,
 ): Promise<File | null> {
   try {
-    let blob = await drawToJpeg(bitmap, MAX_DIM, JPEG_QUALITY);
+    let blob = await drawToJpeg(bitmap, maxDim, JPEG_QUALITY);
     if (!blob) return null;
 
     // Squeeze rather than reject. A tech in a parking lot can't do
@@ -185,7 +186,11 @@ async function encodeJpeg(
     // only thing here that can actually make it smaller.
     for (const pass of FALLBACK_PASSES) {
       if (blob.size <= maxBytes) break;
-      const next = await drawToJpeg(bitmap, pass.maxDim, pass.quality);
+      const next = await drawToJpeg(
+        bitmap,
+        Math.min(pass.maxDim, maxDim),
+        pass.quality,
+      );
       if (!next) break;
       blob = next;
     }
@@ -200,9 +205,16 @@ async function encodeJpeg(
   }
 }
 
+// Claude Opus 5 reads images up to 2576px on the long edge. Storage
+// caps at MAX_DIM because an inventory photo doesn't need more, but a
+// photo being read for a 12-character MAC does — the label is often a
+// small part of the frame.
+export const VISION_MAX_DIM = 2576;
+
 export async function normalizeImageForUpload(
   file: File,
   maxBytes: number = MAX_PHOTO_BYTES,
+  maxDim: number = MAX_DIM,
 ): Promise<NormalizedImage> {
   if (!isRenderableEverywhere(file.type) || looksLikeHeic(file)) {
     // Native decode first: it costs nothing and already handles HEIC on
@@ -223,6 +235,7 @@ export async function normalizeImageForUpload(
       file.name,
       file.lastModified,
       maxBytes,
+      maxDim,
     );
     return converted
       ? { ok: true, file: converted }
@@ -251,7 +264,7 @@ export async function normalizeImageForUpload(
   }
   // Already small enough in both senses — don't re-encode and lose
   // quality for nothing.
-  if (!oversize && bitmap.width <= MAX_DIM && bitmap.height <= MAX_DIM) {
+  if (!oversize && bitmap.width <= maxDim && bitmap.height <= maxDim) {
     bitmap.close();
     return { ok: true, file };
   }
@@ -261,6 +274,7 @@ export async function normalizeImageForUpload(
     file.name,
     file.lastModified,
     maxBytes,
+    maxDim,
   );
   if (!downscaled) {
     return oversize
