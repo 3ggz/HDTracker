@@ -70,6 +70,7 @@ import {
   type MapRotations,
 } from "@/lib/map-rotation";
 import { collectFloors } from "@/lib/floors";
+import { normalizeImageForUpload } from "@/lib/image-normalize";
 import { Combobox } from "./Combobox";
 import { FloorPicker } from "./FloorPicker";
 import { PdfFullscreenModal } from "./PdfFullscreenModal";
@@ -86,6 +87,7 @@ import {
   restoreDoorItemAction,
   deleteDoorItemAction,
   restoreDoorAction,
+  scanMacAction,
   type RestoreDoorInput,
 } from "@/app/jobs/[id]/actions";
 import { AutoDetectModal } from "./AutoDetectModal";
@@ -4277,6 +4279,24 @@ function DoorItemRow({
         </div>
       )}
 
+      {itemSupportsNetworkFields(item.name) && (
+        <MacScanButton
+          hasPhoto={photos.length > 0}
+          latestPhotoUrl={
+            photos.length > 0
+              ? publicJobFileUrl(
+                  supabaseUrl,
+                  [...photos].sort((a, b) =>
+                    b.created_at.localeCompare(a.created_at),
+                  )[0].storage_path,
+                )
+              : null
+          }
+          currentMac={item.mac_address}
+          onFound={(mac) => void saveNetworkField("mac_address", mac)}
+        />
+      )}
+
       {hasNote && !noteEditing && (
         <button
           type="button"
@@ -6559,5 +6579,163 @@ function DeleteJobSection({
         Delete job
       </button>
     </section>
+  );
+}
+
+// Reads the MAC off a photo of the exciter's label so a tech doesn't
+// have to type twelve hex characters on a phone in a mechanical room.
+//
+// Prefers a photo already on the item — techs were photographing the
+// label under the device anyway — and only opens the camera when
+// there isn't one, or when reading it didn't work. `capture` asks the
+// phone for the rear camera directly; on desktop it degrades to a
+// normal file picker.
+function MacScanButton({
+  hasPhoto,
+  latestPhotoUrl,
+  currentMac,
+  onFound,
+}: {
+  hasPhoto: boolean;
+  latestPhotoUrl: string | null;
+  currentMac: string | null;
+  onFound: (mac: string) => void;
+}) {
+  const [scanning, setScanning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
+  const cameraInput = useRef<HTMLInputElement>(null);
+
+  async function scanBlob(blob: Blob, filename: string) {
+    setScanning(true);
+    setError(null);
+    setWarning(null);
+    try {
+      // Reuse the upload normalizer: it re-encodes to JPEG (which the
+      // vision API accepts) and caps the resolution, so a 12 MP label
+      // shot doesn't get sent whole.
+      const normalized = await normalizeImageForUpload(
+        new File([blob], filename, { type: blob.type || "image/jpeg" }),
+      );
+      if (!normalized.ok) {
+        setError(normalized.error);
+        return;
+      }
+      const buf = await normalized.file.arrayBuffer();
+      let binary = "";
+      const bytes = new Uint8Array(buf);
+      // Chunked: String.fromCharCode(...bytes) blows the argument
+      // limit on anything above a few hundred KB.
+      for (let i = 0; i < bytes.length; i += 8192) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+      }
+      const result = await scanMacAction({
+        imageBase64: btoa(binary),
+        mediaType: normalized.file.type,
+      });
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      if (!result.matchedPrefix) {
+        // Didn't start with the 5500's fixed prefix, so it may be a
+        // serial number the model mistook for a MAC. Fill it in but
+        // say so rather than silently trusting it.
+        setWarning(`Read ${result.mac} — check it against the label.`);
+      }
+      onFound(result.mac);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't scan that photo.");
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function scanExistingPhoto() {
+    if (!latestPhotoUrl) return;
+    setScanning(true);
+    setError(null);
+    try {
+      const res = await fetch(latestPhotoUrl);
+      if (!res.ok) throw new Error("Couldn't load the photo.");
+      const blob = await res.blob();
+      await scanBlob(blob, "label.jpg");
+    } catch (e) {
+      setScanning(false);
+      setError(e instanceof Error ? e.message : "Couldn't load the photo.");
+    }
+  }
+
+  return (
+    <div className="mt-1.5">
+      <div className="flex gap-1.5">
+        <button
+          type="button"
+          disabled={scanning}
+          onClick={() =>
+            hasPhoto ? void scanExistingPhoto() : cameraInput.current?.click()
+          }
+          className="flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md border border-neutral-300 text-[11px] font-medium text-neutral-700 active:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
+        >
+          <svg
+            className="h-3.5 w-3.5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+            <path d="M17 3h2a2 2 0 0 1 2 2v2" />
+            <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+            <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+            <line x1="7" y1="12" x2="17" y2="12" />
+          </svg>
+          {scanning
+            ? "Reading label…"
+            : currentMac
+              ? "Re-scan MAC"
+              : hasPhoto
+                ? "Scan MAC from photo"
+                : "Scan MAC"}
+        </button>
+        {hasPhoto && !scanning && (
+          <button
+            type="button"
+            onClick={() => cameraInput.current?.click()}
+            aria-label="Scan MAC from a new photo"
+            className="h-8 shrink-0 rounded-md border border-neutral-300 px-2 text-[11px] font-medium text-neutral-600 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800"
+          >
+            New photo
+          </button>
+        )}
+      </div>
+
+      {error && (
+        <p className="mt-1 text-[11px] text-red-600 dark:text-red-400">
+          {error}
+        </p>
+      )}
+      {warning && (
+        <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-500">
+          {warning}
+        </p>
+      )}
+
+      <input
+        ref={cameraInput}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (file) void scanBlob(file, file.name);
+        }}
+      />
+    </div>
   );
 }

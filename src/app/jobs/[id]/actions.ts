@@ -3,6 +3,7 @@
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
 import { doorContactItemForName, STANDALONE_DOOR_NAME } from "@/lib/jobs";
+import { extractExciterMac } from "@/lib/mac";
 import { isAdminEmail } from "@/lib/admin";
 
 // Auto-detect itself runs as a Supabase Edge Function (Deno, 150s
@@ -461,4 +462,106 @@ export async function restoreDoorAction(
   }
 
   return { ok: true, doorId: newDoor.id, itemIdMap };
+}
+
+// ---------------------------------------------------------------
+// MAC scanning
+//
+// Techs photograph the label on a 5500 exciter rather than typing a
+// twelve-character MAC on a phone in a mechanical room. Claude reads
+// the label; extractExciterMac (pure, unit-tested) decides which of
+// the strings on it is actually the MAC. Splitting it that way keeps
+// the fiddly part — telling a MAC from the serial number printed
+// beside it — in code that tests can pin down.
+//
+// Runs here rather than in the auto-detect Edge Function because a
+// single small image comes back in a few seconds, well inside
+// Vercel's function ceiling.
+// ---------------------------------------------------------------
+
+const MAC_SCAN_PROMPT = [
+  "This is a photo of a label on a piece of access-control hardware.",
+  "Transcribe every line of text you can read on the label, exactly as printed, one per line.",
+  "Include any line beginning with MAC, S/N, or SN, and preserve the characters exactly — do not correct, reformat, or insert separators.",
+  "If a character is ambiguous between 0/O or 1/I, prefer the digit: these are hex codes.",
+  "Output only the transcribed lines. No commentary.",
+].join(" ");
+
+export type ScanMacResult =
+  | { ok: true; mac: string; matchedPrefix: boolean }
+  | { ok: false; error: string };
+
+export async function scanMacAction(input: {
+  imageBase64: string;
+  mediaType: string;
+}): Promise<ScanMacResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Sign in to scan a MAC." };
+
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return { ok: false, error: "MAC scanning isn't configured on the server." };
+  }
+
+  // Claude vision accepts these four; anything else is a decode error
+  // rather than a useful message. The client normalizes to JPEG first,
+  // so this only catches a caller that skipped that.
+  const mediaType = input.mediaType.toLowerCase();
+  if (!["image/jpeg", "image/png", "image/gif", "image/webp"].includes(mediaType)) {
+    return { ok: false, error: "Take the photo again — that format can't be read." };
+  }
+
+  let text: string;
+  try {
+    const Anthropic = (await import("@anthropic-ai/sdk")).default;
+    const anthropic = new Anthropic({ apiKey });
+    const response = await anthropic.messages.create({
+      model: "claude-opus-5",
+      // Thinking is on by default and shares this budget with the
+      // reply, so leave room even though the answer is a few lines.
+      max_tokens: 4000,
+      // A label transcription is a short, scoped task and a tech is
+      // waiting on it — no reason to think hard here.
+      output_config: { effort: "low" },
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: mediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+                data: input.imageBase64,
+              },
+            },
+            { type: "text", text: MAC_SCAN_PROMPT },
+          ],
+        },
+      ],
+    });
+    if (response.stop_reason === "refusal") {
+      return { ok: false, error: "Couldn't read that photo. Try another shot." };
+    }
+    text = response.content
+      .map((b) => (b.type === "text" ? b.text : ""))
+      .join("\n");
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Couldn't reach the scanner.",
+    };
+  }
+
+  const found = extractExciterMac(text);
+  if (!found) {
+    return {
+      ok: false,
+      error: "No MAC found on that photo. Get closer to the label and try again.",
+    };
+  }
+  return { ok: true, mac: found.mac, matchedPrefix: found.matchedPrefix };
 }
