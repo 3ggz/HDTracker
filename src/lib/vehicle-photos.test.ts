@@ -44,15 +44,16 @@ describe("validatePhotoFile", () => {
     ).toBe(false);
   });
 
-  it("rejects oversized files even if the mime type is supported", () => {
-    const result = validatePhotoFile({
-      type: "image/jpeg",
-      size: MAX_PHOTO_BYTES + 1,
-    });
-    expect(result).toEqual({
-      ok: false,
-      error: "File is over 10 MB. Try a smaller picture.",
-    });
+  // Size is NOT a validation failure. A 12 MP phone photo routinely
+  // exceeds the storage limit and the normalizer re-compresses it to
+  // fit; rejecting here would mean the fix never runs.
+  it("accepts an oversized file and leaves shrinking to the normalizer", () => {
+    expect(
+      validatePhotoFile({ type: "image/jpeg", size: MAX_PHOTO_BYTES + 1 }),
+    ).toEqual({ ok: true });
+    expect(
+      validatePhotoFile({ type: "image/jpeg", size: 80 * 1024 * 1024 }),
+    ).toEqual({ ok: true });
   });
 });
 

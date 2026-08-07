@@ -14,6 +14,12 @@
 // function under 800 KB — HEIC is efficient enough that a 12 MP photo
 // often lands under that, which let raw HEIC through untouched.
 
+// Storage's per-object ceiling. Lives here rather than in
+// vehicle-photos because this module is what enforces it, and
+// vehicle-photos already imports this one — the other direction would
+// be a cycle.
+export const MAX_PHOTO_BYTES = 10 * 1024 * 1024; // 10 MB
+
 const MAX_DIM = 1600;
 const JPEG_QUALITY = 0.85;
 // Photos from phone cameras are typically 12+ MP (4–8 MB each). For an
@@ -126,42 +132,77 @@ async function decodeHeicViaWasm(file: File): Promise<ImageBitmap | null> {
 function fitWithin(
   width: number,
   height: number,
+  maxDim: number,
 ): { w: number; h: number } {
-  const scale = Math.min(1, MAX_DIM / width, MAX_DIM / height);
-  return { w: Math.round(width * scale), h: Math.round(height * scale) };
+  const scale = Math.min(1, maxDim / width, maxDim / height);
+  return {
+    w: Math.max(1, Math.round(width * scale)),
+    h: Math.max(1, Math.round(height * scale)),
+  };
 }
 
-async function encodeJpeg(
+async function drawToJpeg(
   bitmap: ImageBitmap,
-  baseName: string,
-  lastModified: number,
-): Promise<File | null> {
-  const { w, h } = fitWithin(bitmap.width, bitmap.height);
+  maxDim: number,
+  quality: number,
+): Promise<Blob | null> {
+  const { w, h } = fitWithin(bitmap.width, bitmap.height, maxDim);
   const canvas = document.createElement("canvas");
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext("2d");
-  if (!ctx) {
-    bitmap.close();
-    return null;
-  }
+  if (!ctx) return null;
   ctx.drawImage(bitmap, 0, 0, w, h);
-  bitmap.close();
-
-  const blob = await new Promise<Blob | null>((resolve) =>
-    canvas.toBlob(resolve, "image/jpeg", JPEG_QUALITY),
+  return await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, "image/jpeg", quality),
   );
-  if (!blob) return null;
+}
 
-  const stem = baseName.replace(/\.[^.]+$/, "") || "photo";
-  return new File([blob], `${stem}.jpg`, {
-    type: "image/jpeg",
-    lastModified,
-  });
+// Progressively harder passes, used only if the standard one still
+// doesn't fit. A photo of a MAC label has to stay readable, so
+// quality drops before dimensions do.
+const FALLBACK_PASSES: { maxDim: number; quality: number }[] = [
+  { maxDim: MAX_DIM, quality: 0.7 },
+  { maxDim: MAX_DIM, quality: 0.5 },
+  { maxDim: 1200, quality: 0.5 },
+  { maxDim: 900, quality: 0.45 },
+  { maxDim: 640, quality: 0.4 },
+];
+
+// Always closes the bitmap.
+async function encodeJpeg(
+  bitmap: ImageBitmap,
+  baseName: string,
+  lastModified: number,
+  maxBytes: number,
+): Promise<File | null> {
+  try {
+    let blob = await drawToJpeg(bitmap, MAX_DIM, JPEG_QUALITY);
+    if (!blob) return null;
+
+    // Squeeze rather than reject. A tech in a parking lot can't do
+    // anything useful with "that photo is too big" — the app is the
+    // only thing here that can actually make it smaller.
+    for (const pass of FALLBACK_PASSES) {
+      if (blob.size <= maxBytes) break;
+      const next = await drawToJpeg(bitmap, pass.maxDim, pass.quality);
+      if (!next) break;
+      blob = next;
+    }
+
+    const stem = baseName.replace(/\.[^.]+$/, "") || "photo";
+    return new File([blob], `${stem}.jpg`, {
+      type: "image/jpeg",
+      lastModified,
+    });
+  } finally {
+    bitmap.close();
+  }
 }
 
 export async function normalizeImageForUpload(
   file: File,
+  maxBytes: number = MAX_PHOTO_BYTES,
 ): Promise<NormalizedImage> {
   if (!isRenderableEverywhere(file.type) || looksLikeHeic(file)) {
     // Native decode first: it costs nothing and already handles HEIC on
@@ -177,27 +218,58 @@ export async function normalizeImageForUpload(
           "Couldn't read that image. Try taking the photo again, or switch your camera to JPEG in its settings.",
       };
     }
-    const converted = await encodeJpeg(bitmap, file.name, file.lastModified);
+    const converted = await encodeJpeg(
+      bitmap,
+      file.name,
+      file.lastModified,
+      maxBytes,
+    );
     return converted
       ? { ok: true, file: converted }
       : { ok: false, error: "Couldn't convert that image. Try another photo." };
   }
 
   // Format is already fine — from here it's purely a size question.
-  if (file.size < SKIP_DOWNSCALE_BELOW_BYTES) return { ok: true, file };
-  // GIFs may be animated; canvas would flatten them to one frame.
-  if (file.type.toLowerCase() === "image/gif") return { ok: true, file };
+  const oversize = file.size > maxBytes;
+  if (!oversize && file.size < SKIP_DOWNSCALE_BELOW_BYTES) {
+    return { ok: true, file };
+  }
+  // GIFs may be animated; canvas would flatten them to one frame. Only
+  // worth that trade when the alternative is refusing the upload.
+  if (file.type.toLowerCase() === "image/gif" && !oversize) {
+    return { ok: true, file };
+  }
 
   const bitmap = await decodeNatively(file);
-  if (!bitmap) return { ok: true, file };
-  if (bitmap.width <= MAX_DIM && bitmap.height <= MAX_DIM) {
+  if (!bitmap) {
+    return oversize
+      ? {
+          ok: false,
+          error: "Couldn't read that image. Try taking the photo again.",
+        }
+      : { ok: true, file };
+  }
+  // Already small enough in both senses — don't re-encode and lose
+  // quality for nothing.
+  if (!oversize && bitmap.width <= MAX_DIM && bitmap.height <= MAX_DIM) {
     bitmap.close();
     return { ok: true, file };
   }
 
-  const downscaled = await encodeJpeg(bitmap, file.name, file.lastModified);
-  // Re-encoding a small or already-efficient image can make it bigger;
-  // keep whichever is smaller since both render everywhere.
-  if (!downscaled || downscaled.size >= file.size) return { ok: true, file };
+  const downscaled = await encodeJpeg(
+    bitmap,
+    file.name,
+    file.lastModified,
+    maxBytes,
+  );
+  if (!downscaled) {
+    return oversize
+      ? { ok: false, error: "Couldn't shrink that image. Try another photo." }
+      : { ok: true, file };
+  }
+  // Re-encoding an already-efficient image can make it bigger; keep
+  // whichever is smaller, since both render everywhere. Never hand
+  // back the original when it's the one that doesn't fit.
+  if (!oversize && downscaled.size >= file.size) return { ok: true, file };
   return { ok: true, file: downscaled };
 }

@@ -1,9 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { normalizeImageForUpload } from "./image-normalize";
+import {
+  MAX_PHOTO_BYTES,
+  normalizeImageForUpload,
+} from "./image-normalize";
 
 export const PHOTO_BUCKET = "vehicle-photos";
 
-export const MAX_PHOTO_BYTES = 10 * 1024 * 1024; // 10 MB
+export { MAX_PHOTO_BYTES };
 // What a tech is allowed to PICK, which is not the same as what we
 // store. HEIC is accepted here and then converted to JPEG by
 // normalizeImageForUpload — Android can't render HEIC, so it must
@@ -51,9 +54,10 @@ export function validatePhotoFile(file: {
       error: `${file.type} isn't supported. Try JPEG, PNG, HEIC, or WebP.`,
     };
   }
-  if (file.size > MAX_PHOTO_BYTES) {
-    return { ok: false, error: "File is over 10 MB. Try a smaller picture." };
-  }
+  // Deliberately no size check. A 12 MP phone photo can exceed the
+  // storage limit, and the normalizer downscales and re-compresses it
+  // to fit — telling a tech in a parking lot to "use a smaller
+  // picture" asks them to do something their camera app can't.
   return { ok: true };
 }
 
