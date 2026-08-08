@@ -5,6 +5,10 @@ import {
   isStandaloneDoor,
   splitStandaloneDoors,
   STANDALONE_DOOR_NAME,
+  buildNetworkRows,
+  shouldShowDeviceColumn,
+  type NetworkRow,
+  type JobDoorItem,
 } from "./jobs";
 
 describe("splitStandaloneDoors", () => {
@@ -135,5 +139,125 @@ describe("compareCanonicalItems", () => {
       "Custom A",
       "Custom B",
     ]);
+  });
+});
+
+describe("buildNetworkRows", () => {
+  const doors = [
+    { id: "d1", name: "D1" },
+    { id: "d2", name: "Ramp Door" },
+    { id: "d3", name: "E316" },
+    { id: "gw1", name: STANDALONE_DOOR_NAME },
+    { id: "gw2", name: STANDALONE_DOOR_NAME },
+  ];
+
+  const item = (over: Partial<JobDoorItem> & { id: string; door_id: string }) =>
+    ({
+      name: "5500 Exciter",
+      note: null,
+      ip_address: null,
+      mac_address: null,
+      photo_storage_path: null,
+      photo_uploaded_at: null,
+      completed_at: null,
+      position: 0,
+      created_at: "",
+      ...over,
+    }) as JobDoorItem;
+
+  it("keeps standalone gear below every door, whatever it is named", () => {
+    const rows = buildNetworkRows(doors, [
+      item({ id: "1", door_id: "d2", mac_address: "000CCC617A40" }),
+      item({
+        id: "2",
+        door_id: "gw1",
+        name: "GW-3000 Gateway",
+        mac_address: "000CCC88A24E",
+      }),
+      item({ id: "3", door_id: "d3", mac_address: "000CCC61793A" }),
+      item({
+        id: "4",
+        door_id: "gw2",
+        name: "GW-3000 Gateway",
+        mac_address: "000CCC88A254",
+      }),
+      item({ id: "5", door_id: "d1", mac_address: "000CCC6179F5" }),
+    ]);
+
+    expect(rows.map((r) => r.label)).toEqual([
+      "D1",
+      "E316",
+      "Ramp Door",
+      "GW-3000 Gateway",
+      "GW-3000 Gateway",
+    ]);
+    expect(rows.map((r) => r.isStandalone)).toEqual([
+      false,
+      false,
+      false,
+      true,
+      true,
+    ]);
+  });
+
+  it("labels standalone gear by its note, and skips unaddressed items", () => {
+    const rows = buildNetworkRows(doors, [
+      item({
+        id: "1",
+        door_id: "gw1",
+        name: "GW-3000 Gateway",
+        note: "Roof",
+        ip_address: "10.1.10.4",
+      }),
+      item({ id: "2", door_id: "d1" }),
+      item({ id: "3", door_id: "d1", ip_address: "10.1.10.9" }),
+    ]);
+
+    expect(rows.map((r) => r.label)).toEqual([
+      "D1",
+      "GW-3000 Gateway — Roof",
+    ]);
+  });
+
+  it("falls back to a placeholder when the door is missing", () => {
+    const rows = buildNetworkRows(doors, [
+      item({ id: "1", door_id: "gone", mac_address: "000CCC6179F5" }),
+    ]);
+    expect(rows[0].label).toBe("Unnamed door");
+    expect(rows[0].isStandalone).toBe(false);
+  });
+});
+
+describe("shouldShowDeviceColumn", () => {
+  const row = (over: Partial<NetworkRow>): NetworkRow => ({
+    id: "x",
+    label: "D1",
+    item: "5500 Exciter",
+    ip: null,
+    mac: null,
+    isStandalone: false,
+    ...over,
+  });
+
+  it("stays off when every door has one networked device", () => {
+    expect(
+      shouldShowDeviceColumn([row({ label: "D1" }), row({ label: "D2" })]),
+    ).toBe(false);
+  });
+
+  it("turns on when a door hosts several networked devices", () => {
+    expect(
+      shouldShowDeviceColumn([row({ label: "D1" }), row({ label: "D1" })]),
+    ).toBe(true);
+  });
+
+  it("ignores repeated standalone gear, which names itself", () => {
+    expect(
+      shouldShowDeviceColumn([
+        row({ label: "D1" }),
+        row({ label: "GW-3000 Gateway", isStandalone: true }),
+        row({ label: "GW-3000 Gateway", isStandalone: true }),
+      ]),
+    ).toBe(false);
   });
 });

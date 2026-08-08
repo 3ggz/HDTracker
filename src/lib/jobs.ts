@@ -172,3 +172,64 @@ export function compareDoorNames(a: string, b: string): number {
   return ax.length - bx.length;
 }
 
+
+export type NetworkRow = {
+  id: string;
+  label: string;
+  item: string;
+  ip: string | null;
+  mac: string | null;
+  isStandalone: boolean;
+};
+
+// The IP / MAC list behind every export: copy-to-clipboard, the
+// in-editor print sheet, and the standalone /netlist page. Standalone
+// gear sorts AFTER every real door rather than by name — gateways
+// landing between D1 and Ramp Door reads like the doors themselves are
+// out of order, and a network admin scanning the sheet expects the
+// openings first and the shared gear at the bottom.
+export function buildNetworkRows(
+  doors: { id: string; name: string | null }[],
+  items: JobDoorItem[],
+): NetworkRow[] {
+  const doorById = new Map(doors.map((d) => [d.id, d]));
+  return items
+    .filter((it) => it.ip_address || it.mac_address)
+    .map((it) => {
+      const door = doorById.get(it.door_id);
+      const name = door?.name?.trim();
+      // Standalone gear has no meaningful door — its identity is the
+      // unit itself: the per-unit label from the note column, falling
+      // back to the device name.
+      const isStandalone = name === STANDALONE_DOOR_NAME;
+      return {
+        id: it.id,
+        label: isStandalone
+          ? it.note?.trim()
+            ? `${it.name} — ${it.note.trim()}`
+            : it.name
+          : name || "Unnamed door",
+        item: it.name,
+        ip: it.ip_address,
+        mac: it.mac_address,
+        isStandalone,
+      };
+    })
+    .sort((a, b) => {
+      if (a.isStandalone !== b.isStandalone) return a.isStandalone ? 1 : -1;
+      return compareDoorNames(a.label, b.label);
+    });
+}
+
+// The Device column earns its place only when a real door hosts more
+// than one networked item. Standalone gear never counts: its label
+// already carries the device name, so several identically-named
+// gateways were pulling in a column that then repeated that name.
+export function shouldShowDeviceColumn(rows: NetworkRow[]): boolean {
+  const counts = new Map<string, number>();
+  for (const r of rows) {
+    if (r.isStandalone) continue;
+    counts.set(r.label, (counts.get(r.label) ?? 0) + 1);
+  }
+  return Array.from(counts.values()).some((n) => n > 1);
+}

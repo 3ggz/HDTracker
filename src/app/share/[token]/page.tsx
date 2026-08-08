@@ -109,7 +109,13 @@ export default async function SharedJobPage({
           img { page-break-inside: avoid; break-inside: avoid; }
           h1, h2, h3 { page-break-after: avoid; break-after: avoid; }
           p { orphans: 3; widows: 3; }
-          body { background: white; }
+          /* !important because the root layout puts dark:bg-neutral-950
+             on <body>, and a Tailwind variant class outranks a bare
+             element selector — a plain "body { background: white }"
+             silently lost in dark mode and printed a black slab
+             wherever the sheet didn't reach (body is min-h-full, so
+             that was a full page of it). */
+          html, body { background: white !important; }
 
           /* The screen layout is a phone-width column (max-w-md). Left
              alone it prints as a 4.6in strip down the middle of a 7.7in

@@ -2,7 +2,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { ExportPdfButton } from "@/components/ExportPdfButton";
-import { compareDoorNames, type Job, type JobDoorItem } from "@/lib/jobs";
+import {
+  buildNetworkRows,
+  shouldShowDeviceColumn,
+  type Job,
+  type JobDoorItem,
+} from "@/lib/jobs";
 
 // Standalone IP / MAC sheet — one clean table, nothing else. Meant
 // for handing to network admins as its own full-screen view (the
@@ -34,36 +39,12 @@ export default async function JobNetListPage({
           .in("door_id", doorIds)
           .or("ip_address.not.is.null,mac_address.not.is.null");
 
-  const doorNameById = new Map(
-    (doors ?? []).map((d) => [d.id as string, (d.name as string) || "—"]),
+  const rows = buildNetworkRows(
+    (doors ?? []) as { id: string; name: string | null }[],
+    (items ?? []) as JobDoorItem[],
   );
-  const STANDALONE = "Standalone Equipment";
-  const rows = ((items ?? []) as JobDoorItem[])
-    .filter((it) => it.ip_address || it.mac_address)
-    .map((it) => {
-      const doorName = doorNameById.get(it.door_id) ?? "—";
-      // Standalone gear identifies by its own label (note column) or
-      // device name, not the synthetic "Standalone Equipment" door.
-      const isStandalone = doorName === STANDALONE;
-      return {
-        id: it.id,
-        door: isStandalone
-          ? it.note?.trim()
-            ? `${it.name} — ${it.note.trim()}`
-            : it.name
-          : doorName,
-        item: it.name,
-        ip: it.ip_address,
-        mac: it.mac_address,
-      };
-    })
-    .sort((a, b) => compareDoorNames(a.door, b.door));
 
-  const doorCounts = new Map<string, number>();
-  for (const r of rows) {
-    doorCounts.set(r.door, (doorCounts.get(r.door) ?? 0) + 1);
-  }
-  const showDevice = Array.from(doorCounts.values()).some((n) => n > 1);
+  const showDevice = shouldShowDeviceColumn(rows);
 
   // Server component is dynamic (ƒ), so this is the moment of export.
   const exportedAt = new Date()
@@ -82,7 +63,16 @@ export default async function JobNetListPage({
           .netlist-toolbar { display: none !important; }
           tr { page-break-inside: avoid; break-inside: avoid; }
           thead { display: table-header-group; }
-          body { background: white; }
+          /* !important because the root layout puts dark:bg-neutral-950
+             on <body>, and a Tailwind variant class outranks a bare
+             element selector — a plain "body { background: white }"
+             silently lost in dark mode and printed a black slab below
+             the table (body is min-h-full, so it had a full page to
+             fill). Text goes light-safe with it. */
+          html, body {
+            background: white !important;
+            color: #171717 !important;
+          }
         }
       `}</style>
 
@@ -160,10 +150,10 @@ export default async function JobNetListPage({
                   key={r.id}
                   className="border-b border-neutral-200 dark:border-neutral-800"
                 >
-                  <td className="py-1.5 pr-3 font-medium">{r.door}</td>
+                  <td className="py-1.5 pr-3 font-medium">{r.label}</td>
                   {showDevice && (
                     <td className="py-1.5 pr-3 text-neutral-600 dark:text-neutral-400">
-                      {r.item}
+                      {r.label.startsWith(r.item) ? "" : r.item}
                     </td>
                   )}
                   <td className="py-1.5 pr-3 font-mono tabular-nums">

@@ -22,7 +22,10 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import {
   compareCanonicalItems,
+  buildNetworkRows,
   compareDoorNames,
+  shouldShowDeviceColumn,
+  type NetworkRow,
   isStandaloneDoor,
   itemSupportsNetworkFields,
   STANDALONE_DOOR_NAME,
@@ -64,6 +67,7 @@ import { firstNameFromEmail } from "@/lib/email";
 import { useSoftDelete } from "@/lib/use-soft-delete";
 import { useAnchorRect } from "@/lib/use-anchor-rect";
 import { mergeConcurrentText } from "@/lib/merge-text";
+import { requestPrint } from "@/lib/print";
 import {
   normalizeRotation,
   saveMapRotation,
@@ -5711,29 +5715,13 @@ function ShareExportSection({
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedList, setCopiedList] = useState(false);
   const [netlistPrinting, setNetlistPrinting] = useState(false);
+  // Bumped on every tap so the sheet remounts and prints again. Without
+  // it, a print that never resolves (see printBlocked) leaves
+  // netlistPrinting stuck at true and every later tap is a no-op.
+  const [printNonce, setPrintNonce] = useState(0);
+  const [printBlocked, setPrintBlocked] = useState(false);
 
-  const doorById = new Map(doors.map((d) => [d.id, d]));
-  const networkRows = items
-    .filter((it) => it.ip_address || it.mac_address)
-    .map((it) => {
-      const door = doorById.get(it.door_id);
-      // Standalone gear (gateways etc.) has no meaningful door — its
-      // identity is the item itself: per-unit label from the note
-      // column, falling back to the device name.
-      const isStandalone = door?.name === STANDALONE_DOOR_NAME;
-      const label = isStandalone
-        ? it.note?.trim()
-          ? `${it.name} — ${it.note.trim()}`
-          : it.name
-        : door?.name?.trim() || "Unnamed door";
-      return {
-        door: label,
-        item: it.name,
-        ip: it.ip_address,
-        mac: it.mac_address,
-      };
-    })
-    .sort((a, b) => compareDoorNames(a.door, b.door));
+  const networkRows = buildNetworkRows(doors, items);
 
   async function copyText(text: string): Promise<boolean> {
     try {
@@ -5773,7 +5761,7 @@ function ShareExportSection({
     // door (the normal case), "D2 — 5500 Exciter:" was pure noise.
     const doorCounts = new Map<string, number>();
     for (const r of networkRows) {
-      doorCounts.set(r.door, (doorCounts.get(r.door) ?? 0) + 1);
+      doorCounts.set(r.label, (doorCounts.get(r.label) ?? 0) + 1);
     }
     const lines = [
       job.name + (job.number ? ` — #${job.number}` : ""),
@@ -5784,8 +5772,8 @@ function ShareExportSection({
         // items AND the label doesn't already carry the device name
         // (standalone rows do — "GW-3000 Gateway — Roof").
         const needsItem =
-          (doorCounts.get(r.door) ?? 0) > 1 && !r.door.startsWith(r.item);
-        const label = needsItem ? `${r.door} (${r.item})` : r.door;
+          (doorCounts.get(r.label) ?? 0) > 1 && !r.label.startsWith(r.item);
+        const label = needsItem ? `${r.label} (${r.item})` : r.label;
         return [label, r.ip, r.mac].filter(Boolean).join("  ·  ");
       }),
     ];
@@ -5852,6 +5840,8 @@ function ShareExportSection({
             // the initiating button holds focus (same trick as the
             // main Export PDF toolbar).
             (e.currentTarget as HTMLButtonElement).blur();
+            setPrintBlocked(false);
+            setPrintNonce((n) => n + 1);
             setNetlistPrinting(true);
           }}
           className="flex h-11 w-full items-center justify-center gap-2 rounded-lg border border-neutral-300 text-sm font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
@@ -5896,11 +5886,23 @@ function ShareExportSection({
           Open as full page
         </a>
       )}
+      {printBlocked && (
+        <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] leading-snug text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+          Couldn&apos;t open a print dialog here. If you&apos;re in the
+          HD Security app, use <strong>Copy IP / MAC list</strong>{" "}
+          above, or open this job in Safari / Chrome to export the PDF.
+        </p>
+      )}
       {netlistPrinting && (
         <NetlistPrintSheet
+          key={printNonce}
           job={job}
           rows={networkRows}
           onDone={() => setNetlistPrinting(false)}
+          onBlocked={() => {
+            setNetlistPrinting(false);
+            setPrintBlocked(true);
+          }}
         />
       )}
       {networkRows.length === 0 && (
@@ -5920,16 +5922,14 @@ function NetlistPrintSheet({
   job,
   rows,
   onDone,
+  onBlocked,
 }: {
   job: Job;
-  rows: { door: string; item: string; ip: string | null; mac: string | null }[];
+  rows: NetworkRow[];
   onDone: () => void;
+  onBlocked: () => void;
 }) {
-  const doorCounts = new Map<string, number>();
-  for (const r of rows) {
-    doorCounts.set(r.door, (doorCounts.get(r.door) ?? 0) + 1);
-  }
-  const showDevice = Array.from(doorCounts.values()).some((n) => n > 1);
+  const showDevice = shouldShowDeviceColumn(rows);
 
   const [exportedAt, setExportedAt] = useState("");
 
@@ -5948,14 +5948,14 @@ function NetlistPrintSheet({
     const safeName = job.name.replace(/[\\/:*?"<>|]+/g, "-").trim() || "Job";
     document.title = `${safeName} IP-MAC list - ${dateStr}`;
     document.body.classList.add("print-netlist");
-    const done = () => onDone();
-    window.addEventListener("afterprint", done);
-    // Give the portal a paint before printing so the sheet is in the
-    // DOM when the print snapshot is taken.
-    const t = window.setTimeout(() => window.print(), 100);
+
+    const stopPrint = requestPrint(window, (outcome) => {
+      if (outcome === "printed") onDone();
+      else onBlocked();
+    });
+
     return () => {
-      window.clearTimeout(t);
-      window.removeEventListener("afterprint", done);
+      stopPrint();
       document.body.classList.remove("print-netlist");
       document.title = priorTitle;
     };
@@ -5973,6 +5973,15 @@ function NetlistPrintSheet({
           body.print-netlist > *:not(.netlist-sheet) { display: none !important; }
           body.print-netlist .netlist-sheet { display: block !important; }
           .netlist-sheet tr { break-inside: avoid; page-break-inside: avoid; }
+          /* The app paints its theme background on BOTH html and body
+             (globals.css), and body is min-h-full — so in dark mode,
+             with "Background graphics" on, everything below the table
+             printed as a full-page black slab. The sheet's own white
+             card only covers the rows. Force the page light. */
+          html, body.print-netlist {
+            background: #fff !important;
+            color: #171717 !important;
+          }
         }
       `}</style>
       <div
@@ -6015,8 +6024,8 @@ function NetlistPrintSheet({
             </tr>
           </thead>
           <tbody>
-            {rows.map((r, i) => (
-              <tr key={i}>
+            {rows.map((r) => (
+              <tr key={r.id}>
                 <td
                   style={{
                     padding: "4px 10px 4px 0",
@@ -6024,7 +6033,7 @@ function NetlistPrintSheet({
                     fontWeight: 600,
                   }}
                 >
-                  {r.door}
+                  {r.label}
                 </td>
                 {showDevice && (
                   <td
@@ -6034,7 +6043,9 @@ function NetlistPrintSheet({
                       color: "#525252",
                     }}
                   >
-                    {r.item}
+                    {/* Standalone gear already carries its device name
+                        in the label column — repeating it is noise. */}
+                    {r.label.startsWith(r.item) ? "" : r.item}
                   </td>
                 )}
                 <td
