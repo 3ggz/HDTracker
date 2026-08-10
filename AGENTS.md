@@ -28,7 +28,7 @@ When you face a design trade-off, these two principles win.
 
 ## Key product decisions to respect
 
-- **Access is restricted to `@hdsecurity.systems` emails.** Enforced client-side in `src/lib/email.ts` and server-side by the trigger in migration 0001. Case-insensitive; display form is `HDSecurity.Systems`.
+- **Access is restricted to `@hdsecurity.systems` emails, plus a short list of individually cleared addresses.** Enforced client-side in `src/lib/email.ts` and server-side by the `enforce_email_domain()` trigger (last redefined in migration 0039). Case-insensitive; display form is `HDSecurity.Systems`. The cleared-address list is real people who don't have a company mailbox yet — it lives in both places and must be changed in both at once. Don't "restore strict enforcement" by deleting it; that locks a coworker out.
 - **Vehicles are the top-level entity.** Inventory, tools, location, issues, last-job, notes, and photos all hang off a Vehicle.
 - **Quantity is flexible, not strict.** The flexible `quantity_text` column holds whatever fits:
   - numeric counts (`50`)
