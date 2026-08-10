@@ -38,4 +38,18 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- "Use current location" goes through navigator.geolocation, and
+         Capacitor's BridgeWebChromeClient asks for these at runtime the
+         first time it fires. Android auto-denies a permission the
+         manifest never declared — no dialog, no error — so without
+         these two lines the button just quietly does nothing. The iOS
+         side already carries NSLocationWhenInUseUsageDescription.
+
+         CAMERA is deliberately NOT declared: isMediaCaptureSupported()
+         treats an undeclared CAMERA as "no permission needed" and
+         launches the capture intent directly, so declaring it would
+         add a runtime prompt where there currently isn't one. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 </manifest>
