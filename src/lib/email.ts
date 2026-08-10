@@ -17,6 +17,10 @@ export function isAllowedEmail(email: string): boolean {
 
 export function firstNameFromEmail(email: string): string {
   const local = email.trim().toLowerCase().split("@")[0] ?? "";
-  if (local.length === 0) return "";
-  return local.charAt(0).toUpperCase() + local.slice(1);
+  // Company addresses are a bare first name, but a personal one is
+  // usually first.last — without this split the Worked-on dropdown
+  // offers "Nikita.fopiano" as if that were someone's name.
+  const first = local.split(/[._-]+/)[0] ?? "";
+  if (first.length === 0) return "";
+  return first.charAt(0).toUpperCase() + first.slice(1);
 }

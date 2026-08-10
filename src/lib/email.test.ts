@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isAllowedEmail } from "./email";
+import { firstNameFromEmail, isAllowedEmail } from "./email";
 
 describe("isAllowedEmail", () => {
   it("accepts company addresses", () => {
@@ -20,5 +20,18 @@ describe("isAllowedEmail", () => {
     expect(isAllowedEmail("nikita.fopiano@gmail.com")).toBe(true);
     expect(isAllowedEmail("Nikita.Fopiano@gmail.com")).toBe(true);
     expect(isAllowedEmail("nikita.fopiano@outlook.com")).toBe(false);
+  });
+});
+
+describe("firstNameFromEmail", () => {
+  it("uses the first segment of the local part", () => {
+    expect(firstNameFromEmail("mark@hdsecurity.systems")).toBe("Mark");
+    expect(firstNameFromEmail("nikita.fopiano@gmail.com")).toBe("Nikita");
+    expect(firstNameFromEmail("mary_jo@hdsecurity.systems")).toBe("Mary");
+  });
+
+  it("survives junk without throwing", () => {
+    expect(firstNameFromEmail("")).toBe("");
+    expect(firstNameFromEmail("@hdsecurity.systems")).toBe("");
   });
 });
