@@ -1,8 +1,14 @@
+import { Fragment } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { ExportPdfButton } from "@/components/ExportPdfButton";
-import { compareDoorNames, type Job, type JobDoorItem } from "@/lib/jobs";
+import {
+  groupNetworkRowsByFloor,
+  UNASSIGNED_FLOOR_LABEL,
+  type Job,
+  type JobDoorItem,
+} from "@/lib/jobs";
 
 // Standalone IP / MAC sheet — one clean table, nothing else. Meant
 // for handing to network admins as its own full-screen view (the
@@ -18,7 +24,7 @@ export default async function JobNetListPage({
 
   const [{ data: job, error }, { data: doors }] = await Promise.all([
     supabase.from("jobs").select("*").eq("id", id).single(),
-    supabase.from("job_doors").select("id, name").eq("job_id", id),
+    supabase.from("job_doors").select("id, name, floor").eq("job_id", id),
   ]);
 
   if (error || !job) notFound();
@@ -34,14 +40,18 @@ export default async function JobNetListPage({
           .in("door_id", doorIds)
           .or("ip_address.not.is.null,mac_address.not.is.null");
 
-  const doorNameById = new Map(
-    (doors ?? []).map((d) => [d.id as string, (d.name as string) || "—"]),
+  const doorById = new Map(
+    (doors ?? []).map((d) => [
+      d.id as string,
+      { name: (d.name as string) || "—", floor: (d.floor as string | null) ?? null },
+    ]),
   );
   const STANDALONE = "Standalone Equipment";
   const rows = ((items ?? []) as JobDoorItem[])
     .filter((it) => it.ip_address || it.mac_address)
     .map((it) => {
-      const doorName = doorNameById.get(it.door_id) ?? "—";
+      const door = doorById.get(it.door_id);
+      const doorName = door?.name ?? "—";
       // Standalone gear identifies by its own label (note column) or
       // device name, not the synthetic "Standalone Equipment" door.
       const isStandalone = doorName === STANDALONE;
@@ -55,15 +65,22 @@ export default async function JobNetListPage({
         item: it.name,
         ip: it.ip_address,
         mac: it.mac_address,
+        floor: isStandalone ? null : (door?.floor ?? null),
+        standalone: isStandalone,
       };
-    })
-    .sort((a, b) => compareDoorNames(a.door, b.door));
+    });
 
   const doorCounts = new Map<string, number>();
   for (const r of rows) {
     doorCounts.set(r.door, (doorCounts.get(r.door) ?? 0) + 1);
   }
   const showDevice = Array.from(doorCounts.values()).some((n) => n > 1);
+  const columnCount = showDevice ? 4 : 3;
+  const floorGroups = groupNetworkRowsByFloor(rows);
+  const useFloorGroups =
+    floorGroups.length > 1 ||
+    (floorGroups.length === 1 &&
+      floorGroups[0].label !== UNASSIGNED_FLOOR_LABEL);
 
   // Server component is dynamic (ƒ), so this is the moment of export.
   const exportedAt = new Date()
@@ -155,24 +172,38 @@ export default async function JobNetListPage({
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
-                <tr
-                  key={r.id}
-                  className="border-b border-neutral-200 dark:border-neutral-800"
-                >
-                  <td className="py-1.5 pr-3 font-medium">{r.door}</td>
-                  {showDevice && (
-                    <td className="py-1.5 pr-3 text-neutral-600 dark:text-neutral-400">
-                      {r.item}
-                    </td>
+              {floorGroups.map((group) => (
+                <Fragment key={group.label}>
+                  {useFloorGroups && (
+                    <tr>
+                      <td
+                        colSpan={columnCount}
+                        className="border-b-2 border-neutral-400 pb-1 pt-3 text-[11px] font-bold uppercase tracking-wide text-neutral-700 dark:border-neutral-500 dark:text-neutral-300"
+                      >
+                        {group.label}
+                      </td>
+                    </tr>
                   )}
-                  <td className="py-1.5 pr-3 font-mono tabular-nums">
-                    {r.ip ?? "—"}
-                  </td>
-                  <td className="py-1.5 font-mono tabular-nums">
-                    {r.mac ?? "—"}
-                  </td>
-                </tr>
+                  {group.rows.map((r) => (
+                    <tr
+                      key={r.id}
+                      className="border-b border-neutral-200 dark:border-neutral-800"
+                    >
+                      <td className="py-1.5 pr-3 font-medium">{r.door}</td>
+                      {showDevice && (
+                        <td className="py-1.5 pr-3 text-neutral-600 dark:text-neutral-400">
+                          {r.item}
+                        </td>
+                      )}
+                      <td className="py-1.5 pr-3 font-mono tabular-nums">
+                        {r.ip ?? "—"}
+                      </td>
+                      <td className="py-1.5 font-mono tabular-nums">
+                        {r.mac ?? "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </Fragment>
               ))}
             </tbody>
           </table>

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { compareCanonicalItems, compareDoorNames } from "./jobs";
+import {
+  compareCanonicalItems,
+  compareDoorNames,
+  groupNetworkRowsByFloor,
+} from "./jobs";
 
 describe("compareDoorNames", () => {
   it("sorts pure numeric order within a letter prefix", () => {
@@ -91,5 +95,50 @@ describe("compareCanonicalItems", () => {
       "Custom A",
       "Custom B",
     ]);
+  });
+});
+
+describe("groupNetworkRowsByFloor", () => {
+  const row = (
+    door: string,
+    floor: string | null,
+    standalone = false,
+  ) => ({ door, floor, standalone });
+
+  it("orders named floors naturally, Unassigned next, Standalone last", () => {
+    const groups = groupNetworkRowsByFloor([
+      row("GW-3000 Gateway", null, true),
+      row("D1", "10"),
+      row("D2", null),
+      row("D3", "2"),
+      row("D4", "B"),
+    ]);
+    expect(groups.map((g) => g.label)).toEqual([
+      "2",
+      "10",
+      "B",
+      "Unassigned",
+      "Standalone",
+    ]);
+  });
+
+  it("sorts rows inside each floor by door name", () => {
+    const groups = groupNetworkRowsByFloor([
+      row("D10", "1"),
+      row("D2", "1"),
+      row("St5", "1"),
+    ]);
+    expect(groups[0].rows.map((r) => r.door)).toEqual(["D2", "D10", "St5"]);
+  });
+
+  it("buckets whitespace-only floors as Unassigned", () => {
+    const groups = groupNetworkRowsByFloor([row("D1", "  ")]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].label).toBe("Unassigned");
+  });
+
+  it("ignores a standalone row's floor value", () => {
+    const groups = groupNetworkRowsByFloor([row("Gateway", "3", true)]);
+    expect(groups[0].label).toBe("Standalone");
   });
 });

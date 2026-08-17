@@ -148,3 +148,40 @@ export function compareDoorNames(a: string, b: string): number {
   return ax.length - bx.length;
 }
 
+// Floor bucketing for the IP/MAC exports (clipboard copy, print
+// sheet, /netlist page — all three group identically through here).
+// Named floors sort naturally (1, 2, 10, B…), the null-floor bucket
+// lands second-to-last as "Unassigned", and standalone gear
+// (gateways etc.) always closes the list under its own label.
+export const UNASSIGNED_FLOOR_LABEL = "Unassigned";
+export const STANDALONE_GROUP_LABEL = "Standalone";
+
+export function groupNetworkRowsByFloor<
+  T extends { door: string; floor: string | null; standalone: boolean },
+>(rows: T[]): { label: string; rows: T[] }[] {
+  const buckets = new Map<string, T[]>();
+  for (const r of rows) {
+    const label = r.standalone
+      ? STANDALONE_GROUP_LABEL
+      : r.floor?.trim() || UNASSIGNED_FLOOR_LABEL;
+    const list = buckets.get(label) ?? [];
+    list.push(r);
+    buckets.set(label, list);
+  }
+  const rank = (label: string) =>
+    label === STANDALONE_GROUP_LABEL
+      ? 2
+      : label === UNASSIGNED_FLOOR_LABEL
+        ? 1
+        : 0;
+  const entries = Array.from(buckets.entries()).sort((a, b) => {
+    const diff = rank(a[0]) - rank(b[0]);
+    if (diff !== 0) return diff;
+    return a[0].localeCompare(b[0], undefined, { numeric: true });
+  });
+  for (const [, list] of entries) {
+    list.sort((a, b) => compareDoorNames(a.door, b.door));
+  }
+  return entries.map(([label, list]) => ({ label, rows: list }));
+}
+
