@@ -115,6 +115,23 @@ export function PdfMapEditor({
   useEffect(() => {
     scaleRef.current = scale;
   }, [scale]);
+  // The touch handlers below live in a mount-once effect, so they read the
+  // current tool through a ref to avoid a stale closure.
+  const toolRef = useRef(tool);
+  useEffect(() => {
+    toolRef.current = tool;
+  }, [tool]);
+  // Single-finger pan state. With touch-action:"none" the browser won't
+  // scroll the container for us (that's the price of getting reliable
+  // multi-touch pinch in the iOS WKWebView), so we drive the scroll
+  // position manually in view mode.
+  const panRef = useRef({
+    active: false,
+    startX: 0,
+    startY: 0,
+    startScrollLeft: 0,
+    startScrollTop: 0,
+  });
   const pinchRef = useRef<{
     active: boolean;
     startDist: number;
@@ -189,7 +206,17 @@ export function PdfMapEditor({
           midViewportY,
         };
         pinchTargetRef.current = pinchRef.current.startScale;
+        panRef.current.active = false;
         e.preventDefault();
+      } else if (e.touches.length === 1 && toolRef.current === "view") {
+        const t = e.touches[0];
+        panRef.current = {
+          active: true,
+          startX: t.clientX,
+          startY: t.clientY,
+          startScrollLeft: el!.scrollLeft,
+          startScrollTop: el!.scrollTop,
+        };
       }
     }
 
@@ -213,6 +240,13 @@ export function PdfMapEditor({
           transformRef.current.style.transform = `scale(${visualRatio})`;
         }
         pinchTargetRef.current = targetScale;
+      } else if (panRef.current.active && e.touches.length === 1) {
+        e.preventDefault();
+        const t = e.touches[0];
+        el!.scrollLeft =
+          panRef.current.startScrollLeft - (t.clientX - panRef.current.startX);
+        el!.scrollTop =
+          panRef.current.startScrollTop - (t.clientY - panRef.current.startY);
       }
     }
 
@@ -246,6 +280,9 @@ export function PdfMapEditor({
         window.setTimeout(() => {
           pinchActiveRef.current = false;
         }, 100);
+      }
+      if (e.touches.length === 0) {
+        panRef.current.active = false;
       }
     }
 
@@ -360,7 +397,10 @@ export function PdfMapEditor({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col overscroll-none bg-neutral-900">
+    <div
+      data-ptr-exempt
+      className="fixed inset-0 z-50 flex flex-col overscroll-none bg-neutral-900"
+    >
       <header className="flex items-center gap-2 border-b border-neutral-800 bg-neutral-950/95 px-2 py-2 backdrop-blur">
         <Link
           href={`/jobs/${jobId}`}
@@ -533,12 +573,13 @@ export function PdfMapEditor({
       <div
         ref={scrollRef}
         className="flex-1 overflow-auto bg-neutral-100 p-2"
-        // pan-x pan-y allows scrolling but blocks browser pinch-zoom;
-        // we handle pinch ourselves above. None for pen/text/eraser so
-        // the canvas can capture single-finger drawing without the
-        // browser turning it into a scroll gesture.
+        // "none" everywhere: the browser must not claim any touch gesture,
+        // or the iOS WKWebView's native two-finger scroll swallows the
+        // pinch. We drive pan (single finger, view mode) and pinch (two
+        // fingers) ourselves in the touch handlers above, and the canvas
+        // handles single-finger drawing in pen/text/eraser modes.
         style={{
-          touchAction: tool === "view" ? "pan-x pan-y" : "none",
+          touchAction: "none",
         }}
       >
         {loadError && (
@@ -982,7 +1023,14 @@ function PdfPageView({
   const wrapperH = naturalSize ? naturalSize.h * scale : null;
 
   return (
-    <div className="mb-3 flex flex-col items-center">
+    <div
+      className="mb-3 flex flex-col"
+      // "safe center" keeps the page centered when it fits, but aligns it
+      // to the start when it's zoomed wider than the viewport — otherwise
+      // plain center-alignment clips the overflow and the scroll container
+      // can't reach the sides (you get stuck panning to one spot).
+      style={{ alignItems: "safe center" }}
+    >
       <div className="mb-1 flex w-full items-center justify-between px-1">
         <span className="text-[10px] font-semibold uppercase tracking-wide text-neutral-500">
           Page {pageIndex + 1}
@@ -1031,6 +1079,7 @@ function PdfPageView({
             <input
               autoFocus
               type="text"
+              enterKeyHint="done"
               value={textInput.value}
               onChange={(e) =>
                 setTextInput((cur) =>

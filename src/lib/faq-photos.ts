@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { guessExtension, validatePhotoFile } from "./vehicle-photos";
+import { normalizeImageForUpload } from "./image-normalize";
 import type { FaqPhoto } from "./faq";
 
 export const FAQ_BUCKET = "faq-files";
@@ -28,6 +29,9 @@ export async function uploadFaqPhoto({
 }: UploadOptions): Promise<UploadFaqPhotoResult> {
   const validation = validatePhotoFile(file);
   if (!validation.ok) return validation;
+  const normalized = await normalizeImageForUpload(file);
+  if (!normalized.ok) return normalized;
+  file = normalized.file;
 
   const photoId = crypto.randomUUID();
   const ext = guessExtension(file);

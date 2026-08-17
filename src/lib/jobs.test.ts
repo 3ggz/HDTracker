@@ -3,7 +3,52 @@ import {
   compareCanonicalItems,
   compareDoorNames,
   groupNetworkRowsByFloor,
+  isStandaloneDoor,
+  splitStandaloneDoors,
+  STANDALONE_DOOR_NAME,
+  buildNetworkRows,
+  shouldShowDeviceColumn,
+  type NetworkRow,
+  type JobDoorItem,
 } from "./jobs";
+
+describe("splitStandaloneDoors", () => {
+  const doors = [
+    { id: "a", name: "101 Main Entry", floor: "1" },
+    { id: "b", name: STANDALONE_DOOR_NAME, floor: "1" },
+    { id: "c", name: "201 Server Room", floor: "2" },
+    { id: "d", name: STANDALONE_DOOR_NAME, floor: "2" },
+    { id: "e", name: STANDALONE_DOOR_NAME, floor: null },
+  ];
+
+  it("keeps real doors out of the standalone buckets", () => {
+    const { realDoors } = splitStandaloneDoors(doors);
+    expect(realDoors.map((d) => d.id)).toEqual(["a", "c"]);
+  });
+
+  // There is one bucket per floor now. Anything using find() here
+  // would silently drop every gateway outside the first bucket, which
+  // is exactly how they'd vanish from the share and quickview pages.
+  it("returns every standalone bucket, not just the first", () => {
+    const { standaloneDoors } = splitStandaloneDoors(doors);
+    expect(standaloneDoors.map((d) => d.id)).toEqual(["b", "d", "e"]);
+  });
+
+  it("handles a job with no standalone gear at all", () => {
+    const { realDoors, standaloneDoors } = splitStandaloneDoors([doors[0]]);
+    expect(realDoors).toHaveLength(1);
+    expect(standaloneDoors).toEqual([]);
+  });
+});
+
+describe("isStandaloneDoor", () => {
+  it("matches only the exact synthetic name", () => {
+    expect(isStandaloneDoor({ name: STANDALONE_DOOR_NAME })).toBe(true);
+    expect(isStandaloneDoor({ name: "Standalone" })).toBe(false);
+    expect(isStandaloneDoor({ name: "standalone equipment" })).toBe(false);
+    expect(isStandaloneDoor({ name: "101 Main Entry" })).toBe(false);
+  });
+});
 
 describe("compareDoorNames", () => {
   it("sorts pure numeric order within a letter prefix", () => {
@@ -98,20 +143,137 @@ describe("compareCanonicalItems", () => {
   });
 });
 
-describe("groupNetworkRowsByFloor", () => {
-  const row = (
-    door: string,
-    floor: string | null,
-    standalone = false,
-  ) => ({ door, floor, standalone });
+describe("buildNetworkRows", () => {
+  const doors = [
+    { id: "d1", name: "D1" },
+    { id: "d2", name: "Ramp Door" },
+    { id: "d3", name: "E316" },
+    { id: "gw1", name: STANDALONE_DOOR_NAME },
+    { id: "gw2", name: STANDALONE_DOOR_NAME },
+  ];
 
+  const item = (over: Partial<JobDoorItem> & { id: string; door_id: string }) =>
+    ({
+      name: "5500 Exciter",
+      note: null,
+      ip_address: null,
+      mac_address: null,
+      photo_storage_path: null,
+      photo_uploaded_at: null,
+      completed_at: null,
+      position: 0,
+      created_at: "",
+      ...over,
+    }) as JobDoorItem;
+
+  it("keeps standalone gear below every door, whatever it is named", () => {
+    const rows = buildNetworkRows(doors, [
+      item({ id: "1", door_id: "d2", mac_address: "000CCC617A40" }),
+      item({
+        id: "2",
+        door_id: "gw1",
+        name: "GW-3000 Gateway",
+        mac_address: "000CCC88A24E",
+      }),
+      item({ id: "3", door_id: "d3", mac_address: "000CCC61793A" }),
+      item({
+        id: "4",
+        door_id: "gw2",
+        name: "GW-3000 Gateway",
+        mac_address: "000CCC88A254",
+      }),
+      item({ id: "5", door_id: "d1", mac_address: "000CCC6179F5" }),
+    ]);
+
+    expect(rows.map((r) => r.label)).toEqual([
+      "D1",
+      "E316",
+      "Ramp Door",
+      "GW-3000 Gateway",
+      "GW-3000 Gateway",
+    ]);
+    expect(rows.map((r) => r.isStandalone)).toEqual([
+      false,
+      false,
+      false,
+      true,
+      true,
+    ]);
+  });
+
+  it("labels standalone gear by its note, and skips unaddressed items", () => {
+    const rows = buildNetworkRows(doors, [
+      item({
+        id: "1",
+        door_id: "gw1",
+        name: "GW-3000 Gateway",
+        note: "Roof",
+        ip_address: "10.1.10.4",
+      }),
+      item({ id: "2", door_id: "d1" }),
+      item({ id: "3", door_id: "d1", ip_address: "10.1.10.9" }),
+    ]);
+
+    expect(rows.map((r) => r.label)).toEqual([
+      "D1",
+      "GW-3000 Gateway — Roof",
+    ]);
+  });
+
+  it("falls back to a placeholder when the door is missing", () => {
+    const rows = buildNetworkRows(doors, [
+      item({ id: "1", door_id: "gone", mac_address: "000CCC6179F5" }),
+    ]);
+    expect(rows[0].label).toBe("Unnamed door");
+    expect(rows[0].isStandalone).toBe(false);
+  });
+});
+
+const netRow = (over: Partial<NetworkRow>): NetworkRow => ({
+  id: "x",
+  label: "D1",
+  item: "5500 Exciter",
+  ip: null,
+  mac: null,
+  floor: null,
+  isStandalone: false,
+  ...over,
+});
+
+describe("shouldShowDeviceColumn", () => {
+  const row = netRow;
+
+  it("stays off when every door has one networked device", () => {
+    expect(
+      shouldShowDeviceColumn([row({ label: "D1" }), row({ label: "D2" })]),
+    ).toBe(false);
+  });
+
+  it("turns on when a door hosts several networked devices", () => {
+    expect(
+      shouldShowDeviceColumn([row({ label: "D1" }), row({ label: "D1" })]),
+    ).toBe(true);
+  });
+
+  it("ignores repeated standalone gear, which names itself", () => {
+    expect(
+      shouldShowDeviceColumn([
+        row({ label: "D1" }),
+        row({ label: "GW-3000 Gateway", isStandalone: true }),
+        row({ label: "GW-3000 Gateway", isStandalone: true }),
+      ]),
+    ).toBe(false);
+  });
+});
+
+describe("groupNetworkRowsByFloor", () => {
   it("orders named floors naturally, Unassigned next, Standalone last", () => {
     const groups = groupNetworkRowsByFloor([
-      row("GW-3000 Gateway", null, true),
-      row("D1", "10"),
-      row("D2", null),
-      row("D3", "2"),
-      row("D4", "B"),
+      netRow({ id: "g", label: "GW-3000 Gateway", isStandalone: true }),
+      netRow({ id: "1", label: "D1", floor: "10" }),
+      netRow({ id: "2", label: "D2", floor: null }),
+      netRow({ id: "3", label: "D3", floor: "2" }),
+      netRow({ id: "4", label: "D4", floor: "B" }),
     ]);
     expect(groups.map((g) => g.label)).toEqual([
       "2",
@@ -122,23 +284,34 @@ describe("groupNetworkRowsByFloor", () => {
     ]);
   });
 
-  it("sorts rows inside each floor by door name", () => {
+  it("sorts rows inside each floor by door name, standalone gear last", () => {
     const groups = groupNetworkRowsByFloor([
-      row("D10", "1"),
-      row("D2", "1"),
-      row("St5", "1"),
+      netRow({ id: "1", label: "D10", floor: "1" }),
+      netRow({ id: "g", label: "Gateway", floor: "1", isStandalone: true }),
+      netRow({ id: "2", label: "D2", floor: "1" }),
+      netRow({ id: "3", label: "St5", floor: "1" }),
     ]);
-    expect(groups[0].rows.map((r) => r.door)).toEqual(["D2", "D10", "St5"]);
+    expect(groups[0].rows.map((r) => r.label)).toEqual([
+      "D2",
+      "D10",
+      "St5",
+      "Gateway",
+    ]);
   });
 
   it("buckets whitespace-only floors as Unassigned", () => {
-    const groups = groupNetworkRowsByFloor([row("D1", "  ")]);
+    const groups = groupNetworkRowsByFloor([
+      netRow({ id: "1", label: "D1", floor: "  " }),
+    ]);
     expect(groups).toHaveLength(1);
     expect(groups[0].label).toBe("Unassigned");
   });
 
-  it("ignores a standalone row's floor value", () => {
-    const groups = groupNetworkRowsByFloor([row("Gateway", "3", true)]);
-    expect(groups[0].label).toBe("Standalone");
+  it("groups floored standalone buckets under their floor", () => {
+    const groups = groupNetworkRowsByFloor([
+      netRow({ id: "g", label: "Gateway", floor: "3", isStandalone: true }),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].label).toBe("3");
   });
 });

@@ -41,7 +41,7 @@ const EXTRACTION_PROMPT = [
   "Each SOLID MAGENTA/PINK filled circle (5500 Exciter) represents exactly ONE door. The total number of doors equals the total number of 5500 dots across all pages. Do not count by red-bordered labels — two labels near one dot is still one door, see DOOR NAMING below. If you see N solid magenta dots on a page, you must output N doors for that page.",
   "",
   "DO NOT CONFUSE WITH LOOKALIKES:",
-  "Some maps contain BLUE CROSSHAIR CIRCLES (a blue ring with a + or crosshair inside). These are GW-3000 / GW-3100 gateways or Wi-Fi access points, NOT 5500 Exciters. The 5500 is a SOLID FILLED magenta/pink circle with no crosshair. Never count a blue crosshair as a 5500, and never create a door for one. They belong in miscNotes only if they appear in the legend with a count.",
+  "Some maps contain BLUE CROSSHAIR CIRCLES (a blue ring with a + or crosshair inside). These are GW-3000 / GW-3100 gateways or Wi-Fi access points, NOT 5500 Exciters. The 5500 is a SOLID FILLED magenta/pink circle with no crosshair. Never count a blue crosshair as a 5500, and never create a door for one. If they appear in the legend with a count: GATEWAYS (GW-3000 / GW-3100) go in 'standaloneItems', Wi-Fi access points go in 'miscNotes'. See OTHER DEVICES below — do not put gateways in miscNotes.",
   "",
   "DEVICE-TO-DOOR ASSIGNMENT - FOLLOW THE CHAIN:",
   "Each door is a CHAIN of dots connected by a red (sometimes brown) wire line. The wire has a fixed install order:",
@@ -99,6 +99,8 @@ const EXTRACTION_PROMPT = [
   "BUCKET 1: 'standaloneItems' — gateways we install but that aren't labeled per door. For each of these legend rows with count > 0, add ONE entry to the top-level 'standaloneItems' array with {type, count}:",
   "  - GW-3000 Gateway (any 'PoE' / 'Switched' variant — treat each variant as its own entry)",
   "  - GW-3100 Gateway (any 'PoE' / 'Switched' variant — treat each variant as its own entry)",
+  "  - ANY other legend row whose device name contains the word 'Gateway'. Model numbers vary between sites; match on the word, not on a known list, and use the legend's own wording as the 'type'.",
+  "This bucket is easy to forget because gateways are excluded from the per-door counts everywhere else. If the legend has a gateway row with a count > 0, it MUST appear here. If there is genuinely no gateway row on any page, return an empty array — but do not skip a row that is present.",
   "Example: legend shows '8 GW-3100 Gateway PoE' and '1 GW-3000 Gateway' → standaloneItems = [{type:'GW-3100 Gateway', count:8}, {type:'GW-3000 Gateway', count:1}].",
   "Do NOT put these in miscNotes. Do NOT attach them to any door. The host will create a 'Standalone Equipment' synthetic door with one checkable item per unit so the tech can mark each one installed.",
   "",
@@ -107,7 +109,7 @@ const EXTRACTION_PROMPT = [
   "  EXCLUDE — do NOT add anywhere: RJ-45 Jumper Cables, Card Readers, HUGS Tag Charging Stations.",
   "",
   "HUGS SYMBOLS LEGEND - GROUND TRUTH COUNTS PER PAGE:",
-  "Each page usually has a 'HUGS SYMBOLS' legend box (often in the top-right corner of the page, on a Securitas Healthcare title block) that lists each device type with its exact count for that page. The legend may also list devices we do not track ('RJ-45 Jumper Cable', 'Card Reader', 'Keypad', 'HUGS Tag Charging Station', 'GW-3000 Gateway', 'Wi-Fi Access Point') — ignore those for the per-device tracked counts.",
+  "Each page usually has a 'HUGS SYMBOLS' legend box (often in the top-right corner of the page, on a Securitas Healthcare title block) that lists each device type with its exact count for that page. The legend may also list devices that are not tracked PER DOOR ('RJ-45 Jumper Cable', 'Card Reader', 'Keypad', 'HUGS Tag Charging Station', 'GW-3000 Gateway', 'GW-3100 Gateway', 'Wi-Fi Access Point') — leave those out of the per-door counts and out of pageVerification. That is about door assignment ONLY: gateway rows must still be reported in 'standaloneItems' with their legend counts, and Wi-Fi access points in 'miscNotes'.",
   "",
   "READING THE LEGEND — STRICTLY MATCH ROWS BY DEVICE NAME:",
   "Each row in the legend has [number | symbol icon | device name + description]. To get the legend count for a tracked device, find the row whose device-name text contains the device's identifier:",
@@ -292,7 +294,10 @@ Deno.serve(async (req: Request) => {
     } = await supabase.auth.getUser();
     if (!user) return json({ ok: false, error: "Not signed in." }, 401);
 
-    const { jobId } = (await req.json()) as { jobId?: string };
+    const { jobId, storagePath } = (await req.json()) as {
+      jobId?: string;
+      storagePath?: string;
+    };
     if (!jobId) return json({ ok: false, error: "Missing jobId." }, 400);
 
     const { data: job, error: jobError } = await supabase
@@ -306,13 +311,35 @@ Deno.serve(async (req: Request) => {
         error: jobError?.message ?? "Job not found.",
       });
     }
-    if (!job.site_map_path) {
+
+    // Detect from whichever PDF the caller picked — the primary or an extra
+    // floor upload (different floors often arrive as separate PDFs). Validate
+    // the path belongs to this job so the function can't be pointed at an
+    // unrelated file. No path given → fall back to the primary.
+    let pdfPath: string | null = job.site_map_path;
+    if (storagePath) {
+      let allowed = storagePath === job.site_map_path;
+      if (!allowed) {
+        const { data: extra } = await supabase
+          .from("job_site_maps")
+          .select("id")
+          .eq("job_id", jobId)
+          .eq("storage_path", storagePath)
+          .maybeSingle();
+        allowed = !!extra;
+      }
+      if (!allowed) {
+        return json({ ok: false, error: "That PDF isn't on this job." }, 400);
+      }
+      pdfPath = storagePath;
+    }
+    if (!pdfPath) {
       return json({ ok: false, error: "Upload a site-map PDF first." });
     }
 
     const { data: pdfBlob, error: dlError } = await supabase.storage
       .from("job-files")
-      .download(job.site_map_path);
+      .download(pdfPath);
     if (dlError || !pdfBlob) {
       return json({
         ok: false,

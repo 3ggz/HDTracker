@@ -14,6 +14,7 @@ import type {
 import type { JobPhoto, JobSiteMap } from "@/lib/job-photos";
 import { isAdminEmail } from "@/lib/admin";
 import { firstNameFromEmail } from "@/lib/email";
+import { fetchMapRotations } from "@/lib/map-rotation";
 
 // Auto-detect calls Claude vision with xhigh effort on multi-page PDFs;
 // allow up to 2 minutes so the server action doesn't time out at 10s/60s.
@@ -177,6 +178,13 @@ export default async function JobDetailPage({
           .order("created_at", { ascending: true }),
   ]);
 
+  // How each of this job's PDFs is turned. Keyed by storage path, so
+  // the primary map and the extras resolve through one lookup.
+  const mapRotations = await fetchMapRotations(supabase, [
+    (job as Job).site_map_path,
+    ...((extraSiteMaps ?? []) as JobSiteMap[]).map((m) => m.storage_path),
+  ].filter((p): p is string => !!p));
+
   const itemIds = (items ?? []).map((it) => it.id);
   const { data: itemPhotos } =
     itemIds.length === 0
@@ -272,6 +280,7 @@ export default async function JobDetailPage({
         initialItemPhotos={(itemPhotos ?? []) as JobDoorItemPhoto[]}
         initialPanelPhotos={(panelPhotos ?? []) as JobPanelPhoto[]}
         initialExtraSiteMaps={(extraSiteMaps ?? []) as JobSiteMap[]}
+        initialMapRotations={mapRotations}
         initialDerivedWorkers={derivedWorkers}
         initialMemberSuggestions={memberSuggestions}
         doorsLoadError={doorsError?.message ?? null}

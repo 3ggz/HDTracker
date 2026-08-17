@@ -126,7 +126,12 @@ export function JobPrintView({
           }
           .door-cols > li:nth-child(odd) { margin-right: 2%; }
         }
-        body { background: white; }
+        /* !important because the root layout puts dark:bg-neutral-950
+           on <body>, and a Tailwind variant class outranks a bare
+           element selector — so in dark mode this rule lost and the
+           report printed on a black slab wherever the sheet didn't
+           reach. */
+        html, body { background: white !important; }
       `}</style>
 
       <div className="print-toolbar sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-neutral-200 bg-neutral-50 px-4 py-3">

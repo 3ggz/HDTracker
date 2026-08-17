@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { PdfPanZoomViewer } from "./PdfPanZoomViewer";
 
 // Lightweight viewer modal so the "fullscreen" button stays inside
 // the app. The previous behaviour was an <a href={pdf_url}
@@ -9,10 +10,15 @@ import { useEffect } from "react";
 // from the site at best, or punted to whatever page they were on
 // before the app at worst.
 //
-// Renders as a fixed overlay with the same PDF <object> embed the
-// site map section uses, plus a big close button. Close on:
+// Renders as a fixed overlay with the same pdf.js pan-zoom canvas
+// the inline site-map preview uses, in multi-page mode. It used to be
+// an <object type="application/pdf"> embed, but WKWebView shows
+// embedded PDFs as a static non-interactive first-page preview — no
+// zoom, no pan, no page nav — which made this modal dead weight in
+// the iOS/Android shells. pdf.js behaves the same on web and in the
+// app. Close on:
 //   - tap of the X button
-//   - tap on the dark backdrop (outside the white card)
+//   - tap on the dark backdrop (outside the viewer)
 //   - Esc key (desktop)
 // No router navigation either way, so back button / back swipe
 // behave normally relative to the underlying job page.
@@ -20,10 +26,14 @@ export function PdfFullscreenModal({
   src,
   label,
   onClose,
+  savedRotation = null,
+  onRotationChange,
 }: {
   src: string;
   label: string;
   onClose: () => void;
+  savedRotation?: number | null;
+  onRotationChange?: (rotation: number) => void;
 }) {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -51,7 +61,14 @@ export function PdfFullscreenModal({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <header className="flex items-center gap-3 border-b border-white/10 bg-neutral-900/95 px-3 py-2 text-white">
+      {/* fixed inset-0 puts this above the page's own sticky header, so
+          the globals.css safe-area rule (header.sticky.top-0) doesn't
+          reach it. Without the inset padding the close button renders
+          under the status bar clock and can't be tapped. */}
+      <header
+        style={{ paddingTop: "calc(0.5rem + env(safe-area-inset-top))" }}
+        className="flex shrink-0 items-center gap-3 border-b border-white/10 bg-neutral-900/95 px-3 pb-2 text-white"
+      >
         <button
           type="button"
           onClick={onClose}
@@ -81,23 +98,17 @@ export function PdfFullscreenModal({
           Open externally
         </a>
       </header>
-      <div className="flex-1 overflow-hidden p-2" onClick={(e) => e.stopPropagation()}>
-        <object
-          data={src + "#view=FitH"}
-          type="application/pdf"
-          className="block h-full w-full rounded-lg bg-white"
-          aria-label={label}
-        >
-          <a
-            href={src}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex h-full w-full items-center justify-center bg-white p-6 text-center text-sm text-neutral-600"
-          >
-            Your browser can&apos;t render PDFs inline. Tap to open the
-            file directly.
-          </a>
-        </object>
+      <div
+        className="flex-1 overflow-hidden p-2"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <PdfPanZoomViewer
+          pdfUrl={src}
+          multiPage
+          className="h-full w-full"
+          savedRotation={savedRotation}
+          onRotationChange={onRotationChange}
+        />
       </div>
     </div>
   );

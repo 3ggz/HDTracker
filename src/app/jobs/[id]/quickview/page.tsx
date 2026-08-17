@@ -2,10 +2,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { LiveUpdater } from "@/components/LiveUpdater";
+import { PhotoThumbGallery } from "@/components/PhotoThumbGallery";
 import { publicJobFileUrl, type JobPhoto } from "@/lib/job-photos";
 import {
   compareCanonicalItems,
   compareDoorNames,
+  splitStandaloneDoors,
   type Job,
   type JobDoor,
   type JobDoorItem,
@@ -81,12 +83,12 @@ export default async function JobQuickViewPage({
     );
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-  const STANDALONE_DOOR_NAME = "Standalone Equipment";
   const allDoors = (doors ?? []) as JobDoor[];
-  const regularDoors = allDoors.filter((d) => d.name !== STANDALONE_DOOR_NAME);
-  const standaloneDoor = allDoors.find(
-    (d) => d.name === STANDALONE_DOOR_NAME,
-  );
+  // There's one standalone bucket per floor now, so collect them all —
+  // a find() here would silently drop every gateway not in the first.
+  const { realDoors: regularDoors, standaloneDoors } =
+    splitStandaloneDoors(allDoors);
+  const standaloneDoorIds = new Set(standaloneDoors.map((d) => d.id));
   const sortedDoors = [...regularDoors].sort((a, b) =>
     compareDoorNames(a.name, b.name),
   );
@@ -306,13 +308,15 @@ export default async function JobQuickViewPage({
           </section>
         )}
 
-        {standaloneDoor && (
+        {standaloneDoors.length > 0 && (
           <section className="rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
             <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
               Standalone equipment
             </h2>
             {(() => {
-              const sItems = itemsByDoor.get(standaloneDoor.id) ?? [];
+              const sItems = allItems.filter((it) =>
+                standaloneDoorIds.has(it.door_id),
+              );
               const sDone = sItems.filter((it) => it.completed_at).length;
               if (sItems.length === 0) {
                 return (
@@ -355,26 +359,13 @@ export default async function JobQuickViewPage({
             <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
               Job photos
             </h2>
-            <div className="grid grid-cols-3 gap-2">
-              {jobPhotos.slice(0, 9).map((p) => (
-                <a
-                  key={p.id}
-                  href={publicJobFileUrl(supabaseUrl, p.storage_path)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="block aspect-square overflow-hidden rounded border border-neutral-200 dark:border-neutral-800"
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                  loading="lazy"
-                  decoding="async"
-                    src={publicJobFileUrl(supabaseUrl, p.storage_path)}
-                    alt=""
-                    className="h-full w-full object-cover"
-                  />
-                </a>
-              ))}
-            </div>
+            <PhotoThumbGallery
+              label="Job photo"
+              photos={jobPhotos.slice(0, 9).map((p) => ({
+                id: p.id,
+                src: publicJobFileUrl(supabaseUrl, p.storage_path),
+              }))}
+            />
           </section>
         )}
       </main>

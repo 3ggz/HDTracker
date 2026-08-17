@@ -1,14 +1,15 @@
 "use client";
 
 import { useEffect } from "react";
+import { PinchZoomImage } from "./PinchZoomImage";
 
 // Image counterpart to PdfFullscreenModal — same dismiss-on-backdrop,
 // Esc-to-close, no-router-navigation contract. Lives in the app so
 // iOS Safari's back button still goes "back to the job page" rather
 // than punting the user to whatever tab Safari last had open.
 //
-// The image is laid out with max-w/h so portraits and landscapes
-// both fit on screen without scrolling. Tapping the image itself
+// The photo renders through PinchZoomImage, so it pinch-zooms and
+// pans everywhere photos open in the app. Tapping the photo itself
 // doesn't dismiss — only the surrounding backdrop — so panning a
 // zoomed pinch-gesture won't accidentally close.
 export function PhotoFullscreenModal({
@@ -42,7 +43,14 @@ export function PhotoFullscreenModal({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <header className="flex items-center gap-3 border-b border-white/10 bg-neutral-900/95 px-3 py-2 text-white">
+      {/* fixed inset-0 puts this above the page's own sticky header, so
+          the globals.css safe-area rule (header.sticky.top-0) doesn't
+          reach it. Without the inset padding the close button renders
+          under the status bar clock and can't be tapped. */}
+      <header
+        style={{ paddingTop: "calc(0.5rem + env(safe-area-inset-top))" }}
+        className="flex shrink-0 items-center gap-3 border-b border-white/10 bg-neutral-900/95 px-3 pb-2 text-white"
+      >
         <button
           type="button"
           onClick={onClose}
@@ -66,22 +74,12 @@ export function PhotoFullscreenModal({
           <p className="flex-1 truncate text-sm font-medium">{label}</p>
         )}
       </header>
-      <div
-        className="flex flex-1 items-center justify-center overflow-auto p-2"
-        onClick={(e) => {
-          // Only the outer wrapper closes — clicking through to the
-          // backdrop (anywhere outside the <img>) lets the user
-          // dismiss without hitting the X. Clicks on the image itself
-          // stop here, see below.
-          if (e.target === e.currentTarget) onClose();
-        }}
-      >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
+      <div className="flex-1 overflow-hidden p-2">
+        <PinchZoomImage
           src={src}
           alt={label ?? ""}
-          onClick={(e) => e.stopPropagation()}
-          className="max-h-full max-w-full select-none object-contain"
+          className="h-full w-full"
+          onBackdropTap={onClose}
         />
       </div>
     </div>

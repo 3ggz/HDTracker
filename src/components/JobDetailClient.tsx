@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -22,10 +22,15 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import {
   compareCanonicalItems,
+  buildNetworkRows,
   compareDoorNames,
   groupNetworkRowsByFloor,
+  shouldShowDeviceColumn,
+  shouldShowFloorGroups,
+  type NetworkRow,
+  isStandaloneDoor,
   itemSupportsNetworkFields,
-  UNASSIGNED_FLOOR_LABEL,
+  STANDALONE_DOOR_NAME,
   type Job,
   type JobDoor,
   type JobDoorItem,
@@ -63,7 +68,28 @@ import {
 import { firstNameFromEmail } from "@/lib/email";
 import { useSoftDelete } from "@/lib/use-soft-delete";
 import { useAnchorRect } from "@/lib/use-anchor-rect";
+import { mergeConcurrentText } from "@/lib/merge-text";
+import { requestPrint } from "@/lib/print";
+import {
+  normalizeRotation,
+  saveMapRotation,
+  type MapRotations,
+} from "@/lib/map-rotation";
+import { collectFloors } from "@/lib/floors";
+import { formatMac, isCompleteMac } from "@/lib/mac";
+import {
+  MAX_PHOTO_BYTES,
+  normalizeImageForUpload,
+  VISION_MAX_DIM,
+} from "@/lib/image-normalize";
+import { Combobox } from "./Combobox";
+import { FloorPicker } from "./FloorPicker";
 import { PdfFullscreenModal } from "./PdfFullscreenModal";
+import { PdfPanZoomViewer } from "./PdfPanZoomViewer";
+import {
+  PULL_REFRESH_EVENT,
+  type PullRefreshDetail,
+} from "./PullToRefresh";
 import { PhotoFullscreenModal } from "./PhotoFullscreenModal";
 import { UndoBanner } from "./UndoBanner";
 import {
@@ -72,15 +98,10 @@ import {
   restoreDoorItemAction,
   deleteDoorItemAction,
   restoreDoorAction,
+  scanMacAction,
   type RestoreDoorInput,
 } from "@/app/jobs/[id]/actions";
 import { AutoDetectModal } from "./AutoDetectModal";
-
-// Doors with this exact name are the synthetic bucket created by the
-// auto-detect import for unlabeled standalone equipment (gateways,
-// etc). They aren't real doors, so they're excluded from door counts
-// and rendered as their own section below the floor groups.
-const STANDALONE_DOOR_NAME = "Standalone Equipment";
 
 // A door can be wired up with more than one 5200 / 3220 exciter, so
 // the quick-add chip for those stays available even after one is
@@ -138,6 +159,7 @@ export function JobDetailClient({
   photosLoadError,
   canDeleteJob,
   initialExtraSiteMaps,
+  initialMapRotations,
   initialDerivedWorkers,
   initialMemberSuggestions,
 }: {
@@ -154,6 +176,9 @@ export function JobDetailClient({
   photosLoadError: string | null;
   canDeleteJob: boolean;
   initialExtraSiteMaps: JobSiteMap[];
+  // How each site map PDF is turned, keyed by storage path. Absent
+  // means nobody has chosen, so the viewer auto-rotates.
+  initialMapRotations: MapRotations;
   // Distinct user emails pulled from job_activity at SSR. Live updates
   // here would require a separate channel; for now the list rehydrates
   // on navigation, which is fine — the manual list IS realtime via
@@ -175,7 +200,33 @@ export function JobDetailClient({
   const [itemPhotos, setItemPhotos] = useState(initialItemPhotos);
   const [panelPhotos, setPanelPhotos] = useState(initialPanelPhotos);
   const [extraSiteMaps, setExtraSiteMaps] = useState(initialExtraSiteMaps);
+  const [mapRotations, setMapRotations] = useState(initialMapRotations);
+  // Optimistic: the sheet turns immediately and the write follows. A
+  // failed save is worth surfacing but not reverting — the rotation on
+  // screen is the one the user asked for.
+  const rotateMap = useCallback(
+    (storagePath: string, rotation: number): Promise<string | null> => {
+      const value = normalizeRotation(rotation);
+      setMapRotations((prev) => ({ ...prev, [storagePath]: value }));
+      return (async () => {
+        const supabase = createClient();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        const result = await saveMapRotation(
+          supabase,
+          storagePath,
+          value,
+          user?.email,
+        );
+        return result.ok ? null : result.error;
+      })();
+    },
+    [],
+  );
   const [autoDetectOpen, setAutoDetectOpen] = useState(false);
+  // Which PDF the user launched auto-detect from (primary or an extra floor).
+  const [autoDetectPath, setAutoDetectPath] = useState<string | null>(null);
   const [newDoorId, setNewDoorId] = useState<string | null>(null);
 
   // Door-creation template registry. HUGS is always pinned at the
@@ -387,8 +438,107 @@ export function JobDetailClient({
     });
   };
 
+  const refetchingRef = useRef(false);
+  const lastRefetchRef = useRef(0);
+
+  // Realtime covers changes while the socket is up, but a WebView
+  // that iOS suspended comes back with its missed events gone for
+  // good — leaving this editor silently stale until navigation. On
+  // channel reconnect, on app-visible, and on pull-to-refresh we
+  // re-pull the collaboration-critical rows wholesale; each setter
+  // mirrors what the corresponding realtime event would have done.
+  const refetchLive = useCallback(
+    async (force = false) => {
+      const now = Date.now();
+      if (
+        refetchingRef.current ||
+        (!force && now - lastRefetchRef.current < 4000)
+      ) {
+        return;
+      }
+      refetchingRef.current = true;
+      lastRefetchRef.current = now;
+      try {
+        const supabase = createClient();
+        const [jobRes, doorsRes, photosRes, panelsRes] = await Promise.all([
+          supabase
+            .from("jobs")
+            .select("*")
+            .eq("id", initialJob.id)
+            .maybeSingle(),
+          supabase
+            .from("job_doors")
+            .select("*")
+            .eq("job_id", initialJob.id)
+            .order("floor", { ascending: true, nullsFirst: false })
+            .order("position", { ascending: true })
+            .order("created_at", { ascending: true }),
+          supabase
+            .from("job_photos")
+            .select("*")
+            .eq("job_id", initialJob.id)
+            .order("created_at", { ascending: false }),
+          supabase
+            .from("job_panels")
+            .select("*")
+            .eq("job_id", initialJob.id)
+            .order("position", { ascending: true })
+            .order("created_at", { ascending: true }),
+        ]);
+        if (jobRes.data) setJob(jobRes.data as Job);
+        if (photosRes.data) setPhotos(photosRes.data as JobPhoto[]);
+        if (panelsRes.data) setPanels(panelsRes.data as JobPanel[]);
+        if (doorsRes.data) {
+          const freshDoors = doorsRes.data as JobDoor[];
+          doorIdsRef.current = new Set(freshDoors.map((d) => d.id));
+          setDoors(freshDoors);
+          const doorIds = freshDoors.map((d) => d.id);
+          const panelIds = ((panelsRes.data ?? []) as JobPanel[]).map(
+            (p) => p.id,
+          );
+          const [itemsRes, panelDoorsRes] = await Promise.all([
+            doorIds.length === 0
+              ? Promise.resolve({ data: [] as JobDoorItem[] })
+              : supabase
+                  .from("job_door_items")
+                  .select("*")
+                  .in("door_id", doorIds)
+                  .order("position", { ascending: true })
+                  .order("created_at", { ascending: true }),
+            panelIds.length === 0
+              ? Promise.resolve({ data: [] as JobPanelDoor[] })
+              : supabase
+                  .from("job_panel_doors")
+                  .select("*")
+                  .in("panel_id", panelIds),
+          ]);
+          if (itemsRes.data) setItems(itemsRes.data as JobDoorItem[]);
+          if (panelDoorsRes.data) {
+            setPanelDoors(panelDoorsRes.data as JobPanelDoor[]);
+          }
+        }
+      } finally {
+        refetchingRef.current = false;
+      }
+    },
+    [initialJob.id],
+  );
+
   useEffect(() => {
     const supabase = createClient();
+    let everSubscribed = false;
+
+    function onVisible() {
+      if (document.visibilityState === "visible") void refetchLive();
+    }
+    document.addEventListener("visibilitychange", onVisible);
+
+    function onPullRefresh(e: Event) {
+      const detail = (e as CustomEvent<PullRefreshDetail>).detail;
+      detail?.waitUntil(refetchLive(true));
+    }
+    window.addEventListener(PULL_REFRESH_EVENT, onPullRefresh);
+
     const channel = supabase
       .channel(`job-${initialJob.id}-live`)
       .on(
@@ -484,12 +634,19 @@ export function JobDetailClient({
           }
         },
       )
-      .subscribe();
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          if (everSubscribed) void refetchLive(true);
+          everSubscribed = true;
+        }
+      });
 
     return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener(PULL_REFRESH_EVENT, onPullRefresh);
       void supabase.removeChannel(channel);
     };
-  }, [initialJob.id]);
+  }, [initialJob.id, refetchLive]);
 
   const [headerDraft, setHeaderDraft] = useState({
     name: initialJob.name,
@@ -546,50 +703,108 @@ export function JobDetailClient({
     (headerDraft.notes || null) !== job.notes;
 
   async function saveHeader() {
-    const trimmedName = headerDraft.name.trim();
-    const trimmedNumber = headerDraft.number.trim();
-    if (!trimmedName) {
+    const normalized = {
+      name: headerDraft.name.trim(),
+      number: headerDraft.number.trim() || null,
+      address: headerDraft.address.trim() || null,
+      notes: headerDraft.notes.trim() || null,
+    };
+    // Only fields this editor actually changed go in the patch, so two
+    // people saving different fields can never overwrite each other.
+    const dirtyAgainst = (base: Job) => {
+      const patch: Partial<Pick<Job, "name" | "number" | "address" | "notes">> =
+        {};
+      if (normalized.name !== base.name) patch.name = normalized.name;
+      if (normalized.number !== base.number) patch.number = normalized.number;
+      if (normalized.address !== base.address) {
+        patch.address = normalized.address;
+      }
+      if (normalized.notes !== base.notes) patch.notes = normalized.notes;
+      return patch;
+    };
+    let base = job;
+    let patch = dirtyAgainst(base);
+    if (Object.keys(patch).length === 0) return;
+    if ("name" in patch && !normalized.name) {
       setHeaderError("Job needs a name.");
       return;
     }
-    if (!trimmedNumber) {
+    if ("number" in patch && !normalized.number) {
       setHeaderError("Job number is required.");
       return;
     }
     setHeaderSaving(true);
     setHeaderError(null);
-    const patch = {
-      name: trimmedName,
-      number: trimmedNumber,
-      address: headerDraft.address.trim() || null,
-      notes: headerDraft.notes.trim() || null,
-    };
-    const { data, error } = await withTrack(saveTracker, async () => {
+    let saved: Job | null = null;
+    let failure: string | null = null;
+    await withTrack(saveTracker, async () => {
       const supabase = createClient();
-      return supabase
-        .from("jobs")
-        .update(patch)
-        .eq("id", job.id)
-        .select("*")
-        .maybeSingle();
+      // Optimistic lock on updated_at: if anything touched the row
+      // since our snapshot (another editor, or a door/item trigger
+      // bumping the parent), the guarded update matches zero rows —
+      // refetch, re-diff against the fresh row, merge notes if both
+      // sides changed them, and retry. The final attempt goes
+      // unguarded so a busy job can't starve the save; by then the
+      // patch holds only this editor's own fields anyway.
+      for (let attempt = 0; attempt < 4; attempt++) {
+        let query = supabase.from("jobs").update(patch).eq("id", base.id);
+        if (attempt < 3) query = query.eq("updated_at", base.updated_at);
+        const { data, error } = await query.select("*").maybeSingle();
+        if (error) {
+          failure = error.message;
+          return;
+        }
+        if (data) {
+          saved = data as Job;
+          return;
+        }
+        const { data: fresh, error: freshError } = await supabase
+          .from("jobs")
+          .select("*")
+          .eq("id", base.id)
+          .maybeSingle();
+        if (freshError) {
+          failure = freshError.message;
+          return;
+        }
+        if (!fresh) {
+          failure =
+            "Couldn't save — job may have been deleted from another tab.";
+          return;
+        }
+        const freshJob = fresh as Job;
+        if (patch.notes !== undefined && freshJob.notes !== base.notes) {
+          normalized.notes =
+            mergeConcurrentText(
+              base.notes ?? "",
+              normalized.notes ?? "",
+              freshJob.notes ?? "",
+            ) || null;
+        }
+        base = freshJob;
+        patch = dirtyAgainst(base);
+        if (Object.keys(patch).length === 0) {
+          saved = freshJob;
+          return;
+        }
+      }
     });
     setHeaderSaving(false);
-    if (error) {
-      setHeaderError(error.message);
+    if (failure) {
+      setHeaderError(failure);
       return;
     }
-    if (!data) {
-      setHeaderError(
-        "Couldn't save — job may have been deleted from another tab.",
-      );
+    if (!saved) {
+      setHeaderError("Couldn't save — please try again in a moment.");
       return;
     }
-    setJob(data as Job);
+    const savedJob: Job = saved;
+    setJob(savedJob);
     setHeaderDraft({
-      name: data.name,
-      number: data.number ?? "",
-      address: data.address ?? "",
-      notes: data.notes ?? "",
+      name: savedJob.name,
+      number: savedJob.number ?? "",
+      address: savedJob.address ?? "",
+      notes: savedJob.notes ?? "",
     });
     router.refresh();
   }
@@ -706,6 +921,11 @@ export function JobDetailClient({
     }
   }
 
+  // Every floor this job already uses, for the floor pickers. Derived
+  // from the doors themselves — standalone buckets included, since a
+  // floor that so far only holds gateways is still a real floor.
+  const floorOptions = useMemo(() => collectFloors(doors), [doors]);
+
   // Which floor (if any) the user is currently renaming. null when
   // not editing. We only allow renaming real floor values, not the
   // synthetic "Unassigned" bucket for null-floor doors.
@@ -735,6 +955,100 @@ export function JobDetailClient({
       ),
     );
     setRenamingFloor(null);
+  }
+
+  // Find the gear bucket for a floor, creating it the first time
+  // something lands there. Buckets are made on demand rather than one
+  // per floor up front, so a job only carries the ones it uses.
+  async function ensureGearBucket(
+    floor: string | null,
+  ): Promise<JobDoor | null> {
+    const existing = doors.find(
+      (d) => isStandaloneDoor(d) && (d.floor ?? null) === floor,
+    );
+    if (existing) return existing;
+
+    const { data, error } = await withTrack(saveTracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("job_doors")
+        .insert({
+          job_id: job.id,
+          name: STANDALONE_DOOR_NAME,
+          floor,
+          notes: null,
+          position: doors.length,
+        })
+        .select("*")
+        .single();
+    });
+    if (error || !data) {
+      alert(`Couldn't add the gateways section: ${error?.message ?? "unknown"}`);
+      return null;
+    }
+    const bucket = data as JobDoor;
+    // Must go through addDoorDeduped, not setDoors: it also registers
+    // the id in doorIdsRef, which is what the Realtime subscription
+    // checks before accepting item events. A bucket added straight to
+    // state would silently ignore every gateway added to it from
+    // another phone until the next full refetch.
+    addDoorDeduped(bucket);
+    return bucket;
+  }
+
+  // Two-tap delete for a whole gear section, matching how doors and
+  // items confirm. job_door_items cascades off job_doors, so removing
+  // the bucket takes its gear with it.
+  const [confirmingGearBucketId, setConfirmingGearBucketId] = useState<
+    string | null
+  >(null);
+
+  function requestDeleteGearBucket(bucket: JobDoor) {
+    if (confirmingGearBucketId !== bucket.id) {
+      setConfirmingGearBucketId(bucket.id);
+      return;
+    }
+    setConfirmingGearBucketId(null);
+    void (async () => {
+      const { error } = await withTrack(saveTracker, async () => {
+        const supabase = createClient();
+        return supabase.from("job_doors").delete().eq("id", bucket.id);
+      });
+      if (error) {
+        alert(`Couldn't delete the section: ${error.message}`);
+        return;
+      }
+      doorIdsRef.current.delete(bucket.id);
+      setDoors((current) => current.filter((d) => d.id !== bucket.id));
+      setItems((current) => current.filter((it) => it.door_id !== bucket.id));
+    })();
+  }
+
+  // Move a whole gear section onto a floor by re-parenting its items
+  // onto that floor's bucket. Not optimistic: a half-applied move
+  // would scatter one section across two floors, which is worse than
+  // a moment's wait.
+  async function moveGearToFloor(itemIds: string[], floor: string | null) {
+    if (itemIds.length === 0) return;
+    const target = await ensureGearBucket(floor);
+    if (!target) return;
+    const { error } = await withTrack(saveTracker, async () => {
+      const supabase = createClient();
+      return supabase
+        .from("job_door_items")
+        .update({ door_id: target.id })
+        .in("id", itemIds);
+    });
+    if (error) {
+      alert(`Couldn't move the equipment: ${error.message}`);
+      return;
+    }
+    const moving = new Set(itemIds);
+    setItems((current) =>
+      current.map((it) =>
+        moving.has(it.id) ? { ...it, door_id: target.id } : it,
+      ),
+    );
   }
 
   async function persistDoorOrder(reordered: JobDoor[]) {
@@ -919,15 +1233,76 @@ export function JobDetailClient({
           ...regularDoorsRaw.filter((d) => !d.tested_at),
           ...regularDoorsRaw.filter((d) => d.tested_at),
         ];
-        const standaloneDoor = doors.find(
-          (d) => d.name === STANDALONE_DOOR_NAME,
-        );
+        // One standalone bucket per floor. The floor lives on the
+        // bucket door, so floor renames, grouping and ordering all keep
+        // working with no per-item floor field.
+        const standaloneDoors = doors.filter(isStandaloneDoor);
+        const standaloneByFloor = new Map<string | null, JobDoor>();
+        for (const d of standaloneDoors) {
+          standaloneByFloor.set(d.floor ?? null, d);
+        }
+        const bucketItems = (d: JobDoor | undefined | null) =>
+          d ? itemsByDoor.get(d.id) ?? [] : [];
+
+        const floorsWithDoors = regularDoors.map((d) => d.floor ?? null);
+        // A floor holding only gateways still deserves its own group,
+        // but an emptied bucket must not resurrect one.
+        // An existing bucket keeps its floor group even when empty —
+        // otherwise the section you just created to add gateways to
+        // would vanish before you could add anything.
+        const floorsWithGear = standaloneDoors
+          .filter((d) => d.floor !== null)
+          .map((d) => d.floor as string);
         const distinctFloors = Array.from(
-          new Set(regularDoors.map((d) => d.floor ?? null)),
+          new Set<string | null>([...floorsWithDoors, ...floorsWithGear]),
         );
         const useFloorGroups =
           distinctFloors.length > 1 ||
           (distinctFloors.length === 1 && distinctFloors[0] !== null);
+
+        // No bucket yet on this floor: offer to start one rather than
+        // rendering nothing, which left no way to add gateways by hand
+        // on a job that never ran auto-detect.
+        const renderAddGearButton = (floor: string | null) => (
+          <button
+            type="button"
+            onClick={() => void ensureGearBucket(floor)}
+            className="flex h-9 w-full items-center justify-center rounded-lg border border-dashed border-neutral-300 text-xs font-medium text-neutral-600 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800"
+          >
+            + Add gateways
+          </button>
+        );
+
+        const renderGearSection = (
+          bucket: JobDoor | undefined | null,
+          title: string,
+          storageSuffix: string,
+        ) => {
+          if (!bucket) return null;
+          const gear = bucketItems(bucket);
+          const gearDone = gear.filter((it) => it.completed_at).length;
+          return (
+            <CollapsibleSection
+              title={`${title} — ${gear.length} ${gear.length === 1 ? "item" : "items"} · ${gearDone}/${gear.length}`}
+              storageKey={`hd:job:${initialJob.id}:standalone:${storageSuffix}`}
+            >
+              <MiscellaneousSection
+                door={bucket}
+                items={gear}
+                floorOptions={floorOptions}
+                onMoveSection={moveGearToFloor}
+                onDeleteSection={requestDeleteGearBucket}
+                confirmingDeleteSection={confirmingGearBucketId === bucket.id}
+                onItemsChange={(next) => {
+                  setItems((current) => [
+                    ...current.filter((it) => it.door_id !== bucket.id),
+                    ...next,
+                  ]);
+                }}
+              />
+            </CollapsibleSection>
+          );
+        };
 
         const headerControls = (
           <div className="flex items-center gap-1">
@@ -955,6 +1330,7 @@ export function JobDetailClient({
               jobId={job.id}
               existingCount={doors.length}
               template={selectedTemplate}
+              floorOptions={floorOptions}
               onAdded={(door, newItems, options) => {
                 addDoorDeduped(door);
                 addItemsDeduped(newItems);
@@ -969,6 +1345,7 @@ export function JobDetailClient({
             key={door.id}
             job={job}
             door={door}
+            floorOptions={floorOptions}
             items={itemsByDoor.get(door.id) ?? []}
             supabaseUrl={supabaseUrl}
             jobPhotos={photos.filter((p) => p.door_id === door.id)}
@@ -1078,30 +1455,19 @@ export function JobDetailClient({
           </p>
         );
 
-        const standaloneItems = standaloneDoor
-          ? itemsByDoor.get(standaloneDoor.id) ?? []
-          : [];
-        const standaloneDone = standaloneItems.filter(
-          (it) => it.completed_at,
-        ).length;
-
-        const standaloneSection = standaloneDoor ? (
-          <CollapsibleSection
-            title={`Miscellaneous — ${standaloneItems.length} ${standaloneItems.length === 1 ? "item" : "items"}${standaloneItems.length ? ` · ${standaloneDone}/${standaloneItems.length}` : ""}`}
-            storageKey={`hd:job:${initialJob.id}:standalone`}
-          >
-            <MiscellaneousSection
-              door={standaloneDoor}
-              items={standaloneItems}
-              onItemsChange={(next) => {
-                setItems((current) => [
-                  ...current.filter((it) => it.door_id !== standaloneDoor.id),
-                  ...next,
-                ]);
-              }}
-            />
-          </CollapsibleSection>
-        ) : null;
+        // Gear nobody has placed yet keeps its own section at the
+        // bottom rather than being hidden inside an arbitrary floor.
+        // When there's no bucket at all, the button is the entry point
+        // for adding gateways by hand.
+        const standaloneSection = standaloneByFloor.get(null) ? (
+          renderGearSection(
+            standaloneByFloor.get(null),
+            "Miscellaneous",
+            "_unassigned",
+          )
+        ) : (
+          <div className="px-1">{renderAddGearButton(null)}</div>
+        );
 
         if (!useFloorGroups) {
           return (
@@ -1157,17 +1523,28 @@ export function JobDetailClient({
               const floorDoors = regularDoors.filter(
                 (d) => (d.floor ?? null) === floor,
               );
-              const total = floorDoors.reduce(
-                (sum, d) => sum + (itemsByDoor.get(d.id)?.length ?? 0),
-                0,
-              );
-              const done = floorDoors.reduce(
-                (sum, d) =>
-                  sum +
-                  (itemsByDoor.get(d.id)?.filter((it) => it.completed_at)
-                    .length ?? 0),
-                0,
-              );
+              // Gateways shown inside this floor count toward its
+              // progress too, otherwise a gateways-only floor reports
+              // nothing and a mixed floor under-reports. The null-floor
+              // bucket renders in Miscellaneous at the bottom, so it
+              // stays out of the Unassigned group's tally.
+              const floorGear =
+                floor === null
+                  ? []
+                  : bucketItems(standaloneByFloor.get(floor));
+              const total =
+                floorDoors.reduce(
+                  (sum, d) => sum + (itemsByDoor.get(d.id)?.length ?? 0),
+                  0,
+                ) + floorGear.length;
+              const done =
+                floorDoors.reduce(
+                  (sum, d) =>
+                    sum +
+                    (itemsByDoor.get(d.id)?.filter((it) => it.completed_at)
+                      .length ?? 0),
+                  0,
+                ) + floorGear.filter((it) => it.completed_at).length;
               const canRename = floor !== null;
               const isRenamingThis =
                 canRename && renamingFloor === floor;
@@ -1181,8 +1558,14 @@ export function JobDetailClient({
                     />
                   )}
                   <CollapsibleSection
-                    title={`${floor ?? "Unassigned"} — ${floorDoors.length} ${
-                      floorDoors.length === 1 ? "door" : "doors"
+                    title={`${floor ?? "Unassigned"} — ${
+                      floorDoors.length === 0 && floorGear.length > 0
+                        ? // A floor can hold only gateways, and
+                          // "0 doors" reads like an empty floor.
+                          `${floorGear.length} ${floorGear.length === 1 ? "gateway" : "gateways"}`
+                        : `${floorDoors.length} ${
+                            floorDoors.length === 1 ? "door" : "doors"
+                          }`
                     }${total ? ` · ${done}/${total}` : ""}`}
                     storageKey={`hd:job:${initialJob.id}:floor:${floor ?? "_unassigned"}`}
                     rightHeader={
@@ -1215,6 +1598,21 @@ export function JobDetailClient({
                         </ul>
                       </SortableContext>
                     </DndContext>
+                    {/* The null-floor bucket belongs to the
+                        Miscellaneous section at the bottom; rendering
+                        it here too would duplicate it inside the
+                        Unassigned group. */}
+                    {floor !== null && (
+                      <div className="mt-3">
+                        {standaloneByFloor.get(floor)
+                          ? renderGearSection(
+                              standaloneByFloor.get(floor),
+                              "Gateways",
+                              floor,
+                            )
+                          : renderAddGearButton(floor)}
+                      </div>
+                    )}
                   </CollapsibleSection>
                 </div>
               );
@@ -1335,8 +1733,13 @@ export function JobDetailClient({
           job={job}
           onJobUpdate={(j) => setJob(j)}
           supabaseUrl={supabaseUrl}
-          onOpenAutoDetect={() => setAutoDetectOpen(true)}
+          onOpenAutoDetect={(path) => {
+            setAutoDetectPath(path);
+            setAutoDetectOpen(true);
+          }}
           extras={extraSiteMaps}
+          mapRotations={mapRotations}
+          onRotate={rotateMap}
           onExtraAdded={(map) =>
             setExtraSiteMaps((cur) => [...cur, map])
           }
@@ -1353,6 +1756,7 @@ export function JobDetailClient({
 
       <AutoDetectModal
         jobId={job.id}
+        storagePath={autoDetectPath}
         open={autoDetectOpen}
         onClose={() => setAutoDetectOpen(false)}
         onImported={async () => {
@@ -1906,11 +2310,13 @@ function AddDoorMenu({
   jobId,
   existingCount,
   template,
+  floorOptions,
   onAdded,
 }: {
   jobId: string;
   existingCount: number;
   template: DoorTemplate;
+  floorOptions: readonly string[];
   onAdded: (
     door: JobDoor,
     items: JobDoorItem[],
@@ -1996,18 +2402,17 @@ function AddDoorMenu({
   // applies to every door added afterwards. Distinct id so the
   // browser stops grouping it with the AddDoorMenu in other doors.
   const floorInput = (
-    <input
-      type="text"
-      placeholder="Floor"
-      value={floorDraft}
-      onChange={(e) => setFloorDraft(e.target.value)}
-      id={`add-door-floor-${jobId}`}
-      name={`add-door-floor-${jobId}`}
-      autoComplete="off"
-      autoCorrect="off"
-      spellCheck={false}
-      className="h-9 w-16 rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-    />
+    <div className="w-24">
+      <Combobox
+        value={floorDraft}
+        onChange={setFloorDraft}
+        suggestions={floorOptions}
+        placeholder="Floor"
+        ariaLabel="Floor for new doors"
+        autoCapitalize="words"
+        className="h-9 w-full rounded-md border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+      />
+    </div>
   );
 
   if (bulkOpen) {
@@ -2017,6 +2422,7 @@ function AddDoorMenu({
         <input
           autoFocus
           type="text"
+          enterKeyHint="done"
           placeholder="Door 101, Door 102…"
           value={bulkText}
           onChange={(e) => setBulkText(e.target.value)}
@@ -2532,6 +2938,9 @@ function TemplateItemList({
 type DoorCardProps = {
   job: Job;
   door: JobDoor;
+  // Floors already in use on this job, so moving a door to an existing
+  // floor is a tap instead of retyping it exactly.
+  floorOptions: readonly string[];
   items: JobDoorItem[];
   supabaseUrl: string;
   jobPhotos: JobPhoto[];
@@ -2595,6 +3004,7 @@ function SortableDoorCard(props: DoorCardProps) {
 function DoorCard({
   job,
   door,
+  floorOptions,
   items,
   supabaseUrl,
   jobPhotos,
@@ -2657,10 +3067,8 @@ function DoorCard({
 
   const [nameDraft, setNameDraft] = useState(door.name);
   const [notesDraft, setNotesDraft] = useState(door.notes ?? "");
-  const [floorDraft, setFloorDraft] = useState(door.floor ?? "");
   const [syncedName, setSyncedName] = useState(door.name);
   const [syncedNotes, setSyncedNotes] = useState(door.notes ?? "");
-  const [syncedFloor, setSyncedFloor] = useState(door.floor ?? "");
 
   // Realtime-aware sync: only overwrite the draft if the user hasn't
   // started editing (draft still matches the last value we saw from
@@ -2673,11 +3081,6 @@ function DoorCard({
     if (notesDraft === syncedNotes) setNotesDraft(door.notes ?? "");
     setSyncedNotes(door.notes ?? "");
   }
-  if ((door.floor ?? "") !== syncedFloor) {
-    if (floorDraft === syncedFloor) setFloorDraft(door.floor ?? "");
-    setSyncedFloor(door.floor ?? "");
-  }
-
   const tracker = useContext(SaveTrackerContext);
 
   async function commitField(patch: Partial<JobDoor>) {
@@ -2982,33 +3385,20 @@ function DoorCard({
 
       {expanded && (
         <>
-          <label className="mt-2 flex items-center gap-2 pl-7">
+          <div className="mt-2 flex items-center gap-2 pl-7">
             <span className="text-[10px] font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
               Floor
             </span>
-            <input
-              className="h-8 flex-1 rounded border border-neutral-300 bg-white px-2 text-xs dark:border-neutral-700 dark:bg-neutral-900"
-              id={`door-floor-${door.id}`}
-              name={`door-floor-${door.id}`}
-              autoComplete="off"
-              autoCorrect="off"
-              spellCheck={false}
-              enterKeyHint="done"
-              placeholder="optional"
-              value={floorDraft}
-              onChange={(e) => setFloorDraft(e.target.value)}
-              onBlur={() => {
-                const next = floorDraft.trim() || null;
-                if (next !== door.floor) commitField({ floor: next });
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  e.currentTarget.blur();
-                }
-              }}
-            />
-          </label>
+            <div className="min-w-0 flex-1">
+              <FloorPicker
+                value={door.floor}
+                floors={floorOptions}
+                ariaLabel={`Floor for ${door.name}`}
+                onCommit={(floor) => commitField({ floor })}
+                className="h-8 w-full rounded border border-neutral-300 bg-white px-2 text-xs text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+              />
+            </div>
+          </div>
 
           <div className="mt-3 space-y-2">
             <h3 className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
@@ -3123,10 +3513,21 @@ function MiscellaneousSection({
   door,
   items,
   onItemsChange,
+  floorOptions,
+  onMoveSection,
+  onDeleteSection,
+  confirmingDeleteSection,
 }: {
   door: JobDoor;
   items: JobDoorItem[];
   onItemsChange: (items: JobDoorItem[]) => void;
+  // Floors this job already has. The whole section moves at once —
+  // everything in one section sits on one floor, so a per-unit floor
+  // would be several times the tapping for no gain.
+  floorOptions: string[];
+  onMoveSection: (itemIds: string[], floor: string | null) => Promise<void>;
+  onDeleteSection: (bucket: JobDoor) => void;
+  confirmingDeleteSection: boolean;
 }) {
   const tracker = useContext(SaveTrackerContext);
   const [adding, setAdding] = useState(false);
@@ -3134,18 +3535,20 @@ function MiscellaneousSection({
 
   // Items get grouped by name so a "Gateway × 4" pile shows as a
   // single labelled group rather than four loose check rows.
-  const groups = useMemo(() => {
-    const map = new Map<string, JobDoorItem[]>();
-    for (const it of items) {
-      const key = it.name;
-      const list = map.get(key) ?? [];
-      list.push(it);
-      map.set(key, list);
-    }
-    return Array.from(map.entries()).sort((a, b) =>
-      a[0].localeCompare(b[0], undefined, { numeric: true }),
-    );
-  }, [items]);
+  // Flat list ordered by model, then by insertion, so several of the
+  // same model stay together without a wrapper card around them. The
+  // card level used to exist and read as one nesting too many once
+  // the section itself was already called Gateways.
+  const sorted = useMemo(
+    () =>
+      [...items].sort(
+        (a, b) =>
+          a.name.localeCompare(b.name, undefined, { numeric: true }) ||
+          a.position - b.position ||
+          a.created_at.localeCompare(b.created_at),
+      ),
+    [items],
+  );
 
   async function toggleItem(item: JobDoorItem) {
     const nextCompletedAt = item.completed_at
@@ -3243,56 +3646,46 @@ function MiscellaneousSection({
 
   return (
     <div className="space-y-3">
-      {groups.length === 0 && !adding && (
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] text-neutral-500 dark:text-neutral-400">
+          Floor
+        </span>
+        <div className="min-w-0 flex-1">
+          <FloorPicker
+            value={door.floor}
+            floors={floorOptions}
+            ariaLabel="Floor for this equipment"
+            onCommit={(floor) =>
+              void onMoveSection(
+                items.map((it) => it.id),
+                floor,
+              )
+            }
+          />
+        </div>
+      </div>
+
+      {sorted.length === 0 && !adding && (
         <p className="rounded-lg border border-dashed border-neutral-300 px-4 py-4 text-center text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
-          No miscellaneous equipment yet.
+          Nothing here yet. Add the first one below.
         </p>
       )}
 
-      {groups.map(([name, groupItems]) => {
-        const done = groupItems.filter((it) => it.completed_at).length;
-        return (
-          <div
-            key={name}
-            className="rounded-xl border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900"
-          >
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold">{name}</h3>
-              <span
-                className={
-                  "rounded-full px-2 py-0.5 text-[10px] font-medium " +
-                  (done === groupItems.length
-                    ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400"
-                    : "bg-neutral-200 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400")
-                }
-              >
-                {done}/{groupItems.length}
-              </span>
-            </div>
-            <ul className="space-y-1.5">
-              {groupItems.map((it, idx) => (
-                <MiscItemRow
-                  key={it.id}
-                  item={it}
-                  category={name}
-                  index={idx}
-                  confirming={itemSoftDelete.confirmingId === it.id}
-                  onToggle={() => void toggleItem(it)}
-                  onRemove={() => requestRemoveItem(it.id)}
-                  onPatch={(patch) => void patchItem(it.id, patch)}
-                />
-              ))}
-            </ul>
-            <button
-              type="button"
-              onClick={() => addItem(name)}
-              className="mt-2 h-8 w-full rounded-md border border-dashed border-neutral-300 text-xs font-medium text-neutral-600 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800"
-            >
-              + Another {name}
-            </button>
-          </div>
-        );
-      })}
+      {sorted.length > 0 && (
+        <ul className="space-y-1.5">
+          {sorted.map((it) => (
+            <MiscItemRow
+              key={it.id}
+              item={it}
+              confirming={itemSoftDelete.confirmingId === it.id}
+              onToggle={() => void toggleItem(it)}
+              onRemove={() => requestRemoveItem(it.id)}
+              onPatch={(patch) => void patchItem(it.id, patch)}
+            />
+          ))}
+        </ul>
+      )}
+
 
       {itemSoftDelete.recentlyDeleted && (
         <UndoBanner
@@ -3312,7 +3705,7 @@ function MiscellaneousSection({
           <input
             autoFocus
             type="text"
-            placeholder="Category name (e.g. Gateways)"
+            placeholder="Model, e.g. GW-3100 Gateway"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             className="h-10 flex-1 rounded-lg border border-neutral-300 bg-white px-3 text-sm dark:border-neutral-700 dark:bg-neutral-900"
@@ -3341,52 +3734,69 @@ function MiscellaneousSection({
           onClick={() => setAdding(true)}
           className="h-10 w-full rounded-lg border border-dashed border-neutral-300 text-sm font-medium text-neutral-600 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800"
         >
-          + New category
+          + Add gateway
         </button>
       )}
+
+      <button
+        type="button"
+        onClick={() => onDeleteSection(door)}
+        className={
+          "h-9 w-full rounded-lg text-xs font-medium transition " +
+          (confirmingDeleteSection
+            ? "bg-red-600 text-white shadow-md"
+            : "border border-neutral-300 text-neutral-500 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800")
+        }
+      >
+        {confirmingDeleteSection
+          ? `Delete this section and its ${items.length} ${items.length === 1 ? "item" : "items"} — tap again`
+          : "Delete this section"}
+      </button>
     </div>
   );
 }
 
-// One unit row inside a Miscellaneous category. The per-unit label
-// lives in the item's note column (unused for misc rows) and falls
-// back to "#N"; tapping it opens an inline rename. Each row also
-// carries a MAC field so networked standalone gear (gateways) lands
-// in the IP/MAC exports alongside the 5500s.
+// One unit row in a gear section. Each row IS a unit, and its name is
+// the model ("GW-3100 Gateway"), edited inline. Units used to be
+// nested inside a per-model category card, which read as one level
+// too many once the section itself was already called Gateways. A
+// per-unit note from that layout still shows as a suffix so nothing
+// anyone typed is hidden. Each row carries a MAC so networked gear
+// lands in the IP/MAC exports alongside the 5500s.
 function MiscItemRow({
   item,
-  category,
-  index,
   confirming,
   onToggle,
   onRemove,
   onPatch,
 }: {
   item: JobDoorItem;
-  category: string;
-  index: number;
   confirming: boolean;
   onToggle: () => void;
   onRemove: () => void;
   onPatch: (
-    patch: Partial<Pick<JobDoorItem, "note" | "mac_address">>,
+    patch: Partial<Pick<JobDoorItem, "name" | "note" | "mac_address">>,
   ) => void;
 }) {
-  const fallbackLabel = `#${index + 1}`;
-  const label = item.note?.trim() || fallbackLabel;
+  const label = item.name;
   const [editingLabel, setEditingLabel] = useState(false);
-  const [labelDraft, setLabelDraft] = useState(item.note ?? "");
-  const [syncedLabel, setSyncedLabel] = useState(item.note ?? "");
-  if ((item.note ?? "") !== syncedLabel) {
-    if (labelDraft === syncedLabel) setLabelDraft(item.note ?? "");
-    setSyncedLabel(item.note ?? "");
+  const [labelDraft, setLabelDraft] = useState(item.name);
+  const [syncedLabel, setSyncedLabel] = useState(item.name);
+  if (item.name !== syncedLabel) {
+    if (labelDraft === syncedLabel) setLabelDraft(item.name);
+    setSyncedLabel(item.name);
   }
   const isDone = !!item.completed_at;
 
   function commitLabel() {
     setEditingLabel(false);
-    const next = labelDraft.trim() || null;
-    if (next !== (item.note ?? null)) onPatch({ note: next });
+    // name is NOT NULL, so an emptied field reverts instead of saving.
+    const next = labelDraft.trim();
+    if (!next) {
+      setLabelDraft(item.name);
+      return;
+    }
+    if (next !== item.name) onPatch({ name: next });
   }
 
   return (
@@ -3397,8 +3807,8 @@ function MiscItemRow({
           onClick={onToggle}
           aria-label={
             isDone
-              ? `Mark ${category} ${label} not done`
-              : `Mark ${category} ${label} done`
+              ? `Mark ${label} not done`
+              : `Mark ${label} done`
           }
           className={
             "flex h-5 w-5 flex-shrink-0 items-center justify-center rounded border " +
@@ -3434,11 +3844,11 @@ function MiscItemRow({
                 e.currentTarget.blur();
               }
               if (e.key === "Escape") {
-                setLabelDraft(item.note ?? "");
+                setLabelDraft(item.name);
                 setEditingLabel(false);
               }
             }}
-            placeholder={fallbackLabel}
+            placeholder="e.g. GW-3100 Gateway"
             id={`misc-label-${item.id}`}
             name={`misc-label-${item.id}`}
             autoComplete="off"
@@ -3451,7 +3861,7 @@ function MiscItemRow({
           <button
             type="button"
             onClick={() => setEditingLabel(true)}
-            aria-label={`Rename ${category} ${label}`}
+            aria-label={`Rename ${label}`}
             className={
               "min-w-0 flex-1 truncate text-left " +
               (isDone
@@ -3462,7 +3872,7 @@ function MiscItemRow({
             {label}
             {item.note?.trim() && (
               <span className="ml-1.5 text-[10px] text-neutral-400 dark:text-neutral-500">
-                {fallbackLabel}
+                {item.note.trim()}
               </span>
             )}
           </button>
@@ -3472,8 +3882,8 @@ function MiscItemRow({
           onClick={onRemove}
           aria-label={
             confirming
-              ? `Confirm remove ${category} ${label}`
-              : `Remove ${category} ${label}`
+              ? `Confirm remove ${label}`
+              : `Remove ${label}`
           }
           className={
             "flex items-center justify-center rounded transition " +
@@ -3638,8 +4048,15 @@ function DoorItemRow({
 
   async function saveNetworkField(
     column: "ip_address" | "mac_address",
-    next: string | null,
+    raw: string | null,
   ) {
+    // Store MACs the way the label prints them — unseparated — so a
+    // typed value, a scanned one, and the exports all agree. Typing
+    // the colons still works; they just don't survive the save.
+    const next =
+      column === "mac_address" && raw && isCompleteMac(raw)
+        ? formatMac(raw)
+        : raw;
     const { data, error } = await withTrack(tracker, async () => {
       const supabase = createClient();
       return supabase
@@ -3873,11 +4290,23 @@ function DoorItemRow({
           <NetworkField
             label="MAC"
             value={item.mac_address}
-            placeholder="AA:BB:…"
+            // The 5500's fixed prefix, so the field itself shows the
+            // tech what a correct value starts with.
+            placeholder="000CCC617…"
             itemId={item.id}
             onSave={(v) => void saveNetworkField("mac_address", v)}
           />
         </div>
+      )}
+
+      {itemSupportsNetworkFields(item.name) && (
+        <MacScanButton
+          storagePaths={[...photos]
+            .sort((a, b) => b.created_at.localeCompare(a.created_at))
+            .map((p) => p.storage_path)}
+          currentMac={item.mac_address}
+          onFound={(mac) => void saveNetworkField("mac_address", mac)}
+        />
       )}
 
       {hasNote && !noteEditing && (
@@ -4717,15 +5146,19 @@ function SiteMapBody({
   onExtraAdded,
   onExtraRemoved,
   onExtraRenamed,
+  mapRotations,
+  onRotate,
 }: {
   job: Job;
   onJobUpdate: (job: Job) => void;
   supabaseUrl: string;
-  onOpenAutoDetect: () => void;
+  onOpenAutoDetect: (storagePath: string) => void;
   extras: JobSiteMap[];
   onExtraAdded: (map: JobSiteMap) => void;
   onExtraRemoved: (id: string) => void;
   onExtraRenamed: (map: JobSiteMap) => void;
+  mapRotations: MapRotations;
+  onRotate: (storagePath: string, rotation: number) => Promise<string | null>;
 }) {
   const tracker = useContext(SaveTrackerContext);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -5080,25 +5513,17 @@ function SiteMapBody({
 
           {selected && (
             <>
-              <object
+              <PdfPanZoomViewer
                 key={selected.storagePath}
-                data={
-                  publicJobFileUrl(supabaseUrl, selected.storagePath) +
-                  "#view=FitH"
-                }
-                type="application/pdf"
+                pdfUrl={publicJobFileUrl(supabaseUrl, selected.storagePath)}
+                savedRotation={mapRotations[selected.storagePath] ?? null}
+                onRotationChange={(r) => {
+                  void onRotate(selected.storagePath, r).then((err) => {
+                    if (err) setError(`Couldn't save the rotation: ${err}`);
+                  });
+                }}
                 className="h-[65vh] w-full rounded-lg border border-neutral-200 bg-neutral-100 dark:border-neutral-800 dark:bg-neutral-950"
-                aria-label={`Site map: ${selected.label}`}
-              >
-                <a
-                  href={publicJobFileUrl(supabaseUrl, selected.storagePath)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex h-full w-full items-center justify-center p-6 text-center text-sm text-neutral-600 dark:text-neutral-400"
-                >
-                  Your browser can&apos;t render PDFs inline. Tap to open.
-                </a>
-              </object>
+              />
               <button
                 type="button"
                 onClick={() => setFullscreenSrc(selected.storagePath)}
@@ -5139,10 +5564,10 @@ function SiteMapBody({
                     : "Remove"}
                 </button>
               </div>
-              {selected.isPrimary && (
+              {selected && (
                 <button
                   type="button"
-                  onClick={onOpenAutoDetect}
+                  onClick={() => onOpenAutoDetect(selected.storagePath)}
                   className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 text-sm font-medium text-white active:scale-[0.98] dark:bg-indigo-500"
                 >
                   <svg
@@ -5164,7 +5589,8 @@ function SiteMapBody({
               )}
               {!selected.isPrimary && (
                 <p className="text-center text-[11px] italic text-neutral-500 dark:text-neutral-400">
-                  Annotation editor is scoped to the primary PDF.
+                  Annotation editor is scoped to the primary PDF — auto-detect
+                  works from any PDF.
                 </p>
               )}
             </>
@@ -5261,6 +5687,12 @@ function SiteMapBody({
             allPdfs.find((p) => p.storagePath === fullscreenSrc)?.label ??
             "Site map"
           }
+          savedRotation={mapRotations[fullscreenSrc] ?? null}
+          onRotationChange={(r) => {
+            void onRotate(fullscreenSrc, r).then((err) => {
+              if (err) setError(`Couldn't save the rotation: ${err}`);
+            });
+          }}
           onClose={() => setFullscreenSrc(null)}
         />
       )}
@@ -5285,38 +5717,17 @@ function ShareExportSection({
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedList, setCopiedList] = useState(false);
   const [netlistPrinting, setNetlistPrinting] = useState(false);
+  // Bumped on every tap so the sheet remounts and prints again. Without
+  // it, a print that never resolves (see printBlocked) leaves
+  // netlistPrinting stuck at true and every later tap is a no-op.
+  const [printNonce, setPrintNonce] = useState(0);
+  const [printBlocked, setPrintBlocked] = useState(false);
 
-  const doorById = new Map(doors.map((d) => [d.id, d]));
-  const networkRows = items
-    .filter((it) => it.ip_address || it.mac_address)
-    .map((it) => {
-      const door = doorById.get(it.door_id);
-      // Standalone gear (gateways etc.) has no meaningful door — its
-      // identity is the item itself: per-unit label from the note
-      // column, falling back to the device name.
-      const isStandalone = door?.name === STANDALONE_DOOR_NAME;
-      const label = isStandalone
-        ? it.note?.trim()
-          ? `${it.name} — ${it.note.trim()}`
-          : it.name
-        : door?.name?.trim() || "Unnamed door";
-      return {
-        door: label,
-        item: it.name,
-        ip: it.ip_address,
-        mac: it.mac_address,
-        floor: isStandalone ? null : (door?.floor ?? null),
-        standalone: isStandalone,
-      };
-    });
+  const networkRows = buildNetworkRows(doors, items);
   // Floor-bucketed view shared by the copy list and the print sheet.
+  // Group headers only appear when floors are actually in use.
   const floorGroups = groupNetworkRowsByFloor(networkRows);
-  // Only show group headers when floors are actually in use —
-  // a flat unassigned-only list stays flat.
-  const useFloorGroups =
-    floorGroups.length > 1 ||
-    (floorGroups.length === 1 &&
-      floorGroups[0].label !== UNASSIGNED_FLOOR_LABEL);
+  const useFloorGroups = shouldShowFloorGroups(floorGroups);
 
   async function copyText(text: string): Promise<boolean> {
     try {
@@ -5357,15 +5768,15 @@ function ShareExportSection({
     // case), "D2 — 5500 Exciter:" was pure noise.
     const doorCounts = new Map<string, number>();
     for (const r of networkRows) {
-      doorCounts.set(r.door, (doorCounts.get(r.door) ?? 0) + 1);
+      doorCounts.set(r.label, (doorCounts.get(r.label) ?? 0) + 1);
     }
-    const rowLine = (r: (typeof networkRows)[number]) => {
+    const rowLine = (r: NetworkRow) => {
       // Suffix the device only when a door hosts several networked
       // items AND the label doesn't already carry the device name
       // (standalone rows do — "GW-3000 Gateway — Roof").
       const needsItem =
-        (doorCounts.get(r.door) ?? 0) > 1 && !r.door.startsWith(r.item);
-      const label = needsItem ? `${r.door} (${r.item})` : r.door;
+        (doorCounts.get(r.label) ?? 0) > 1 && !r.label.startsWith(r.item);
+      const label = needsItem ? `${r.label} (${r.item})` : r.label;
       return [label, r.ip, r.mac].filter(Boolean).join("  ·  ");
     };
     const lines = [
@@ -5446,6 +5857,8 @@ function ShareExportSection({
             // the initiating button holds focus (same trick as the
             // main Export PDF toolbar).
             (e.currentTarget as HTMLButtonElement).blur();
+            setPrintBlocked(false);
+            setPrintNonce((n) => n + 1);
             setNetlistPrinting(true);
           }}
           className="flex h-11 w-full items-center justify-center gap-2 rounded-lg border border-neutral-300 text-sm font-medium text-neutral-700 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
@@ -5490,11 +5903,23 @@ function ShareExportSection({
           Open as full page
         </a>
       )}
+      {printBlocked && (
+        <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] leading-snug text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+          Couldn&apos;t open a print dialog here. If you&apos;re in the
+          HD Security app, use <strong>Copy IP / MAC list</strong>{" "}
+          above, or open this job in Safari / Chrome to export the PDF.
+        </p>
+      )}
       {netlistPrinting && (
         <NetlistPrintSheet
+          key={printNonce}
           job={job}
           rows={networkRows}
           onDone={() => setNetlistPrinting(false)}
+          onBlocked={() => {
+            setNetlistPrinting(false);
+            setPrintBlocked(true);
+          }}
         />
       )}
       {networkRows.length === 0 && (
@@ -5514,28 +5939,16 @@ function NetlistPrintSheet({
   job,
   rows,
   onDone,
+  onBlocked,
 }: {
   job: Job;
-  rows: {
-    door: string;
-    item: string;
-    ip: string | null;
-    mac: string | null;
-    floor: string | null;
-    standalone: boolean;
-  }[];
+  rows: NetworkRow[];
   onDone: () => void;
+  onBlocked: () => void;
 }) {
-  const doorCounts = new Map<string, number>();
-  for (const r of rows) {
-    doorCounts.set(r.door, (doorCounts.get(r.door) ?? 0) + 1);
-  }
-  const showDevice = Array.from(doorCounts.values()).some((n) => n > 1);
+  const showDevice = shouldShowDeviceColumn(rows);
   const floorGroups = groupNetworkRowsByFloor(rows);
-  const useFloorGroups =
-    floorGroups.length > 1 ||
-    (floorGroups.length === 1 &&
-      floorGroups[0].label !== UNASSIGNED_FLOOR_LABEL);
+  const useFloorGroups = shouldShowFloorGroups(floorGroups);
   const columnCount = showDevice ? 4 : 3;
 
   const [exportedAt, setExportedAt] = useState("");
@@ -5555,14 +5968,14 @@ function NetlistPrintSheet({
     const safeName = job.name.replace(/[\\/:*?"<>|]+/g, "-").trim() || "Job";
     document.title = `${safeName} IP-MAC list - ${dateStr}`;
     document.body.classList.add("print-netlist");
-    const done = () => onDone();
-    window.addEventListener("afterprint", done);
-    // Give the portal a paint before printing so the sheet is in the
-    // DOM when the print snapshot is taken.
-    const t = window.setTimeout(() => window.print(), 100);
+
+    const stopPrint = requestPrint(window, (outcome) => {
+      if (outcome === "printed") onDone();
+      else onBlocked();
+    });
+
     return () => {
-      window.clearTimeout(t);
-      window.removeEventListener("afterprint", done);
+      stopPrint();
       document.body.classList.remove("print-netlist");
       document.title = priorTitle;
     };
@@ -5580,6 +5993,15 @@ function NetlistPrintSheet({
           body.print-netlist > *:not(.netlist-sheet) { display: none !important; }
           body.print-netlist .netlist-sheet { display: block !important; }
           .netlist-sheet tr { break-inside: avoid; page-break-inside: avoid; }
+          /* The app paints its theme background on BOTH html and body
+             (globals.css), and body is min-h-full — so in dark mode,
+             with "Background graphics" on, everything below the table
+             printed as a full-page black slab. The sheet's own white
+             card only covers the rows. Force the page light. */
+          html, body.print-netlist {
+            background: #fff !important;
+            color: #171717 !important;
+          }
         }
       `}</style>
       <div
@@ -5642,8 +6064,8 @@ function NetlistPrintSheet({
                     </td>
                   </tr>
                 )}
-                {group.rows.map((r, i) => (
-                  <tr key={`${group.label}-${i}`}>
+                {group.rows.map((r) => (
+                  <tr key={r.id}>
                     <td
                       style={{
                         padding: "4px 10px 4px 0",
@@ -5651,7 +6073,7 @@ function NetlistPrintSheet({
                         fontWeight: 600,
                       }}
                     >
-                      {r.door}
+                      {r.label}
                     </td>
                     {showDevice && (
                       <td
@@ -5661,7 +6083,10 @@ function NetlistPrintSheet({
                           color: "#525252",
                         }}
                       >
-                        {r.item}
+                        {/* Standalone gear already carries its device
+                            name in the label column — repeating it is
+                            noise. */}
+                        {r.label.startsWith(r.item) ? "" : r.item}
                       </td>
                     )}
                     <td
@@ -5724,24 +6149,34 @@ function WorkedOnSection({
     return !manualLower.has(local) && !manualLower.has(email.toLowerCase());
   });
 
-  async function commitWorkers(next: string[]) {
-    setPending(true);
-    setError(null);
-    const { data, error: dbError } = await withTrack(tracker, async () => {
-      const supabase = createClient();
-      return supabase
-        .from("jobs")
-        .update({ manual_workers: next })
-        .eq("id", job.id)
-        .select("*")
-        .maybeSingle();
-    });
-    setPending(false);
-    if (dbError || !data) {
-      setError(dbError?.message ?? "Couldn't save.");
-      return;
+  // Fetch-merge-write: every mutation re-reads the row's current
+  // manual_workers first, so a stale local copy (the app resuming
+  // after iOS suspended the websocket and realtime missed events)
+  // can't wipe names other people added in the meantime.
+  async function mutateWorkers(
+    mutate: (current: string[]) => string[],
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const supabase = createClient();
+    const { data: freshRow, error: readError } = await supabase
+      .from("jobs")
+      .select("manual_workers")
+      .eq("id", job.id)
+      .maybeSingle();
+    if (readError || !freshRow) {
+      return { ok: false, error: readError?.message ?? "Couldn't save." };
+    }
+    const current = (freshRow.manual_workers as string[] | null) ?? [];
+    const { data, error: writeError } = await supabase
+      .from("jobs")
+      .update({ manual_workers: mutate(current) })
+      .eq("id", job.id)
+      .select("*")
+      .maybeSingle();
+    if (writeError || !data) {
+      return { ok: false, error: writeError?.message ?? "Couldn't save." };
     }
     onJobUpdate(data as Job);
+    return { ok: true };
   }
 
   async function addWorker() {
@@ -5752,7 +6187,20 @@ function WorkedOnSection({
       setError(`${trimmed} is already on the list.`);
       return;
     }
-    await commitWorkers([...manual, trimmed]);
+    setPending(true);
+    setError(null);
+    const result = await withTrack(tracker, () =>
+      mutateWorkers((current) =>
+        current.some((n) => n.trim().toLowerCase() === lower)
+          ? current
+          : [...current, trimmed],
+      ),
+    );
+    setPending(false);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
     setNewName("");
     setAdding(false);
   }
@@ -5763,38 +6211,26 @@ function WorkedOnSection({
   type WorkerSnapshot = { id: string; name: string; index: number };
   const workerSoftDelete = useSoftDelete<WorkerSnapshot>({
     delete: async (snapshot) => {
-      const supabase = createClient();
-      const { error } = await withTrack(tracker, async () =>
-        supabase
-          .from("jobs")
-          .update({
-            manual_workers: manual.filter((n) => n !== snapshot.name),
-          })
-          .eq("id", job.id),
+      const result = await withTrack(tracker, () =>
+        mutateWorkers((current) => current.filter((n) => n !== snapshot.name)),
       );
-      return error ? { ok: false, error: error.message } : { ok: true };
+      return result.ok ? { ok: true } : { ok: false, error: result.error };
     },
     restore: async (snapshot) => {
-      const supabase = createClient();
-      const { data, error } = await withTrack(tracker, async () =>
-        supabase
-          .from("jobs")
-          .update({
-            manual_workers: [
-              ...manual.slice(0, snapshot.index),
-              snapshot.name,
-              ...manual.slice(snapshot.index),
-            ],
-          })
-          .eq("id", job.id)
-          .select("*")
-          .single(),
+      const result = await withTrack(tracker, () =>
+        mutateWorkers((current) => {
+          if (current.includes(snapshot.name)) return current;
+          const at = Math.min(snapshot.index, current.length);
+          return [
+            ...current.slice(0, at),
+            snapshot.name,
+            ...current.slice(at),
+          ];
+        }),
       );
-      if (error || !data) {
-        return { ok: false, error: error?.message ?? "Couldn't restore." };
-      }
-      onJobUpdate(data as Job);
-      return { ok: true, restored: snapshot };
+      return result.ok
+        ? { ok: true, restored: snapshot }
+        : { ok: false, error: result.error };
     },
     // Reading parent state via job + onJobUpdate; the synthetic id
     // makes the hook's contract happy without persisting it.
@@ -6205,5 +6641,176 @@ function DeleteJobSection({
         Delete job
       </button>
     </section>
+  );
+}
+
+// Reads the MAC off a photo of the exciter's label so a tech doesn't
+// have to type twelve hex characters on a phone in a mechanical room.
+//
+// Prefers a photo already on the item — techs were photographing the
+// label under the device anyway — and only opens the camera when
+// there isn't one, or when reading it didn't work. `capture` asks the
+// phone for the rear camera directly; on desktop it degrades to a
+// normal file picker.
+function MacScanButton({
+  storagePaths,
+  currentMac,
+  onFound,
+}: {
+  // Newest first. The server walks them until one reads as a MAC, so
+  // a device shot ahead of the label shot isn't a dead end.
+  storagePaths: string[];
+  currentMac: string | null;
+  onFound: (mac: string) => void;
+}) {
+  const hasPhoto = storagePaths.length > 0;
+  const [scanning, setScanning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
+  const cameraInput = useRef<HTMLInputElement>(null);
+
+  async function scanBlob(blob: Blob, filename: string) {
+    setScanning(true);
+    setError(null);
+    setWarning(null);
+    try {
+      // Reuse the upload normalizer: it re-encodes to JPEG (which the
+      // vision API accepts) and caps the resolution, so a 12 MP label
+      // shot doesn't get sent whole.
+      const normalized = await normalizeImageForUpload(
+        new File([blob], filename, { type: blob.type || "image/jpeg" }),
+        MAX_PHOTO_BYTES,
+        // Not headed for storage, so keep the resolution the vision
+        // model can actually use — the MAC is small in the frame.
+        VISION_MAX_DIM,
+      );
+      if (!normalized.ok) {
+        setError(normalized.error);
+        return;
+      }
+      const buf = await normalized.file.arrayBuffer();
+      let binary = "";
+      const bytes = new Uint8Array(buf);
+      // Chunked: String.fromCharCode(...bytes) blows the argument
+      // limit on anything above a few hundred KB.
+      for (let i = 0; i < bytes.length; i += 8192) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+      }
+      const result = await scanMacAction({
+        kind: "capture",
+        imageBase64: btoa(binary),
+        mediaType: normalized.file.type,
+      });
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      if (!result.matchedPrefix) {
+        // Didn't start with the 5500's fixed prefix, so it may be a
+        // serial number the model mistook for a MAC. Fill it in but
+        // say so rather than silently trusting it.
+        setWarning(`Read ${result.mac} — check it against the label.`);
+      }
+      onFound(result.mac);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't scan that photo.");
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function scanExistingPhotos() {
+    if (storagePaths.length === 0) return;
+    setScanning(true);
+    setError(null);
+    setWarning(null);
+    try {
+      const result = await scanMacAction({ kind: "stored", storagePaths });
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      if (!result.matchedPrefix) {
+        setWarning(`Read ${result.mac} — check it against the label.`);
+      }
+      onFound(result.mac);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't scan those photos.");
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  return (
+    <div className="mt-1.5">
+      <div className="flex gap-1.5">
+        <button
+          type="button"
+          disabled={scanning}
+          onClick={() =>
+            hasPhoto ? void scanExistingPhotos() : cameraInput.current?.click()
+          }
+          className="flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md border border-neutral-300 text-[11px] font-medium text-neutral-700 active:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300 dark:active:bg-neutral-800"
+        >
+          <svg
+            className="h-3.5 w-3.5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+            <path d="M17 3h2a2 2 0 0 1 2 2v2" />
+            <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+            <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+            <line x1="7" y1="12" x2="17" y2="12" />
+          </svg>
+          {scanning
+            ? "Reading label…"
+            : currentMac
+              ? "Re-scan MAC"
+              : hasPhoto
+                ? "Scan MAC from photo"
+                : "Scan MAC"}
+        </button>
+        {hasPhoto && !scanning && (
+          <button
+            type="button"
+            onClick={() => cameraInput.current?.click()}
+            aria-label="Scan MAC from a new photo"
+            className="h-8 shrink-0 rounded-md border border-neutral-300 px-2 text-[11px] font-medium text-neutral-600 active:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:active:bg-neutral-800"
+          >
+            New photo
+          </button>
+        )}
+      </div>
+
+      {error && (
+        <p className="mt-1 text-[11px] text-red-600 dark:text-red-400">
+          {error}
+        </p>
+      )}
+      {warning && (
+        <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-500">
+          {warning}
+        </p>
+      )}
+
+      <input
+        ref={cameraInput}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (file) void scanBlob(file, file.name);
+        }}
+      />
+    </div>
   );
 }

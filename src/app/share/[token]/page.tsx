@@ -1,10 +1,12 @@
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { ExportPdfButton } from "@/components/ExportPdfButton";
+import { PhotoThumbGallery } from "@/components/PhotoThumbGallery";
 import { publicJobFileUrl, type JobPhoto } from "@/lib/job-photos";
 import {
   compareCanonicalItems,
   compareDoorNames,
+  splitStandaloneDoors,
   type Job,
   type JobDoor,
   type JobDoorItem,
@@ -76,14 +78,12 @@ export default async function SharedJobPage({
   }
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-  const STANDALONE_DOOR_NAME = "Standalone Equipment";
   const allDoors = (doors ?? []) as JobDoor[];
-  const regularDoors = allDoors.filter(
-    (d) => d.name !== STANDALONE_DOOR_NAME,
-  );
-  const standaloneDoor = allDoors.find(
-    (d) => d.name === STANDALONE_DOOR_NAME,
-  );
+  // One standalone bucket per floor, so collect them all — a find()
+  // here would silently drop every gateway outside the first bucket.
+  const { realDoors: regularDoors, standaloneDoors } =
+    splitStandaloneDoors(allDoors);
+  const standaloneDoorIds = new Set(standaloneDoors.map((d) => d.id));
   const sortedDoors = [...regularDoors].sort((a, b) =>
     compareDoorNames(a.name, b.name),
   );
@@ -109,7 +109,51 @@ export default async function SharedJobPage({
           img { page-break-inside: avoid; break-inside: avoid; }
           h1, h2, h3 { page-break-after: avoid; break-after: avoid; }
           p { orphans: 3; widows: 3; }
-          body { background: white; }
+          /* !important because the root layout puts dark:bg-neutral-950
+             on <body>, and a Tailwind variant class outranks a bare
+             element selector — a plain "body { background: white }"
+             silently lost in dark mode and printed a black slab
+             wherever the sheet didn't reach (body is min-h-full, so
+             that was a full page of it). */
+          html, body { background: white !important; }
+
+          /* The screen layout is a phone-width column (max-w-md). Left
+             alone it prints as a 4.6in strip down the middle of a 7.7in
+             sheet — mostly margin. The sheet gets the full width and the
+             door cards go two-up, matching the job report. */
+          .door-cols { font-size: 0; }
+          .door-cols > li {
+            display: inline-block;
+            width: 49%;
+            vertical-align: top;
+            margin-bottom: 0.12in;
+            font-size: 10px;
+            page-break-inside: avoid;
+            break-inside: avoid;
+          }
+          .door-cols > li:nth-child(odd) { margin-right: 2%; }
+
+          /* Thumbnails sized for a phone are absurd across a full sheet. */
+          .share-photos > div {
+            grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+          }
+
+          /* dark: is a class-based variant on <html> (see globals.css),
+             so a tech exporting from a dark-mode phone would otherwise
+             print charcoal cards and near-white text on white paper.
+             Only that case falls back to flat black-on-white; a
+             light-mode export keeps its colour. */
+          html.dark .share-sheet, html.dark .share-sheet * {
+            background-color: #fff !important;
+            color: #171717 !important;
+            border-color: #d4d4d4 !important;
+          }
+          html.dark .share-sheet .print-track {
+            background-color: #e5e5e5 !important;
+          }
+          html.dark .share-sheet .print-fill {
+            background-color: #171717 !important;
+          }
         }
       `}</style>
 
@@ -127,7 +171,7 @@ export default async function SharedJobPage({
         />
       </header>
 
-      <main className="mx-auto w-full max-w-md flex-1 space-y-3 px-4 pb-12 pt-4">
+      <main className="share-sheet mx-auto w-full max-w-md flex-1 space-y-3 px-4 pb-12 pt-4 print:max-w-none print:space-y-2 print:px-0 print:pb-0 print:pt-0 print:text-[10px] print:leading-tight">
         {/* Print-only title block — the sticky header is hidden in
             print, so without this the PDF would have no job name. */}
         <div className="hidden print:mb-2 print:block">
@@ -138,7 +182,7 @@ export default async function SharedJobPage({
           </p>
         </div>
 
-        <section className="avoid-break rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+        <section className="avoid-break rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900 print:p-2">
           {(typedJob.number || typedJob.address) && (
             <div className="mb-3 space-y-0.5 text-sm">
               {typedJob.number && (
@@ -166,9 +210,9 @@ export default async function SharedJobPage({
             {completedItems} of {totalItems} items done across{" "}
             {sortedDoors.length} {sortedDoors.length === 1 ? "door" : "doors"}
           </p>
-          <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
+          <div className="print-track mt-2 h-2 w-full overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
             <div
-              className="h-full bg-emerald-500"
+              className="print-fill h-full bg-emerald-500"
               style={{ width: `${pct}%` }}
             />
           </div>
@@ -183,7 +227,7 @@ export default async function SharedJobPage({
             <h2 className="px-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
               Doors (A→Z)
             </h2>
-            <ul className="space-y-2">
+            <ul className="door-cols space-y-2 print:space-y-0">
               {sortedDoors.map((door) => {
                 const doorItems = itemsByDoor.get(door.id) ?? [];
                 const doorDone = doorItems.filter(
@@ -192,7 +236,7 @@ export default async function SharedJobPage({
                 return (
                   <li
                     key={door.id}
-                    className="avoid-break relative rounded-xl border border-neutral-200 bg-white p-3 pb-7 dark:border-neutral-800 dark:bg-neutral-900"
+                    className="avoid-break relative rounded-xl border border-neutral-200 bg-white p-3 pb-7 dark:border-neutral-800 dark:bg-neutral-900 print:p-2 print:pb-5"
                   >
                     <div className="flex items-center justify-between gap-2">
                       <h3 className="text-sm font-semibold">{door.name}</h3>
@@ -264,13 +308,15 @@ export default async function SharedJobPage({
           </section>
         )}
 
-        {standaloneDoor && (
-          <section className="avoid-break rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+        {standaloneDoors.length > 0 && (
+          <section className="avoid-break rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900 print:p-2">
             <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
               Standalone equipment
             </h2>
             {(() => {
-              const sItems = itemsByDoor.get(standaloneDoor.id) ?? [];
+              const sItems = allItems.filter((it) =>
+                standaloneDoorIds.has(it.door_id),
+              );
               if (sItems.length === 0) {
                 return (
                   <p className="text-xs text-neutral-500 dark:text-neutral-400">
@@ -309,23 +355,17 @@ export default async function SharedJobPage({
         )}
 
         {jobPhotos.length > 0 && (
-          <section className="avoid-break rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+          <section className="share-photos avoid-break rounded-2xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900 print:p-2">
             <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
               Job photos
             </h2>
-            <div className="grid grid-cols-3 gap-2">
-              {jobPhotos.slice(0, 9).map((p) => (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  loading="lazy"
-                  decoding="async"
-                  key={p.id}
-                  src={publicJobFileUrl(supabaseUrl, p.storage_path)}
-                  alt=""
-                  className="aspect-square w-full rounded border border-neutral-200 object-cover dark:border-neutral-800"
-                />
-              ))}
-            </div>
+            <PhotoThumbGallery
+              label="Job photo"
+              photos={jobPhotos.slice(0, 9).map((p) => ({
+                id: p.id,
+                src: publicJobFileUrl(supabaseUrl, p.storage_path),
+              }))}
+            />
           </section>
         )}
 

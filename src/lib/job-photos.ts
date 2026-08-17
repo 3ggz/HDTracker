@@ -5,7 +5,7 @@ import {
   guessExtension,
   validatePhotoFile,
 } from "./vehicle-photos";
-import { downscaleImageIfNeeded } from "./image-downscale";
+import { normalizeImageForUpload } from "./image-normalize";
 
 export const JOB_BUCKET = "job-files";
 
@@ -62,7 +62,9 @@ export async function uploadJobPhoto({
 }: UploadJobPhotoOptions): Promise<UploadJobPhotoResult> {
   const validation = validatePhotoFile(file);
   if (!validation.ok) return validation;
-  file = await downscaleImageIfNeeded(file);
+  const normalized = await normalizeImageForUpload(file);
+  if (!normalized.ok) return normalized;
+  file = normalized.file;
 
   const photoId = crypto.randomUUID();
   const ext = guessExtension(file);
@@ -166,7 +168,9 @@ export async function uploadDoorItemPhoto({
 }: UploadDoorItemPhotoOptions): Promise<UploadDoorItemPhotoResult> {
   const validation = validatePhotoFile(file);
   if (!validation.ok) return validation;
-  file = await downscaleImageIfNeeded(file);
+  const normalized = await normalizeImageForUpload(file);
+  if (!normalized.ok) return normalized;
+  file = normalized.file;
 
   const photoId = crypto.randomUUID();
   const ext = guessExtension(file);
@@ -477,7 +481,9 @@ export async function uploadPanelPhoto({
 }: UploadPanelPhotoOptions): Promise<UploadPanelPhotoResult> {
   const validation = validatePhotoFile(file);
   if (!validation.ok) return validation;
-  file = await downscaleImageIfNeeded(file);
+  const normalized = await normalizeImageForUpload(file);
+  if (!normalized.ok) return normalized;
+  file = normalized.file;
 
   const photoId = crypto.randomUUID();
   const ext = guessExtension(file);

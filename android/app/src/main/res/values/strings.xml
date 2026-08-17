@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">HDTracker</string>
-    <string name="title_activity_main">HDTracker</string>
+    <string name="app_name">HD Security</string>
+    <string name="title_activity_main">HD Security</string>
     <string name="package_name">systems.hdsecurity.hdtracker</string>
     <string name="custom_url_scheme">systems.hdsecurity.hdtracker</string>
 </resources>

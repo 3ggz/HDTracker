@@ -22,31 +22,60 @@ describe("validatePhotoFile", () => {
     expect(result.ok).toBe(false);
   });
 
-  it("rejects oversized files even if the mime type is supported", () => {
-    const result = validatePhotoFile({
-      type: "image/jpeg",
-      size: MAX_PHOTO_BYTES + 1,
-    });
-    expect(result).toEqual({
-      ok: false,
-      error: "File is over 10 MB. Try a smaller picture.",
-    });
+  // Some Android pickers report no usable type for a HEIC. Those
+  // phones must still be able to upload — the normalizer converts the
+  // file to JPEG afterwards.
+  it("accepts a HEIC whose mime type the picker didn't fill in", () => {
+    expect(
+      validatePhotoFile({ name: "IMG_0042.HEIC", type: "", size: 1024 }),
+    ).toEqual({ ok: true });
+    expect(
+      validatePhotoFile({
+        name: "IMG_0042.heif",
+        type: "application/octet-stream",
+        size: 1024,
+      }),
+    ).toEqual({ ok: true });
+  });
+
+  it("still rejects a non-image that only has a misleading name", () => {
+    expect(
+      validatePhotoFile({ name: "notes.pdf", type: "", size: 1024 }).ok,
+    ).toBe(false);
+  });
+
+  // Size is NOT a validation failure. A 12 MP phone photo routinely
+  // exceeds the storage limit and the normalizer re-compresses it to
+  // fit; rejecting here would mean the fix never runs.
+  it("accepts an oversized file and leaves shrinking to the normalizer", () => {
+    expect(
+      validatePhotoFile({ type: "image/jpeg", size: MAX_PHOTO_BYTES + 1 }),
+    ).toEqual({ ok: true });
+    expect(
+      validatePhotoFile({ type: "image/jpeg", size: 80 * 1024 * 1024 }),
+    ).toEqual({ ok: true });
   });
 });
 
 describe("guessExtension", () => {
-  it("prefers the filename extension when present", () => {
-    expect(
-      guessExtension({ name: "IMG_1234.HEIC", type: "image/jpeg" }),
-    ).toBe(".heic");
+  // iOS Safari transcodes a HEIC to JPEG on upload but keeps the
+  // original filename, so the name is the untrustworthy signal.
+  it("prefers the mime type over a filename that disagrees", () => {
+    expect(guessExtension({ name: "IMG_1234.HEIC", type: "image/jpeg" })).toBe(
+      ".jpg",
+    );
     expect(guessExtension({ name: "photo.jpg", type: "image/jpeg" })).toBe(
       ".jpg",
     );
   });
 
-  it("falls back to the mime type when there is no extension", () => {
+  it("uses the mime type when there is no extension", () => {
     expect(guessExtension({ name: "blob", type: "image/png" })).toBe(".png");
     expect(guessExtension({ name: "blob", type: "image/jpeg" })).toBe(".jpg");
+  });
+
+  it("falls back to the filename when the type is missing", () => {
+    expect(guessExtension({ name: "IMG_1234.HEIC", type: "" })).toBe(".heic");
   });
 
   it("returns an empty string when both signals are unhelpful", () => {

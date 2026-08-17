@@ -2,7 +2,9 @@
 
 import "server-only";
 import { createClient } from "@/lib/supabase/server";
-import { doorContactItemForName } from "@/lib/jobs";
+import { doorContactItemForName, STANDALONE_DOOR_NAME } from "@/lib/jobs";
+import { extractExciterMac } from "@/lib/mac";
+import { JOB_BUCKET } from "@/lib/job-photos";
 import { isAdminEmail } from "@/lib/admin";
 
 // Auto-detect itself runs as a Supabase Edge Function (Deno, 150s
@@ -27,6 +29,10 @@ export type ImportDoorsInput = {
   }[];
   miscNotes?: string[];
   standaloneItems?: { type: string; count: number }[];
+  // Which floor the gear bucket belongs to. Detection can't tell, so
+  // this comes from the review dialog; null keeps it in the
+  // Miscellaneous section until someone places it.
+  standaloneFloor?: string | null;
 };
 
 export type ImportDoorsResult =
@@ -104,18 +110,34 @@ export async function importDetectedDoorsAction(
       0,
     );
     if (totalUnits > 0) {
-      const { data: standaloneDoor, error: standaloneDoorError } =
-        await supabase
-          .from("job_doors")
-          .insert({
-            job_id: input.jobId,
-            name: "Standalone Equipment",
-            floor: null,
-            notes: null,
-            position: positionStart + input.doors.length,
-          })
-          .select("id")
-          .single();
+      const floor = input.standaloneFloor ?? null;
+      // There's one bucket per floor now, so reuse the floor's
+      // existing one. Inserting unconditionally would give a floor two
+      // buckets on a second scan, and the UI keys them by floor — the
+      // older bucket's gear would silently stop being rendered.
+      const existingQuery = supabase
+        .from("job_doors")
+        .select("id")
+        .eq("job_id", input.jobId)
+        .eq("name", STANDALONE_DOOR_NAME);
+      const { data: existing } = await (floor === null
+        ? existingQuery.is("floor", null)
+        : existingQuery.eq("floor", floor)
+      ).maybeSingle();
+
+      const { data: standaloneDoor, error: standaloneDoorError } = existing
+        ? { data: existing, error: null }
+        : await supabase
+            .from("job_doors")
+            .insert({
+              job_id: input.jobId,
+              name: STANDALONE_DOOR_NAME,
+              floor,
+              notes: null,
+              position: positionStart + input.doors.length,
+            })
+            .select("id")
+            .single();
 
       if (standaloneDoorError || !standaloneDoor) {
         return {
@@ -441,4 +463,222 @@ export async function restoreDoorAction(
   }
 
   return { ok: true, doorId: newDoor.id, itemIdMap };
+}
+
+// ---------------------------------------------------------------
+// MAC scanning
+//
+// Techs photograph the label on a 5500 exciter rather than typing a
+// twelve-character MAC on a phone in a mechanical room. Claude reads
+// the label; extractExciterMac (pure, unit-tested) decides which of
+// the strings on it is actually the MAC. Splitting it that way keeps
+// the fiddly part — telling a MAC from the serial number printed
+// beside it — in code that tests can pin down.
+//
+// Runs here rather than in the auto-detect Edge Function because a
+// single small image comes back in a few seconds, well inside
+// Vercel's function ceiling.
+// ---------------------------------------------------------------
+
+// Telling the model the exact string shape it's hunting for is the
+// single biggest accuracy lever: 9 of the 12 characters are known
+// before it looks, so it can lock onto the right code on a label
+// crowded with a serial, an FCC ID, an IC number and a barcode.
+// Orientation matters too — these get photographed sideways, since
+// the label is on the back of a device already mounted to a wall.
+const MAC_SCAN_PROMPT = [
+  "Find the MAC address on this hardware label and reply with it alone.",
+  "It is 12 hexadecimal characters. On this equipment it always begins 000CCC617 followed by 3 more hex characters — for example 000CCC617AB6.",
+  "It is printed after the text 'MAC:', either on the label on the back of the device or on a white sticker on its cardboard shipping box.",
+  "The photo may be rotated 90, 180, or 270 degrees, or taken at an angle. Read the label at whatever orientation it appears in.",
+  "Do not confuse it with the serial number, FCC ID, IC number, document number, patent number, or the digits printed under a barcode.",
+  "Transcribe only characters you can actually read — do not guess characters to fit the expected pattern.",
+  "Reply with the 12 characters and nothing else. If you cannot read a MAC, reply NONE.",
+  "Do not include internal or system XML tags in your response.",
+].join(" ");
+
+export type ScanMacResult =
+  | { ok: true; mac: string; matchedPrefix: boolean }
+  | { ok: false; error: string };
+
+// Either a fresh camera capture (base64 from the client) or photos
+// already on the item, which the server downloads itself.
+//
+// Downloading server-side matters: a browser fetch() against the
+// storage bucket is cross-origin, and nothing else in the app fetches
+// those URLs — every other use is an <img src>, which needs no CORS.
+// Rather than depend on a CORS header nobody has verified, the server
+// reads the object directly. It also keeps ~1 MB of base64 out of the
+// server-action payload.
+export type ScanMacInput =
+  | { kind: "capture"; imageBase64: string; mediaType: string }
+  | { kind: "stored"; storagePaths: string[] };
+
+const VISION_MEDIA_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+] as const;
+
+type VisionMediaType = (typeof VISION_MEDIA_TYPES)[number];
+
+type Read =
+  | { ok: true; mac: string; matchedPrefix: boolean }
+  | { ok: false; error: string | null };
+
+// `think` is the accuracy/latency dial. The fast pass runs with
+// thinking off, which is most of the wait; the retry turns it on for
+// the hard reads (a sideways label, glare, an angled shot). Disabling
+// thinking on Opus 5 normally risks stray prose and leaked tags in
+// the output, but neither matters here — extractExciterMac ignores
+// everything that isn't MAC-shaped.
+async function readMac(
+  apiKey: string,
+  base64: string,
+  mediaType: VisionMediaType,
+  think: boolean,
+): Promise<Read> {
+  try {
+    const Anthropic = (await import("@anthropic-ai/sdk")).default;
+    const anthropic = new Anthropic({ apiKey });
+    const response = await anthropic.messages.create({
+      model: "claude-opus-5",
+      // Thinking shares this budget with the reply when it's on.
+      max_tokens: think ? 4000 : 200,
+      thinking: think ? { type: "adaptive" } : { type: "disabled" },
+      output_config: { effort: "low" },
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: { type: "base64", media_type: mediaType, data: base64 },
+            },
+            { type: "text", text: MAC_SCAN_PROMPT },
+          ],
+        },
+      ],
+    });
+    if (response.stop_reason === "refusal") {
+      return { ok: false, error: "Couldn't read that photo. Try another shot." };
+    }
+    const text = response.content
+      .map((b) => (b.type === "text" ? b.text : ""))
+      .join("\n");
+    const found = extractExciterMac(text);
+    return found
+      ? { ok: true, mac: found.mac, matchedPrefix: found.matchedPrefix }
+      : { ok: false, error: null };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Couldn't reach the scanner.",
+    };
+  }
+}
+
+const NOT_FOUND =
+  "Couldn't find a MAC. Fill the frame with the label — the line starting 'MAC:' — and try again.";
+
+export async function scanMacAction(
+  input: ScanMacInput,
+): Promise<ScanMacResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Sign in to scan a MAC." };
+
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return {
+      ok: false,
+      error:
+        "MAC scanning isn't set up: ANTHROPIC_API_KEY is missing from the site's environment variables.",
+    };
+  }
+
+  // Gather the candidate images first so every read below is uniform.
+  const images: { base64: string; mediaType: VisionMediaType }[] = [];
+  let loadError: string | null = null;
+
+  if (input.kind === "capture") {
+    const mediaType = input.mediaType.toLowerCase();
+    if (!(VISION_MEDIA_TYPES as readonly string[]).includes(mediaType)) {
+      return {
+        ok: false,
+        error: "Take the photo again — that format can't be read.",
+      };
+    }
+    images.push({
+      base64: input.imageBase64,
+      mediaType: mediaType as VisionMediaType,
+    });
+  } else {
+    // An item usually carries a shot of the device AND a shot of its
+    // label, in no reliable order — so try them all.
+    const downloads = await Promise.all(
+      input.storagePaths.slice(0, 4).map(async (storagePath) => {
+        const { data: blob, error } = await supabase.storage
+          .from(JOB_BUCKET)
+          .download(storagePath);
+        if (error || !blob) return { error: error?.message ?? "load failed" };
+        const type = (blob.type || "image/jpeg").toLowerCase();
+        if (!(VISION_MEDIA_TYPES as readonly string[]).includes(type)) {
+          return { error: "unsupported format" };
+        }
+        return {
+          base64: Buffer.from(await blob.arrayBuffer()).toString("base64"),
+          mediaType: type as VisionMediaType,
+        };
+      }),
+    );
+    for (const d of downloads) {
+      if ("base64" in d && d.base64) {
+        images.push({ base64: d.base64, mediaType: d.mediaType });
+      } else if ("error" in d) {
+        loadError = d.error ?? null;
+      }
+    }
+  }
+
+  if (images.length === 0) {
+    return { ok: false, error: loadError ?? NOT_FOUND };
+  }
+
+  // Fast pass over every candidate at once. Sequential reads were the
+  // reason a two-photo item felt slow — it was two round trips before
+  // anything came back.
+  const fast = await Promise.all(
+    images.map((img) => readMac(apiKey, img.base64, img.mediaType, false)),
+  );
+  const fastHit = fast.find((r) => r.ok && r.matchedPrefix);
+  if (fastHit?.ok) {
+    return { ok: true, mac: fastHit.mac, matchedPrefix: true };
+  }
+
+  // Nothing conclusive. Retry with thinking on — this is what rescues
+  // a sideways or awkwardly-lit label.
+  const slow = await Promise.all(
+    images.map((img) => readMac(apiKey, img.base64, img.mediaType, true)),
+  );
+  const slowHit = slow.find((r) => r.ok && r.matchedPrefix);
+  if (slowHit?.ok) {
+    return { ok: true, mac: slowHit.mac, matchedPrefix: true };
+  }
+
+  // Still nothing with the expected prefix. A read without it is
+  // worth surfacing — flagged — rather than making the tech type it.
+  const anyHit = [...fast, ...slow].find((r) => r.ok);
+  if (anyHit?.ok) {
+    return { ok: true, mac: anyHit.mac, matchedPrefix: false };
+  }
+
+  const apiError = [...fast, ...slow].find((r) => !r.ok && r.error);
+  return {
+    ok: false,
+    error: (!apiError?.ok && apiError?.error) || NOT_FOUND,
+  };
 }

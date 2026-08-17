@@ -45,6 +45,30 @@ export type JobDoorItem = {
 // Items eligible for IP + MAC address fields. 5500 exciters are the
 // networked device on a HUGS door; extend this test if more device
 // families grow network config later.
+// Doors with this exact name aren't doors — they're the synthetic
+// bucket holding standalone equipment (gateways and similar) that the
+// auto-detect import can't attach to a real opening.
+//
+// There is one per floor, plus one with a null floor for gear nobody
+// has placed yet. Reusing job_doors.floor rather than inventing a
+// floor field on items means floor renames, grouping, and ordering all
+// keep working untouched. Anything reading doors must therefore expect
+// SEVERAL of these, not one.
+export const STANDALONE_DOOR_NAME = "Standalone Equipment";
+
+export function isStandaloneDoor(door: { name: string }): boolean {
+  return door.name === STANDALONE_DOOR_NAME;
+}
+
+export function splitStandaloneDoors<T extends { name: string }>(
+  doors: T[],
+): { realDoors: T[]; standaloneDoors: T[] } {
+  return {
+    realDoors: doors.filter((d) => !isStandaloneDoor(d)),
+    standaloneDoors: doors.filter(isStandaloneDoor),
+  };
+}
+
 export function itemSupportsNetworkFields(name: string): boolean {
   return /5500/.test(name);
 }
@@ -148,22 +172,96 @@ export function compareDoorNames(a: string, b: string): number {
   return ax.length - bx.length;
 }
 
-// Floor bucketing for the IP/MAC exports (clipboard copy, print
-// sheet, /netlist page — all three group identically through here).
-// Named floors sort naturally (1, 2, 10, B…), the null-floor bucket
-// lands second-to-last as "Unassigned", and standalone gear
-// (gateways etc.) always closes the list under its own label.
+
+export type NetworkRow = {
+  id: string;
+  label: string;
+  item: string;
+  ip: string | null;
+  mac: string | null;
+  floor: string | null;
+  isStandalone: boolean;
+};
+
+// The IP / MAC list behind every export: copy-to-clipboard, the
+// in-editor print sheet, and the standalone /netlist page. Standalone
+// gear sorts AFTER every real door rather than by name — gateways
+// landing between D1 and Ramp Door reads like the doors themselves are
+// out of order, and a network admin scanning the sheet expects the
+// openings first and the shared gear at the bottom.
+export function buildNetworkRows(
+  doors: { id: string; name: string | null; floor?: string | null }[],
+  items: JobDoorItem[],
+): NetworkRow[] {
+  const doorById = new Map(doors.map((d) => [d.id, d]));
+  return items
+    .filter((it) => it.ip_address || it.mac_address)
+    .map((it) => {
+      const door = doorById.get(it.door_id);
+      const name = door?.name?.trim();
+      // Standalone gear has no meaningful door — its identity is the
+      // unit itself: the per-unit label from the note column, falling
+      // back to the device name.
+      const isStandalone = name === STANDALONE_DOOR_NAME;
+      return {
+        id: it.id,
+        label: isStandalone
+          ? it.note?.trim()
+            ? `${it.name} — ${it.note.trim()}`
+            : it.name
+          : name || "Unnamed door",
+        item: it.name,
+        ip: it.ip_address,
+        mac: it.mac_address,
+        // Standalone buckets are per-floor now, so their gear keeps
+        // the bucket's floor — floorless buckets yield null and land
+        // in the trailing Standalone group.
+        floor: door?.floor ?? null,
+        isStandalone,
+      };
+    })
+    .sort((a, b) => {
+      if (a.isStandalone !== b.isStandalone) return a.isStandalone ? 1 : -1;
+      return compareDoorNames(a.label, b.label);
+    });
+}
+
+// The Device column earns its place only when a real door hosts more
+// than one networked item. Standalone gear never counts: its label
+// already carries the device name, so several identically-named
+// gateways were pulling in a column that then repeated that name.
+export function shouldShowDeviceColumn(rows: NetworkRow[]): boolean {
+  const counts = new Map<string, number>();
+  for (const r of rows) {
+    if (r.isStandalone) continue;
+    counts.set(r.label, (counts.get(r.label) ?? 0) + 1);
+  }
+  return Array.from(counts.values()).some((n) => n > 1);
+}
+
+// Floor bucketing for the IP/MAC exports — every surface groups
+// through here so the sections match everywhere. Named floors sort
+// naturally (2 before 10), the null-floor bucket lands second-to-
+// last as "Unassigned", and floorless standalone gear closes the
+// list under "Standalone" (standalone buckets that DO carry a floor
+// group under that floor, after the floor's real doors). Rows inside
+// each bucket keep natural door ordering.
 export const UNASSIGNED_FLOOR_LABEL = "Unassigned";
 export const STANDALONE_GROUP_LABEL = "Standalone";
 
-export function groupNetworkRowsByFloor<
-  T extends { door: string; floor: string | null; standalone: boolean },
->(rows: T[]): { label: string; rows: T[] }[] {
-  const buckets = new Map<string, T[]>();
+export type NetworkFloorGroup = { label: string; rows: NetworkRow[] };
+
+export function groupNetworkRowsByFloor(
+  rows: NetworkRow[],
+): NetworkFloorGroup[] {
+  const buckets = new Map<string, NetworkRow[]>();
   for (const r of rows) {
-    const label = r.standalone
-      ? STANDALONE_GROUP_LABEL
-      : r.floor?.trim() || UNASSIGNED_FLOOR_LABEL;
+    const floor = r.floor?.trim();
+    const label = floor
+      ? floor
+      : r.isStandalone
+        ? STANDALONE_GROUP_LABEL
+        : UNASSIGNED_FLOOR_LABEL;
     const list = buckets.get(label) ?? [];
     list.push(r);
     buckets.set(label, list);
@@ -180,8 +278,20 @@ export function groupNetworkRowsByFloor<
     return a[0].localeCompare(b[0], undefined, { numeric: true });
   });
   for (const [, list] of entries) {
-    list.sort((a, b) => compareDoorNames(a.door, b.door));
+    list.sort((a, b) => {
+      // Shared gear reads best after the floor's openings.
+      if (a.isStandalone !== b.isStandalone) return a.isStandalone ? 1 : -1;
+      return compareDoorNames(a.label, b.label);
+    });
   }
   return entries.map(([label, list]) => ({ label, rows: list }));
 }
 
+// Group headers only earn their place when floors are actually in
+// use — a flat unassigned-only list stays flat.
+export function shouldShowFloorGroups(groups: NetworkFloorGroup[]): boolean {
+  return (
+    groups.length > 1 ||
+    (groups.length === 1 && groups[0].label !== UNASSIGNED_FLOOR_LABEL)
+  );
+}
