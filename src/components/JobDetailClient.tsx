@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -24,7 +24,9 @@ import {
   compareCanonicalItems,
   buildNetworkRows,
   compareDoorNames,
+  groupNetworkRowsByFloor,
   shouldShowDeviceColumn,
+  shouldShowFloorGroups,
   type NetworkRow,
   isStandaloneDoor,
   itemSupportsNetworkFields,
@@ -5722,6 +5724,10 @@ function ShareExportSection({
   const [printBlocked, setPrintBlocked] = useState(false);
 
   const networkRows = buildNetworkRows(doors, items);
+  // Floor-bucketed view shared by the copy list and the print sheet.
+  // Group headers only appear when floors are actually in use.
+  const floorGroups = groupNetworkRowsByFloor(networkRows);
+  const useFloorGroups = shouldShowFloorGroups(floorGroups);
 
   async function copyText(text: string): Promise<boolean> {
     try {
@@ -5756,27 +5762,38 @@ function ShareExportSection({
 
   async function copyNetworkList() {
     // Minimal format: one line per device, dot separators, no
-    // repeated field labels. The item name only appears when a door
-    // has more than one networked device — with a single 5500 per
-    // door (the normal case), "D2 — 5500 Exciter:" was pure noise.
+    // repeated field labels — sectioned by floor when floors are in
+    // use. The item name only appears when a door has more than one
+    // networked device — with a single 5500 per door (the normal
+    // case), "D2 — 5500 Exciter:" was pure noise.
     const doorCounts = new Map<string, number>();
     for (const r of networkRows) {
       doorCounts.set(r.label, (doorCounts.get(r.label) ?? 0) + 1);
     }
+    const rowLine = (r: NetworkRow) => {
+      // Suffix the device only when a door hosts several networked
+      // items AND the label doesn't already carry the device name
+      // (standalone rows do — "GW-3000 Gateway — Roof").
+      const needsItem =
+        (doorCounts.get(r.label) ?? 0) > 1 && !r.label.startsWith(r.item);
+      const label = needsItem ? `${r.label} (${r.item})` : r.label;
+      return [label, r.ip, r.mac].filter(Boolean).join("  ·  ");
+    };
     const lines = [
       job.name + (job.number ? ` — #${job.number}` : ""),
       `IP / MAC — ${networkRows.length} ${networkRows.length === 1 ? "device" : "devices"}`,
-      "",
-      ...networkRows.map((r) => {
-        // Suffix the device only when a door hosts several networked
-        // items AND the label doesn't already carry the device name
-        // (standalone rows do — "GW-3000 Gateway — Roof").
-        const needsItem =
-          (doorCounts.get(r.label) ?? 0) > 1 && !r.label.startsWith(r.item);
-        const label = needsItem ? `${r.label} (${r.item})` : r.label;
-        return [label, r.ip, r.mac].filter(Boolean).join("  ·  ");
-      }),
     ];
+    if (useFloorGroups) {
+      for (const group of floorGroups) {
+        lines.push("", group.label.toUpperCase());
+        for (const r of group.rows) lines.push(rowLine(r));
+      }
+    } else {
+      lines.push("");
+      for (const group of floorGroups) {
+        for (const r of group.rows) lines.push(rowLine(r));
+      }
+    }
     if (await copyText(lines.join("\n"))) {
       setCopiedList(true);
       window.setTimeout(() => setCopiedList(false), 2000);
@@ -5930,6 +5947,9 @@ function NetlistPrintSheet({
   onBlocked: () => void;
 }) {
   const showDevice = shouldShowDeviceColumn(rows);
+  const floorGroups = groupNetworkRowsByFloor(rows);
+  const useFloorGroups = shouldShowFloorGroups(floorGroups);
+  const columnCount = showDevice ? 4 : 3;
 
   const [exportedAt, setExportedAt] = useState("");
 
@@ -6024,49 +6044,74 @@ function NetlistPrintSheet({
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.id}>
-                <td
-                  style={{
-                    padding: "4px 10px 4px 0",
-                    borderBottom: "1px solid #e5e5e5",
-                    fontWeight: 600,
-                  }}
-                >
-                  {r.label}
-                </td>
-                {showDevice && (
-                  <td
-                    style={{
-                      padding: "4px 10px 4px 0",
-                      borderBottom: "1px solid #e5e5e5",
-                      color: "#525252",
-                    }}
-                  >
-                    {/* Standalone gear already carries its device name
-                        in the label column — repeating it is noise. */}
-                    {r.label.startsWith(r.item) ? "" : r.item}
-                  </td>
+            {floorGroups.map((group) => (
+              <Fragment key={group.label}>
+                {useFloorGroups && (
+                  <tr>
+                    <td
+                      colSpan={columnCount}
+                      style={{
+                        padding: "10px 0 3px",
+                        borderBottom: "2px solid #a3a3a3",
+                        fontSize: "10px",
+                        fontWeight: 700,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.05em",
+                        color: "#404040",
+                      }}
+                    >
+                      {group.label}
+                    </td>
+                  </tr>
                 )}
-                <td
-                  style={{
-                    padding: "4px 10px 4px 0",
-                    borderBottom: "1px solid #e5e5e5",
-                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                  }}
-                >
-                  {r.ip ?? "—"}
-                </td>
-                <td
-                  style={{
-                    padding: "4px 0",
-                    borderBottom: "1px solid #e5e5e5",
-                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                  }}
-                >
-                  {r.mac ?? "—"}
-                </td>
-              </tr>
+                {group.rows.map((r) => (
+                  <tr key={r.id}>
+                    <td
+                      style={{
+                        padding: "4px 10px 4px 0",
+                        borderBottom: "1px solid #e5e5e5",
+                        fontWeight: 600,
+                      }}
+                    >
+                      {r.label}
+                    </td>
+                    {showDevice && (
+                      <td
+                        style={{
+                          padding: "4px 10px 4px 0",
+                          borderBottom: "1px solid #e5e5e5",
+                          color: "#525252",
+                        }}
+                      >
+                        {/* Standalone gear already carries its device
+                            name in the label column — repeating it is
+                            noise. */}
+                        {r.label.startsWith(r.item) ? "" : r.item}
+                      </td>
+                    )}
+                    <td
+                      style={{
+                        padding: "4px 10px 4px 0",
+                        borderBottom: "1px solid #e5e5e5",
+                        fontFamily:
+                          "ui-monospace, SFMono-Regular, Menlo, monospace",
+                      }}
+                    >
+                      {r.ip ?? "—"}
+                    </td>
+                    <td
+                      style={{
+                        padding: "4px 0",
+                        borderBottom: "1px solid #e5e5e5",
+                        fontFamily:
+                          "ui-monospace, SFMono-Regular, Menlo, monospace",
+                      }}
+                    >
+                      {r.mac ?? "—"}
+                    </td>
+                  </tr>
+                ))}
+              </Fragment>
             ))}
           </tbody>
         </table>

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   compareCanonicalItems,
   compareDoorNames,
+  groupNetworkRowsByFloor,
   isStandaloneDoor,
   splitStandaloneDoors,
   STANDALONE_DOOR_NAME,
@@ -228,16 +229,19 @@ describe("buildNetworkRows", () => {
   });
 });
 
+const netRow = (over: Partial<NetworkRow>): NetworkRow => ({
+  id: "x",
+  label: "D1",
+  item: "5500 Exciter",
+  ip: null,
+  mac: null,
+  floor: null,
+  isStandalone: false,
+  ...over,
+});
+
 describe("shouldShowDeviceColumn", () => {
-  const row = (over: Partial<NetworkRow>): NetworkRow => ({
-    id: "x",
-    label: "D1",
-    item: "5500 Exciter",
-    ip: null,
-    mac: null,
-    isStandalone: false,
-    ...over,
-  });
+  const row = netRow;
 
   it("stays off when every door has one networked device", () => {
     expect(
@@ -259,5 +263,55 @@ describe("shouldShowDeviceColumn", () => {
         row({ label: "GW-3000 Gateway", isStandalone: true }),
       ]),
     ).toBe(false);
+  });
+});
+
+describe("groupNetworkRowsByFloor", () => {
+  it("orders named floors naturally, Unassigned next, Standalone last", () => {
+    const groups = groupNetworkRowsByFloor([
+      netRow({ id: "g", label: "GW-3000 Gateway", isStandalone: true }),
+      netRow({ id: "1", label: "D1", floor: "10" }),
+      netRow({ id: "2", label: "D2", floor: null }),
+      netRow({ id: "3", label: "D3", floor: "2" }),
+      netRow({ id: "4", label: "D4", floor: "B" }),
+    ]);
+    expect(groups.map((g) => g.label)).toEqual([
+      "2",
+      "10",
+      "B",
+      "Unassigned",
+      "Standalone",
+    ]);
+  });
+
+  it("sorts rows inside each floor by door name, standalone gear last", () => {
+    const groups = groupNetworkRowsByFloor([
+      netRow({ id: "1", label: "D10", floor: "1" }),
+      netRow({ id: "g", label: "Gateway", floor: "1", isStandalone: true }),
+      netRow({ id: "2", label: "D2", floor: "1" }),
+      netRow({ id: "3", label: "St5", floor: "1" }),
+    ]);
+    expect(groups[0].rows.map((r) => r.label)).toEqual([
+      "D2",
+      "D10",
+      "St5",
+      "Gateway",
+    ]);
+  });
+
+  it("buckets whitespace-only floors as Unassigned", () => {
+    const groups = groupNetworkRowsByFloor([
+      netRow({ id: "1", label: "D1", floor: "  " }),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].label).toBe("Unassigned");
+  });
+
+  it("groups floored standalone buckets under their floor", () => {
+    const groups = groupNetworkRowsByFloor([
+      netRow({ id: "g", label: "Gateway", floor: "3", isStandalone: true }),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].label).toBe("3");
   });
 });

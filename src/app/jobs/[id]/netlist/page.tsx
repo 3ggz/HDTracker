@@ -1,10 +1,13 @@
+import { Fragment } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { ExportPdfButton } from "@/components/ExportPdfButton";
 import {
   buildNetworkRows,
+  groupNetworkRowsByFloor,
   shouldShowDeviceColumn,
+  shouldShowFloorGroups,
   type Job,
   type JobDoorItem,
 } from "@/lib/jobs";
@@ -23,7 +26,7 @@ export default async function JobNetListPage({
 
   const [{ data: job, error }, { data: doors }] = await Promise.all([
     supabase.from("jobs").select("*").eq("id", id).single(),
-    supabase.from("job_doors").select("id, name").eq("job_id", id),
+    supabase.from("job_doors").select("id, name, floor").eq("job_id", id),
   ]);
 
   if (error || !job) notFound();
@@ -40,11 +43,14 @@ export default async function JobNetListPage({
           .or("ip_address.not.is.null,mac_address.not.is.null");
 
   const rows = buildNetworkRows(
-    (doors ?? []) as { id: string; name: string | null }[],
+    (doors ?? []) as { id: string; name: string | null; floor: string | null }[],
     (items ?? []) as JobDoorItem[],
   );
 
   const showDevice = shouldShowDeviceColumn(rows);
+  const columnCount = showDevice ? 4 : 3;
+  const floorGroups = groupNetworkRowsByFloor(rows);
+  const useFloorGroups = shouldShowFloorGroups(floorGroups);
 
   // Server component is dynamic (ƒ), so this is the moment of export.
   const exportedAt = new Date()
@@ -145,24 +151,40 @@ export default async function JobNetListPage({
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
-                <tr
-                  key={r.id}
-                  className="border-b border-neutral-200 dark:border-neutral-800"
-                >
-                  <td className="py-1.5 pr-3 font-medium">{r.label}</td>
-                  {showDevice && (
-                    <td className="py-1.5 pr-3 text-neutral-600 dark:text-neutral-400">
-                      {r.label.startsWith(r.item) ? "" : r.item}
-                    </td>
+              {floorGroups.map((group) => (
+                <Fragment key={group.label}>
+                  {useFloorGroups && (
+                    <tr>
+                      <td
+                        colSpan={columnCount}
+                        className="border-b-2 border-neutral-400 pb-1 pt-3 text-[11px] font-bold uppercase tracking-wide text-neutral-700 dark:border-neutral-500 dark:text-neutral-300"
+                      >
+                        {group.label}
+                      </td>
+                    </tr>
                   )}
-                  <td className="py-1.5 pr-3 font-mono tabular-nums">
-                    {r.ip ?? "—"}
-                  </td>
-                  <td className="py-1.5 font-mono tabular-nums">
-                    {r.mac ?? "—"}
-                  </td>
-                </tr>
+                  {group.rows.map((r) => (
+                    <tr
+                      key={r.id}
+                      className="border-b border-neutral-200 dark:border-neutral-800"
+                    >
+                      <td className="py-1.5 pr-3 font-medium">{r.label}</td>
+                      {showDevice && (
+                        <td className="py-1.5 pr-3 text-neutral-600 dark:text-neutral-400">
+                          {/* Standalone gear already carries its device
+                              name in the label column. */}
+                          {r.label.startsWith(r.item) ? "" : r.item}
+                        </td>
+                      )}
+                      <td className="py-1.5 pr-3 font-mono tabular-nums">
+                        {r.ip ?? "—"}
+                      </td>
+                      <td className="py-1.5 font-mono tabular-nums">
+                        {r.mac ?? "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </Fragment>
               ))}
             </tbody>
           </table>
