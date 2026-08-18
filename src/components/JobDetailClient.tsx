@@ -4727,8 +4727,10 @@ function PanelCard({
   const photoViewer = useContext(PhotoViewerContext);
   const [nameDraft, setNameDraft] = useState(panel.name);
   const [commDraft, setCommDraft] = useState(panel.comm_room ?? "");
+  const [notesDraft, setNotesDraft] = useState(panel.notes ?? "");
   const [syncedName, setSyncedName] = useState(panel.name);
   const [syncedComm, setSyncedComm] = useState(panel.comm_room ?? "");
+  const [syncedNotes, setSyncedNotes] = useState(panel.notes ?? "");
   const [uploading, setUploading] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -4744,6 +4746,10 @@ function PanelCard({
   if ((panel.comm_room ?? "") !== syncedComm) {
     if (commDraft === syncedComm) setCommDraft(panel.comm_room ?? "");
     setSyncedComm(panel.comm_room ?? "");
+  }
+  if ((panel.notes ?? "") !== syncedNotes) {
+    if (notesDraft === syncedNotes) setNotesDraft(panel.notes ?? "");
+    setSyncedNotes(panel.notes ?? "");
   }
 
   async function commit(patch: Partial<JobPanel>) {
@@ -4966,6 +4972,25 @@ function PanelCard({
           onBlur={() => {
             const next = commDraft.trim() || null;
             if (next !== panel.comm_room) void commit({ comm_room: next });
+          }}
+        />
+      </label>
+
+      <label className="mt-2 block">
+        <span className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+          Notes
+        </span>
+        <textarea
+          className={textareaClass + " min-h-[4.5rem] text-sm"}
+          placeholder="Notes for this panel..."
+          autoCapitalize="sentences"
+          autoCorrect="on"
+          spellCheck
+          value={notesDraft}
+          onChange={(e) => setNotesDraft(e.target.value)}
+          onBlur={() => {
+            const next = notesDraft.trim() || null;
+            if (next !== panel.notes) void commit({ notes: next });
           }}
         />
       </label>

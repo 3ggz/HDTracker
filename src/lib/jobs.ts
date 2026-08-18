@@ -78,6 +78,7 @@ export type JobPanel = {
   job_id: string;
   name: string;
   comm_room: string | null;
+  notes: string | null;
   photo_storage_path: string | null;
   photo_uploaded_at: string | null;
   position: number;
