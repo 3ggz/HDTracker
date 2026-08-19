@@ -5,6 +5,7 @@ import Link from "next/link";
 import { publicJobFileUrl, type JobPhoto } from "@/lib/job-photos";
 import {
   compareCanonicalItems,
+  splitStandaloneDoors,
   type Job,
   type JobDoor,
   type JobDoorItem,
@@ -82,6 +83,27 @@ export function JobPrintView({
   for (const list of itemsByDoor.values()) {
     list.sort(compareCanonicalItems);
   }
+
+  // Standalone buckets are not doors — they must neither inflate the
+  // door count nor print unit-by-unit. The report summarizes each
+  // category as one "GW-3000 Gateway — 21/21" line instead.
+  const { realDoors, standaloneDoors } = splitStandaloneDoors(doors);
+  const standaloneDoorIds = new Set(standaloneDoors.map((d) => d.id));
+  const standaloneGroups = (() => {
+    const map = new Map<string, { done: number; total: number }>();
+    for (const it of items) {
+      if (!standaloneDoorIds.has(it.door_id)) continue;
+      const stat = map.get(it.name) ?? { done: 0, total: 0 };
+      stat.total++;
+      if (it.completed_at) stat.done++;
+      map.set(it.name, stat);
+    }
+    return Array.from(map.entries())
+      .map(([name, stat]) => ({ name, ...stat }))
+      .sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { numeric: true }),
+      );
+  })();
 
   return (
     <>
@@ -232,17 +254,14 @@ export function JobPrintView({
         </header>
 
         <section className="mb-3">
-          <h2 className="mb-2 text-sm font-bold">Doors ({doors.length})</h2>
-          {doors.length === 0 ? (
+          <h2 className="mb-2 text-sm font-bold">Doors ({realDoors.length})</h2>
+          {realDoors.length === 0 ? (
             <p className="text-sm text-neutral-500">No doors recorded.</p>
           ) : (
             (() => {
               // Group by floor when any door has one set. Floors sort
               // naturally (1, 2, 10, B, etc) with null/Unassigned last.
-              const STANDALONE = "Standalone Equipment";
-              const printableDoors = doors.filter(
-                (d) => d.name !== STANDALONE,
-              );
+              const printableDoors = realDoors;
               const distinctFloors = Array.from(
                 new Set(printableDoors.map((d) => d.floor ?? null)),
               );
@@ -396,6 +415,39 @@ export function JobPrintView({
             })()
           )}
         </section>
+
+        {standaloneGroups.length > 0 && (
+          <section className="avoid-break mb-3">
+            <h2 className="mb-1 text-sm font-bold">Standalone equipment</h2>
+            <ul className="space-y-0.5 text-[11px]">
+              {standaloneGroups.map((g) => {
+                const complete = g.done === g.total;
+                return (
+                  <li key={g.name} className="flex items-baseline gap-1.5">
+                    <span
+                      aria-hidden
+                      className={
+                        "w-3 flex-shrink-0 text-[12px] font-semibold leading-none " +
+                        (complete ? "text-emerald-600" : "text-neutral-300")
+                      }
+                    >
+                      {complete ? "✓" : "○"}
+                    </span>
+                    <span className="font-medium">{g.name}</span>
+                    <span
+                      className={
+                        "tabular-nums " +
+                        (complete ? "text-emerald-700" : "text-neutral-600")
+                      }
+                    >
+                      — {g.done}/{g.total}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        )}
 
         {includePhotos && jobPhotos.length > 0 && (
           <section className="avoid-break mb-3">
