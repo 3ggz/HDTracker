@@ -10,6 +10,7 @@ import {
   type Job,
   type JobDoor,
   type JobDoorItem,
+  type JobDoorItemPhoto,
 } from "@/lib/jobs";
 
 // Public read-only job summary, addressed by the job's share_token
@@ -62,6 +63,17 @@ export default async function SharedJobPage({
           .order("position", { ascending: true });
 
   const allItems = (items ?? []) as JobDoorItem[];
+
+  const itemIds = allItems.map((it) => it.id);
+  const { data: itemPhotoRows } =
+    itemIds.length === 0
+      ? { data: [] as JobDoorItemPhoto[] }
+      : await supabase
+          .from("job_door_item_photos")
+          .select("*")
+          .in("item_id", itemIds)
+          .order("position", { ascending: true });
+  const allItemPhotos = (itemPhotoRows ?? []) as JobDoorItemPhoto[];
   const totalItems = allItems.length;
   const completedItems = allItems.filter((it) => it.completed_at).length;
   const pct =
@@ -89,6 +101,83 @@ export default async function SharedJobPage({
   );
   const jobPhotos = ((photos ?? []) as JobPhoto[]).filter((p) => !p.door_id);
   const typedJob = job as Job;
+
+  // Per-door photo pool: door-level photos plus every item's photos
+  // (both the multi-photo table and the legacy single photo_storage_path
+  // slot, deduped by path). Labels carry door + device so the
+  // fullscreen viewer says what you're looking at.
+  const photosByDoor = new Map<
+    string,
+    { id: string; src: string; label: string }[]
+  >();
+  const pushDoorPhoto = (
+    doorId: string,
+    id: string,
+    storagePath: string,
+    label: string,
+    seen: Set<string>,
+  ) => {
+    if (seen.has(storagePath)) return;
+    seen.add(storagePath);
+    const list = photosByDoor.get(doorId) ?? [];
+    list.push({ id, src: publicJobFileUrl(supabaseUrl, storagePath), label });
+    photosByDoor.set(doorId, list);
+  };
+  {
+    const doorNameById = new Map(allDoors.map((d) => [d.id, d.name]));
+    const itemsById = new Map(allItems.map((it) => [it.id, it]));
+    const seenByDoor = new Map<string, Set<string>>();
+    const seenFor = (doorId: string) => {
+      const s = seenByDoor.get(doorId) ?? new Set<string>();
+      seenByDoor.set(doorId, s);
+      return s;
+    };
+    // Standalone gear identifies by unit (name + note), not by its
+    // synthetic bucket door.
+    const itemLabel = (it: JobDoorItem) =>
+      standaloneDoorIds.has(it.door_id)
+        ? it.note?.trim()
+          ? `${it.name} — ${it.note.trim()}`
+          : it.name
+        : `${doorNameById.get(it.door_id) ?? ""} — ${it.name}`.replace(
+            /^ — /,
+            "",
+          );
+    for (const p of (photos ?? []) as JobPhoto[]) {
+      if (!p.door_id) continue;
+      pushDoorPhoto(
+        p.door_id,
+        p.id,
+        p.storage_path,
+        doorNameById.get(p.door_id) ?? "Door photo",
+        seenFor(p.door_id),
+      );
+    }
+    for (const ip of allItemPhotos) {
+      const it = itemsById.get(ip.item_id);
+      if (!it) continue;
+      pushDoorPhoto(
+        it.door_id,
+        ip.id,
+        ip.storage_path,
+        itemLabel(it),
+        seenFor(it.door_id),
+      );
+    }
+    for (const it of allItems) {
+      if (!it.photo_storage_path) continue;
+      pushDoorPhoto(
+        it.door_id,
+        `legacy-${it.id}`,
+        it.photo_storage_path,
+        itemLabel(it),
+        seenFor(it.door_id),
+      );
+    }
+  }
+  const standalonePhotos = standaloneDoors.flatMap(
+    (d) => photosByDoor.get(d.id) ?? [],
+  );
 
   const exportedAt = new Date()
     .toLocaleDateString(undefined, {
@@ -134,8 +223,14 @@ export default async function SharedJobPage({
           .door-cols > li:nth-child(odd) { margin-right: 2%; }
 
           /* Thumbnails sized for a phone are absurd across a full sheet. */
-          .share-photos > div {
+          .share-photos .photo-thumb-grid {
             grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+          }
+          /* Door cards print two-up at ~half width — 4 thumbs per row
+             keeps them recognizable without ballooning the card. */
+          .door-cols .photo-thumb-grid {
+            grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+            gap: 2px !important;
           }
 
           /* dark: is a class-based variant on <html> (see globals.css),
@@ -285,6 +380,14 @@ export default async function SharedJobPage({
                         {door.notes}
                       </p>
                     )}
+                    {(photosByDoor.get(door.id)?.length ?? 0) > 0 && (
+                      <div className="mt-2">
+                        <PhotoThumbGallery
+                          label={door.name}
+                          photos={photosByDoor.get(door.id) ?? []}
+                        />
+                      </div>
+                    )}
                     {door.tested_at && (
                       <span className="absolute bottom-1.5 right-2 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
                         <svg
@@ -348,6 +451,14 @@ export default async function SharedJobPage({
                       </li>
                     ))}
                   </ul>
+                  {standalonePhotos.length > 0 && (
+                    <div className="mt-2">
+                      <PhotoThumbGallery
+                        label="Standalone equipment"
+                        photos={standalonePhotos}
+                      />
+                    </div>
+                  )}
                 </>
               );
             })()}
